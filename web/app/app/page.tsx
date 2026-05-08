@@ -2,11 +2,18 @@
 
 import React from "react";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { QuestionBuilder } from "@/components/QuestionBuilder";
 import { ApplicantUpload } from "@/components/ApplicantUpload";
-import type { Question, ApplicantInput } from "@/types";
+import { ExtractionTable } from "@/components/ExtractionTable";
+import { extractSingle, extractBatch } from "@/lib/api";
+import type {
+  Question,
+  ApplicantInput,
+  SingleExtractionResponse,
+  BatchExtractionResponse,
+} from "@/types";
 
 /* ─── Step bar ───────────────────────────────────────────────────────────────*/
 
@@ -67,6 +74,12 @@ export default function AppPage() {
   const [mode, setMode] = React.useState<"single" | "batch">("single");
   const [applicants, setApplicants] = React.useState<ApplicantInput[]>([]);
 
+  const [isScreening, setIsScreening] = React.useState(false);
+  const [result, setResult] = React.useState<
+    SingleExtractionResponse | BatchExtractionResponse | null
+  >(null);
+  const [error, setError] = React.useState<string | null>(null);
+
   const hasQuestions = questions.some((q) => q.text.trim().length > 0);
   const hasReadyApplicant = applicants.some(
     (a) => a.name.trim().length > 0 && a.files.length > 0,
@@ -78,6 +91,55 @@ export default function AppPage() {
 
   const nextLabel =
     step === 1 ? "Next" : step === 2 ? "Screen applications" : "Done";
+
+  // Number of applicants that will be screened (for loading estimate)
+  const readyCount = applicants.filter(
+    (a) => a.name.trim().length > 0 && a.files.length > 0,
+  ).length;
+
+  async function handleNext() {
+    if (step === 1) {
+      setStep(2);
+      return;
+    }
+
+    if (step === 2) {
+      // Start screening
+      setIsScreening(true);
+      setError(null);
+      setResult(null);
+      setStep(3);
+
+      // Filter to only ready applicants
+      const validQuestions = questions.filter((q) => q.text.trim().length > 0);
+      const readyApplicants = applicants.filter(
+        (a) => a.name.trim().length > 0 && a.files.length > 0,
+      );
+
+      try {
+        if (mode === "single") {
+          const ap = readyApplicants[0];
+          const res = await extractSingle(ap.name, ap.files, validQuestions);
+          setResult(res);
+        } else {
+          const res = await extractBatch(readyApplicants, validQuestions);
+          setResult(res);
+        }
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Extraction failed. Is the API running on port 8000?",
+        );
+      } finally {
+        setIsScreening(false);
+      }
+      return;
+    }
+  }
+
+  // Back button visibility: hidden on step 1, hidden during screening
+  const showBack = step > 1 && !isScreening;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -100,7 +162,7 @@ export default function AppPage() {
       </header>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
-        {/* Step content */}
+        {/* Step 1 */}
         {step === 1 && (
           <QuestionBuilder
             questions={questions}
@@ -110,6 +172,7 @@ export default function AppPage() {
           />
         )}
 
+        {/* Step 2 */}
         {step === 2 && (
           <ApplicantUpload
             mode={mode}
@@ -119,15 +182,51 @@ export default function AppPage() {
           />
         )}
 
+        {/* Step 3 */}
         {step === 3 && (
-          <div className="rounded-2xl border-2 border-dashed border-gray-200 p-16 text-center text-gray-400">
-            <p className="text-sm">Results table coming next</p>
-          </div>
+          <>
+            {isScreening && (
+              <div className="flex flex-col items-center justify-center py-24 text-center">
+                <Loader2 className="h-8 w-8 animate-spin text-brand-600 mb-4" />
+                <p className="text-base font-medium text-gray-900">
+                  Reading documents…
+                </p>
+                <p className="mt-2 text-sm text-gray-500">
+                  This usually takes 1–2 minutes
+                  {readyCount > 1 ? ` for ${readyCount} applicants` : ""}.
+                </p>
+              </div>
+            )}
+
+            {error && !isScreening && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center space-y-4">
+                <p className="text-sm font-medium text-red-800">{error}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setStep(2);
+                  }}
+                  className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+
+            {result && !isScreening && (
+              <ExtractionTable
+                mode={mode}
+                result={result}
+                questions={questions.filter((q) => q.text.trim().length > 0)}
+              />
+            )}
+          </>
         )}
 
         {/* Bottom navigation */}
         <div className="flex justify-between mt-10 pt-6 border-t border-gray-200">
-          {step > 1 ? (
+          {showBack ? (
             <button
               type="button"
               onClick={() => setStep((s) => Math.max(1, s - 1) as 1 | 2 | 3)}
@@ -140,14 +239,26 @@ export default function AppPage() {
             <div />
           )}
 
-          <button
-            type="button"
-            disabled={!canNext}
-            onClick={() => setStep((s) => Math.min(3, s + 1) as 1 | 2 | 3)}
-            className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {nextLabel}
-          </button>
+          {step < 3 && (
+            <button
+              type="button"
+              disabled={!canNext}
+              onClick={handleNext}
+              className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {nextLabel}
+            </button>
+          )}
+
+          {step === 3 && !isScreening && result && (
+            <button
+              type="button"
+              disabled
+              className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
+            >
+              Done
+            </button>
+          )}
         </div>
       </main>
     </div>
