@@ -17,6 +17,7 @@ export interface ExtractionAnswer {
   source_document: string | null;  // filename the answer came from
   source_page: number | null;      // page number from PDF (null for DOCX/TXT)
   quote: string | null;            // verbatim excerpt from the document
+  search_notes: string | null;     // reasoning trail for inferred/not_found answers
 }
 
 // ── Single applicant result ───────────────────────────────────────────────────

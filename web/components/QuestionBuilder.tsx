@@ -1,7 +1,9 @@
 "use client";
 
-import { Lightbulb, Plus, X } from "lucide-react";
+import { useState } from "react";
+import { Lightbulb, Plus, X, LayoutTemplate, Check } from "lucide-react";
 import type { Question } from "@/types";
+import { QUESTION_TEMPLATES } from "@/lib/templates";
 
 /**
  * QuestionBuilder
@@ -62,6 +64,8 @@ export function QuestionBuilder({
   context,
   onContextChange,
 }: QuestionBuilderProps) {
+  const [templateMessage, setTemplateMessage] = useState<string | null>(null);
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const atLimit = questions.length >= MAX_QUESTIONS;
 
   // Hide chips that are already in the list — keeps the chip row tidy
@@ -81,6 +85,39 @@ export function QuestionBuilder({
   const addQuestion = (text = "") => {
     if (atLimit) return;
     onChange([...questions, { id: newId(), text }]);
+  };
+
+  const swapTemplate = (templateId: string) => {
+    if (templateId === activeTemplateId) return; // already active
+
+    const previous = QUESTION_TEMPLATES.find((t) => t.id === activeTemplateId);
+    const next = QUESTION_TEMPLATES.find((t) => t.id === templateId);
+    if (!next) return;
+
+    // Build set of previous template question texts to remove
+    const previousTexts = previous
+      ? new Set(previous.questions.map((q) => q.text.trim().toLowerCase()))
+      : new Set<string>();
+
+    // Keep custom questions + questions not from the previous template
+    const survivors = questions.filter(
+      (q) => !previousTexts.has(q.text.trim().toLowerCase())
+    );
+
+    // Add new template questions, skipping any that match surviving customs
+    const survivorTexts = new Set(survivors.map((q) => q.text.trim().toLowerCase()));
+    const additions = next.questions
+      .filter((q) => !survivorTexts.has(q.text.trim().toLowerCase()))
+      .map((q) => ({ id: newId(), text: q.text }));
+
+    onChange([...survivors, ...additions]);
+    setActiveTemplateId(templateId);
+
+    const msg = previous
+      ? `Switched to ${next.name}. ${previous.name} questions removed; your custom questions are preserved.`
+      : `Loaded ${additions.length} question${additions.length !== 1 ? "s" : ""} from ${next.name}. You can edit, remove, or add more.`;
+    setTemplateMessage(msg);
+    setTimeout(() => setTemplateMessage(null), 5000);
   };
 
   return (
@@ -113,15 +150,63 @@ export function QuestionBuilder({
           </span>
         </header>
 
+        {/* Template chooser */}
+        <div className="space-y-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            Start from a template (optional)
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {QUESTION_TEMPLATES.map((t) => {
+              const isActive = t.id === activeTemplateId;
+
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => swapTemplate(t.id)}
+                  disabled={isActive}
+                  className={`group flex items-start gap-3 rounded-lg border px-4 py-3 text-left transition ${
+                    isActive
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                      : "border-blue-200 bg-blue-50/50 text-blue-800 hover:border-blue-400 hover:bg-blue-50"
+                  } disabled:cursor-default`}
+                >
+                  {isActive ? (
+                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                  ) : (
+                    <LayoutTemplate className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{t.name}</p>
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                      {t.description}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {templateMessage && (
+            <p className="flex items-center gap-1.5 text-sm text-emerald-700">
+              <Check className="h-3.5 w-3.5 shrink-0" />
+              {templateMessage}
+            </p>
+          )}
+        </div>
+
         <GuidanceCard title="How to write good questions">
           Specific questions get sharper answers.{" "}
           <span className="text-gray-900">
-            “What is the total budget requested?”
+            &quot;What is the total budget requested?&quot;
           </span>{" "}
           beats{" "}
-          <span className="text-gray-500">“tell me about their money.”</span>{" "}
-          DOCex returns the answer, the source document, and the exact quote —
-          so you can verify each answer in seconds.
+          <span className="text-gray-500">
+            &quot;tell me about their money.&quot;
+          </span>{" "}
+          Start from a template above if your review workflow is standard
+          &mdash; you can still edit, remove, or add more. DOCex returns the
+          answer, source document, exact quote, and page number for every
+          question.
         </GuidanceCard>
 
         {remainingSuggestions.length > 0 && (
@@ -197,7 +282,7 @@ function ContextSection({
       <header className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">
-            Tell DOCex what you’re looking for
+            Tell DOCex what you're looking for
           </h2>
           <p className="mt-1 text-sm text-gray-600">
             Optional — a short paragraph that helps DOCex understand answers
@@ -216,7 +301,7 @@ function ContextSection({
       </header>
 
       <GuidanceCard title="What to write here">
-        Two to four sentences about the funder’s priorities — focus areas,
+        Two to four sentences about the funder's priorities — focus areas,
         regions, baseline requirements. DOCex still extracts the same answers;
         it just understands them in your context.{" "}
         <span className="text-gray-900">

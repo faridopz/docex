@@ -41,3 +41,32 @@ class BatchExtractionResponse(BaseModel):
 class HealthOut(BaseModel):
     status: str = "ok"
     version: str = "2.0.0"
+
+
+# ── Follow-up drafts ───────────────────────────────────────────────────────
+
+class FollowupApplicantIn(BaseModel):
+    """One applicant's extraction result, sent back for follow-up drafting."""
+    applicant_id: str
+    applicant_name: str
+    documents: list[str]
+    answers: list[ExtractionAnswer]
+    error: Optional[str] = None
+
+
+class FollowupRequest(BaseModel):
+    """Request body for POST /draft-followups."""
+    applicants: list[FollowupApplicantIn]
+    questions: list[QuestionIn]
+
+
+class FollowupDraft(BaseModel):
+    """One drafted follow-up note."""
+    applicant_id: str
+    applicant_name: str
+    note: str
+
+
+class FollowupResponse(BaseModel):
+    """Response for POST /draft-followups."""
+    drafts: list[FollowupDraft]

@@ -1,4 +1,5 @@
 import type {
+  ApplicantExtraction,
   ApplicantInput,
   BatchExtractionResponse,
   Question,
@@ -68,14 +69,59 @@ export async function extractBatch(
   return res.json() as Promise<BatchExtractionResponse>;
 }
 
+// ─── Follow-up note drafting ──────────────────────────────────────────────────
+
+export interface FollowupDraft {
+  applicant_id: string;
+  applicant_name: string;
+  note: string;
+}
+
+export async function draftFollowups(
+  applicants: ApplicantExtraction[],
+  questions: Question[],
+): Promise<FollowupDraft[]> {
+  const res = await fetch(`${BASE}/draft-followups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ applicants, questions }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to draft follow-up notes: ${detail}`);
+  }
+  const data = (await res.json()) as { drafts: FollowupDraft[] };
+  return data.drafts;
+}
+
+export function exportFollowupsAsText(
+  drafts: { applicant_name: string; note: string }[],
+  filename = "docex-followup-notes.txt",
+): void {
+  const text = drafts
+    .map((d) => `=== ${d.applicant_name} ===\n\n${d.note}`)
+    .join("\n\n\n");
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Excel export ─────────────────────────────────────────────────────────────
 // Uses SheetJS (xlsx). Import is dynamic to avoid SSR issues.
 
 export async function exportToExcel(
   applicants: BatchExtractionResponse["applicants"],
   questions: Question[],
-  filename = "docex-results.xlsx",
+  filename?: string,
+  templateId?: string,
 ): Promise<void> {
+  const resolvedFilename =
+    filename ??
+    (templateId ? `docex-${templateId}-results.xlsx` : "docex-results.xlsx");
   const XLSX = await import("xlsx");
 
   // Build rows: header + one row per applicant
@@ -86,6 +132,7 @@ export async function exportToExcel(
       q.text,                        // answer column
       `${q.text} — Source`,          // source doc column
       `${q.text} — Confidence`,      // confidence column
+      `${q.text} — Notes`,           // search notes column
     ]),
     "Errors",
   ];
@@ -95,7 +142,7 @@ export async function exportToExcel(
 
     const cells = questions.flatMap((q) => {
       const a = answerMap.get(q.id);
-      if (!a) return ["", "", "not_found"];
+      if (!a) return ["", "", "not_found", ""];
       const source = a.source_document
         ? a.source_page != null
           ? `${a.source_document} · p.${a.source_page}`
@@ -105,6 +152,7 @@ export async function exportToExcel(
         a.answer ?? "",
         source,
         a.confidence,
+        a.search_notes ?? "",
       ];
     });
 
@@ -133,7 +181,7 @@ export async function exportToExcel(
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Results");
-  XLSX.writeFile(wb, filename);
+  XLSX.writeFile(wb, resolvedFilename);
 }
 
 // ─── JSON export ──────────────────────────────────────────────────────────────

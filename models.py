@@ -27,6 +27,7 @@ class ExtractionAnswer(BaseModel):
     source_document: Optional[str] = None  # filename the answer came from
     source_page: Optional[int] = None      # page number (from === PAGE N === markers in PDFs)
     quote: Optional[str] = None            # verbatim excerpt supporting the answer
+    search_notes: Optional[str] = None     # reasoning trail — what was searched, what was found/not found
 
 
 class ApplicantExtraction(BaseModel):

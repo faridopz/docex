@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
+import anthropic
 import pdfplumber
 from docx import Document as DocxDocument
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -25,10 +26,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models import ApplicantExtraction, Question  # noqa: E402
+from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402
 from .schemas import (  # noqa: E402
     BatchExtractionResponse,
+    FollowupDraft,
+    FollowupRequest,
+    FollowupResponse,
     HealthOut,
     QuestionIn,
     SingleExtractionResponse,
@@ -221,3 +225,81 @@ async def extract_batch_endpoint(
         failed=failed,
         applicants=results,
     )
+
+
+# ─── Follow-up note drafting ───────────────────────────────────────────────
+
+_followup_client = anthropic.Anthropic()
+
+_FOLLOWUP_SYSTEM = """You draft short follow-up notes for NGO partner screening.
+
+The user will give you an applicant's name and a summary of screening gaps —
+questions where the answer was "not_found" or confidence was "inferred".
+
+Write a 2-4 sentence follow-up note that:
+- Acknowledges the partner submitted an application
+- Lists 2-3 specific gaps identified during screening
+- Maintains a respectful, encouraging tone
+- Does NOT make a final selection decision — that is up to the human reviewer
+
+Return ONLY the note text. No greeting, no signature, no subject line.
+The reviewer will add those before sending.
+
+Be specific about the gaps — name the missing document, policy, or data point.
+Do not use generic phrases like "some areas need improvement". Cite what was
+actually missing based on the screening data provided."""
+
+
+def _build_gap_summary(
+    answers: list[ExtractionAnswer],
+) -> str:
+    """Summarise the gaps (not_found and inferred) for the follow-up prompt."""
+    gaps: list[str] = []
+    for a in answers:
+        if a.confidence == "not_found":
+            gaps.append(f"- NOT FOUND: {a.question_text}")
+            if a.search_notes:
+                gaps.append(f"  Search note: {a.search_notes}")
+        elif a.confidence == "inferred":
+            gaps.append(f"- INFERRED (not explicitly stated): {a.question_text}")
+            if a.answer:
+                gaps.append(f"  Best guess: {a.answer}")
+            if a.search_notes:
+                gaps.append(f"  Reasoning: {a.search_notes}")
+    return "\n".join(gaps) if gaps else "No gaps identified — all answers were found."
+
+
+@app.post("/draft-followups", response_model=FollowupResponse, tags=["followups"])
+async def draft_followups(body: FollowupRequest) -> FollowupResponse:
+    """
+    Draft short follow-up notes for applicants based on screening gaps.
+    Each applicant gets one Claude call to generate a 2-4 sentence note.
+    """
+    drafts: list[FollowupDraft] = []
+
+    for ap in body.applicants:
+        gap_summary = _build_gap_summary(ap.answers)
+
+        user_msg = (
+            f"Applicant: {ap.applicant_name}\n\n"
+            f"Screening gaps:\n{gap_summary}"
+        )
+
+        try:
+            response = _followup_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                system=_FOLLOWUP_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            note = response.content[0].text.strip()
+        except Exception as exc:
+            note = f"[Could not generate draft: {exc}]"
+
+        drafts.append(FollowupDraft(
+            applicant_id=ap.applicant_id,
+            applicant_name=ap.applicant_name,
+            note=note,
+        ))
+
+    return FollowupResponse(drafts=drafts)
