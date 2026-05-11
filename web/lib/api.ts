@@ -96,9 +96,14 @@ export async function exportToExcel(
     const cells = questions.flatMap((q) => {
       const a = answerMap.get(q.id);
       if (!a) return ["", "", "not_found"];
+      const source = a.source_document
+        ? a.source_page != null
+          ? `${a.source_document} · p.${a.source_page}`
+          : a.source_document
+        : "";
       return [
         a.answer ?? "",
-        a.source_document ?? "",
+        source,
         a.confidence,
       ];
     });

@@ -49,6 +49,9 @@ For every question, return an object with:
 - source_document  — the exact filename you took the answer from
 - quote            — the verbatim excerpt from that document that supports
                      the answer (copy it word-for-word, preserving casing)
+- source_page      — the page number from the === PAGE N === marker the quote
+                     came from. If the document has no page markers (DOCX or
+                     TXT), set source_page to null.
 
 ## Confidence levels — use these strictly
 - "found"     — the answer is explicitly stated in a document. The quote
@@ -64,6 +67,19 @@ For every question, return an object with:
 If you are not sure whether something is "found" or "inferred", choose
 "inferred". If you are not sure whether something is "inferred" or
 "not_found", choose "not_found". When in doubt, do less.
+
+## Quote substance — not just titles
+When a question asks whether something exists ("does the organisation have
+an X policy?", "is the organisation registered?"), and the answer is yes,
+the quote MUST come from the body of the document demonstrating the thing —
+not the document's title or cover page. A title only proves a file with that
+name exists; it does not prove the content is real or substantive. Prefer:
+- A sentence from the policy's purpose, scope, or rules sections
+- A sentence from the registration certificate body, not the header
+- A specific commitment, definition, or procedure from inside the document
+
+If the only place the information appears is the document title, lower the
+confidence to "inferred" rather than "found".
 
 ## Rules — these are absolute
 - Answer ONLY from what is written in the documents. Never use outside
@@ -158,7 +174,7 @@ the question_id from the brackets above. Use exact filenames as the
 source_document. Quote verbatim."""
 
     response = _client.messages.parse(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=8096,
         system=[
             {

@@ -63,8 +63,11 @@ def _extract_text(upload: UploadFile) -> str:
 
     if name.endswith(".pdf"):
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            pages = [p.extract_text() or "" for p in pdf.pages]
-        return "\n\n".join(pages).strip()
+            parts = []
+            for i, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
+                parts.append(f"=== PAGE {i} ===\n{text}")
+        return "\n\n".join(parts).strip()
 
     if name.endswith(".docx"):
         doc = DocxDocument(io.BytesIO(raw))

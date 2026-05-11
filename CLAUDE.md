@@ -60,7 +60,7 @@ BatchExtractionResult: total, succeeded, failed, applicants[]
 - Backend: FastAPI (Python)
 - Core AI engine: screener.py (being rebuilt for extraction)
 - Database: Supabase (postgres + auth + file storage) — Phase 2
-- AI model: claude-sonnet-4-20250514
+- AI model: claude-sonnet-4-6
 - Excel export: SheetJS (xlsx) on frontend
 
 ## Project Structure

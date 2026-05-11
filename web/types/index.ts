@@ -15,6 +15,7 @@ export interface ExtractionAnswer {
   answer: string | null;           // null when not_found
   confidence: Confidence;
   source_document: string | null;  // filename the answer came from
+  source_page: number | null;      // page number from PDF (null for DOCX/TXT)
   quote: string | null;            // verbatim excerpt from the document
 }
 

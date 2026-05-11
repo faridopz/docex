@@ -132,6 +132,7 @@ function AnswerCard({ answer }: { answer: ExtractionAnswer }) {
         <p className="flex items-center gap-1.5 text-xs text-gray-500">
           <ExternalLink className="h-3 w-3 shrink-0" />
           {answer.source_document}
+          {answer.source_page != null && ` · p.${answer.source_page}`}
         </p>
       )}
 
@@ -244,6 +245,7 @@ function BatchView({
                             <p className="flex items-center gap-1.5 text-xs text-gray-500">
                               <ExternalLink className="h-3 w-3 shrink-0" />
                               {a.source_document}
+                              {a.source_page != null && ` · p.${a.source_page}`}
                             </p>
                           )}
                           {a.quote && (

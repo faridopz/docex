@@ -25,6 +25,7 @@ class ExtractionAnswer(BaseModel):
     # not_found — not mentioned anywhere
     confidence: Literal["found", "inferred", "not_found"]
     source_document: Optional[str] = None  # filename the answer came from
+    source_page: Optional[int] = None      # page number (from === PAGE N === markers in PDFs)
     quote: Optional[str] = None            # verbatim excerpt supporting the answer
 
 
