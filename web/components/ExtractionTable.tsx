@@ -48,6 +48,7 @@ interface ExtractionTableProps {
   result: SingleExtractionResponse | BatchExtractionResponse;
   questions: Question[];
   templateId?: string | null;
+  onTemplateChange?: (templateId: string | null) => void;
 }
 
 // ── Type guards ─────────────────────────────────────────────────────────────
@@ -63,25 +64,34 @@ function isBatch(
 function getWorkflowLabels(templateId: string | null | undefined) {
   if (templateId === "quarterly-report-review") {
     return {
-      unit: "report",
-      units: "reports",
-      action: "Analyse reports",
-      header: "Report analysis",
+      unitSingular: "report",
+      unitPlural: "reports",
+      actionVerb: "Analyse",
+      actionVerbPast: "Analysed",
+      pageHeader: "Report analysis",
+      stepTwoButton: "Analyse reports",
+      stepThreeLoadingTitle: "Reading reports...",
     };
   }
   if (templateId === "subaward-application-review") {
     return {
-      unit: "application",
-      units: "applications",
-      action: "Screen applications",
-      header: "Application review",
+      unitSingular: "application",
+      unitPlural: "applications",
+      actionVerb: "Review",
+      actionVerbPast: "Reviewed",
+      pageHeader: "Application review",
+      stepTwoButton: "Review applications",
+      stepThreeLoadingTitle: "Reading applications...",
     };
   }
   return {
-    unit: "applicant",
-    units: "applicants",
-    action: "Run review",
-    header: "Review results",
+    unitSingular: "applicant",
+    unitPlural: "applicants",
+    actionVerb: "Run",
+    actionVerbPast: "Reviewed",
+    pageHeader: "Review results",
+    stepTwoButton: "Run review",
+    stepThreeLoadingTitle: "Reading documents...",
   };
 }
 
@@ -107,9 +117,14 @@ export function ExtractionTable({
   mode,
   result,
   questions,
+  templateId,
 }: ExtractionTableProps) {
   const batch = isBatch(result);
   const applicants = batch ? result.applicants : singleToApplicantArray(result);
+  const labels = getWorkflowLabels(templateId);
+
+  // Count actual errors (applicants with error field set)
+  const errorCount = applicants.filter((ap) => ap.error).length;
 
   // Follow-up notes state
   const [followupState, setFollowupState] = useState<
@@ -155,8 +170,8 @@ export function ExtractionTable({
       {/* Summary */}
       <GuidanceCard title="Your results are ready">
         {batch
-          ? `Screened ${result.total} applicants — ${result.succeeded} succeeded, ${result.failed} failed.`
-          : `Screened ${result.applicant_name} — ${result.documents.length} document${result.documents.length !== 1 ? "s" : ""} read.`}
+          ? `${labels.actionVerbPast} ${applicants.length} ${applicants.length === 1 ? labels.unitSingular : labels.unitPlural}${errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}.`
+          : `${labels.actionVerbPast} ${result.applicant_name} — ${result.documents.length} document${result.documents.length !== 1 ? "s" : ""} read.`}
       </GuidanceCard>
 
       {/* Export buttons */}
@@ -603,7 +618,7 @@ function BatchView({
   );
   const [viewMode, setViewMode] = useState<"by-question" | "table">("by-question");
   const [selectedConfidences, setSelectedConfidences] = useState<Set<Confidence>>(
-    new Set(["found", "inferred", "not_found"]),
+    new Set<Confidence>(["found", "inferred", "not_found"]),
   );
   // Table view state
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
@@ -783,14 +798,14 @@ function BatchView({
       {/* Left sidebar: questions */}
       <div className="w-80 shrink-0 bg-gray-50 rounded-lg border border-gray-200 p-4 max-h-[70vh] overflow-y-auto">
         <h3 className="text-sm font-semibold text-gray-900 mb-1">
-          {labels.units === "applications"
+          {labels.unitPlural === "applications"
             ? "Applications"
-            : labels.units === "reports"
+            : labels.unitPlural === "reports"
               ? "Reports"
               : "Applicants"}
         </h3>
         <p className="text-xs text-gray-500 mb-4">
-          Across {applicants.length} {labels.units}
+          Across {applicants.length} {labels.unitPlural}
         </p>
         <div className="space-y-1">
           {questions.map((q) => {
@@ -901,7 +916,7 @@ function BatchView({
             <div className="space-y-3 pr-4">
               {filteredApplicants.length === 0 ? (
                 <p className="text-sm text-gray-400 italic py-8 text-center">
-                  No {labels.units} match the selected filters.
+                  No {labels.unitPlural} match the selected filters.
                 </p>
               ) : (
                 filteredApplicants.map((ap) => {

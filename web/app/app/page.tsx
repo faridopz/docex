@@ -65,6 +65,27 @@ function StepBar({ current }: { current: number }) {
   );
 }
 
+/* ─── Workflow labels helper ──────────────────────────────────────────────────*/
+
+function getWorkflowLabels(templateId: string | null | undefined) {
+  if (templateId === "quarterly-report-review") {
+    return {
+      stepTwoButton: "Analyse reports",
+      stepThreeLoadingTitle: "Reading reports...",
+    };
+  }
+  if (templateId === "subaward-application-review") {
+    return {
+      stepTwoButton: "Review applications",
+      stepThreeLoadingTitle: "Reading applications...",
+    };
+  }
+  return {
+    stepTwoButton: "Run review",
+    stepThreeLoadingTitle: "Reading documents...",
+  };
+}
+
 /* ─── Page ───────────────────────────────────────────────────────────────────*/
 
 export default function AppPage() {
@@ -73,6 +94,7 @@ export default function AppPage() {
   const [context, setContext] = React.useState("");
   const [mode, setMode] = React.useState<"single" | "batch">("single");
   const [applicants, setApplicants] = React.useState<ApplicantInput[]>([]);
+  const [templateId, setTemplateId] = React.useState<string | null>(null);
 
   const [isScreening, setIsScreening] = React.useState(false);
   const [result, setResult] = React.useState<
@@ -89,8 +111,9 @@ export default function AppPage() {
     (step === 1 && hasQuestions) ||
     (step === 2 && hasReadyApplicant);
 
+  const workflowLabels = getWorkflowLabels(templateId);
   const nextLabel =
-    step === 1 ? "Next" : step === 2 ? "Screen applications" : "Done";
+    step === 1 ? "Next" : step === 2 ? workflowLabels.stepTwoButton : "Done";
 
   // Number of applicants that will be screened (for loading estimate)
   const readyCount = applicants.filter(
@@ -169,6 +192,7 @@ export default function AppPage() {
             onChange={setQuestions}
             context={context}
             onContextChange={setContext}
+            onTemplateChange={setTemplateId}
           />
         )}
 
@@ -189,7 +213,7 @@ export default function AppPage() {
               <div className="flex flex-col items-center justify-center py-24 text-center">
                 <Loader2 className="h-8 w-8 animate-spin text-brand-600 mb-4" />
                 <p className="text-base font-medium text-gray-900">
-                  Reading documents…
+                  {workflowLabels.stepThreeLoadingTitle}
                 </p>
                 <p className="mt-2 text-sm text-gray-500">
                   This usually takes 1–2 minutes
@@ -219,6 +243,7 @@ export default function AppPage() {
                 mode={mode}
                 result={result}
                 questions={questions.filter((q) => q.text.trim().length > 0)}
+                templateId={templateId}
               />
             )}
           </>

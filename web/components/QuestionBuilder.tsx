@@ -49,6 +49,8 @@ interface QuestionBuilderProps {
   // questions and the value flows into screener.py at extraction time.
   context?: string;
   onContextChange?: (context: string) => void;
+  // Optional. Called when user selects or switches a question template.
+  onTemplateChange?: (templateId: string | null) => void;
 }
 
 function newId(): string {
@@ -63,6 +65,7 @@ export function QuestionBuilder({
   onChange,
   context,
   onContextChange,
+  onTemplateChange,
 }: QuestionBuilderProps) {
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
@@ -112,6 +115,7 @@ export function QuestionBuilder({
 
     onChange([...survivors, ...additions]);
     setActiveTemplateId(templateId);
+    if (onTemplateChange) onTemplateChange(templateId);
 
     const msg = previous
       ? `Switched to ${next.name}. ${previous.name} questions removed; your custom questions are preserved.`
