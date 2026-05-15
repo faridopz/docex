@@ -26,6 +26,11 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
       { text: "What is the total budget requested?" },
       { text: "Are the M&E indicators specific, measurable, and time-bound?" },
       { text: "Is there evidence of prior donor funding management?" },
+      { text: "Does the budget align with the activities specified in the workplan? (Cost Proposal + Workplan)" },
+      { text: "Are the M&E indicators in the M&E plan consistent with the outputs described in the technical proposal? (M&E Plan + Technical Proposal)" },
+      { text: "Does the workplan timeline match the deliverables proposed in the technical proposal? (Workplan + Technical Proposal)" },
+      { text: "Are all activities in the workplan reflected as cost line items in the budget? (Workplan + Budget)" },
+      { text: "Is the cost proposal consistent with the budget in total amount and category breakdown? (Cost Proposal + Budget)" },
     ],
   },
   {

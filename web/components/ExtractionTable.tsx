@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useMemo, useCallback } from "react";
+import { useRef, useState, useMemo, useCallback, useEffect } from "react";
 import type {
   SingleExtractionResponse,
   BatchExtractionResponse,
@@ -31,6 +31,7 @@ import {
   Filter,
   X,
   Rows3,
+  ChevronRight,
 } from "lucide-react";
 import {
   exportToExcel,
@@ -46,6 +47,7 @@ interface ExtractionTableProps {
   mode: "single" | "batch";
   result: SingleExtractionResponse | BatchExtractionResponse;
   questions: Question[];
+  templateId?: string | null;
 }
 
 // ── Type guards ─────────────────────────────────────────────────────────────
@@ -57,6 +59,31 @@ function isBatch(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function getWorkflowLabels(templateId: string | null | undefined) {
+  if (templateId === "quarterly-report-review") {
+    return {
+      unit: "report",
+      units: "reports",
+      action: "Analyse reports",
+      header: "Report analysis",
+    };
+  }
+  if (templateId === "subaward-application-review") {
+    return {
+      unit: "application",
+      units: "applications",
+      action: "Screen applications",
+      header: "Application review",
+    };
+  }
+  return {
+    unit: "applicant",
+    units: "applicants",
+    action: "Run review",
+    header: "Review results",
+  };
+}
 
 function truncate(str: string, max: number): string {
   return str.length > max ? str.slice(0, max) + "…" : str;
@@ -185,13 +212,20 @@ export function ExtractionTable({
 
       {/* Follow-up drafts panel */}
       {followupState === "ready" && editedDrafts.length > 0 && (
-        <FollowupPanel
-          drafts={editedDrafts}
-          originalDrafts={originalDrafts}
-          onUpdate={updateDraftNote}
-          onReset={resetDraft}
-          onClose={() => setFollowupState("idle")}
-        />
+        <div>
+          <hr className="border-t border-gray-200 mt-12 mb-8" />
+          <h2 className="text-xl font-semibold text-gray-900">Follow-up Notes</h2>
+          <p className="text-sm text-gray-600 mb-6">
+            Draft notes for unsuccessful applicants &mdash; review and edit before sending
+          </p>
+          <FollowupPanel
+            drafts={editedDrafts}
+            originalDrafts={originalDrafts}
+            onUpdate={updateDraftNote}
+            onReset={resetDraft}
+            onClose={() => setFollowupState("idle")}
+          />
+        </div>
       )}
 
       {/* Body */}
@@ -311,31 +345,169 @@ function AggregateStats({
       <h3 className="text-sm font-semibold text-gray-900 mb-3">
         Across {applicants.length} applicant{applicants.length !== 1 ? "s" : ""}
       </h3>
-      <div className="space-y-1.5">
+      <div className="space-y-0.5">
         {stats.map((s) => (
           <button
             key={s.question.id}
             type="button"
             onClick={() => onQuestionClick(s.question.id)}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-gray-600 transition hover:bg-gray-50"
+            className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-gray-50"
           >
             <span className="flex-1 truncate text-gray-700">
               {truncate(s.question.text, 50)}
             </span>
-            <span className="inline-flex items-center gap-1 shrink-0">
+            <span className="inline-flex items-center gap-1 shrink-0 w-10 justify-end">
               <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.found}`} />
-              <span className="tabular-nums">{s.found}</span>
+              <span className="tabular-nums font-medium text-emerald-700">{s.found}</span>
             </span>
-            <span className="inline-flex items-center gap-1 shrink-0">
+            <span className="inline-flex items-center gap-1 shrink-0 w-10 justify-end">
               <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.inferred}`} />
-              <span className="tabular-nums">{s.inferred}</span>
+              <span className="tabular-nums font-medium text-amber-700">{s.inferred}</span>
             </span>
-            <span className="inline-flex items-center gap-1 shrink-0">
+            <span className="inline-flex items-center gap-1 shrink-0 w-10 justify-end">
               <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.not_found}`} />
-              <span className="tabular-nums">{s.notFound}</span>
+              <span className="tabular-nums font-medium text-gray-500">{s.notFound}</span>
             </span>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-300 opacity-0 transition group-hover:opacity-100" />
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Batch mode: per-question comparison drawer ─────────────────────────────
+
+function ComparisonDrawer({
+  question,
+  applicants,
+  onClose,
+}: {
+  question: Question;
+  applicants: BatchExtractionResponse["applicants"];
+  onClose: () => void;
+}) {
+  // Lock body scroll while open
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, []);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/30 transition-opacity"
+        onClick={onClose}
+      />
+      {/* Drawer panel */}
+      <div className="relative w-full max-w-[480px] bg-white shadow-xl flex flex-col">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-6 py-4">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-gray-900 leading-snug">
+              {question.text}
+            </h3>
+            <p className="mt-1 text-xs text-gray-500">
+              Comparing {applicants.length} applicant{applicants.length !== 1 ? "s" : ""} on this question
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-md p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {applicants.map((ap) => {
+            const answer = ap.answers.find(
+              (a) => a.question_id === question.id,
+            );
+            return (
+              <div
+                key={ap.applicant_id}
+                className="rounded-lg border border-gray-200 bg-white p-4 space-y-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-gray-900">
+                    {ap.applicant_name || "Unnamed"}
+                  </p>
+                  {answer && <ConfidenceBadge confidence={answer.confidence} />}
+                </div>
+
+                {answer?.answer ? (
+                  <p className="text-sm text-gray-800 leading-relaxed">
+                    {answer.answer}
+                  </p>
+                ) : (
+                  <p className="text-sm italic text-gray-400">
+                    Not found in any document
+                  </p>
+                )}
+
+                {answer?.source_document && (
+                  <p className="flex items-center gap-1.5 text-xs text-gray-500">
+                    <ExternalLink className="h-3 w-3 shrink-0" />
+                    {answer.source_document}
+                    {answer.source_page != null && ` · p.${answer.source_page}`}
+                  </p>
+                )}
+
+                {answer?.quote && (
+                  <details className="group">
+                    <summary className="cursor-pointer text-xs font-medium text-blue-600 hover:text-blue-700">
+                      View exact quote
+                    </summary>
+                    <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 px-3 py-2">
+                      <p className="text-xs font-mono text-gray-600 leading-relaxed whitespace-pre-wrap">
+                        {answer.quote}
+                      </p>
+                    </div>
+                  </details>
+                )}
+
+                {answer?.search_notes && (
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    <span className="font-medium text-gray-600">
+                      {answer.confidence === "inferred"
+                        ? "Reasoning: "
+                        : answer.confidence === "not_found"
+                          ? "Search note: "
+                          : "Note: "}
+                    </span>
+                    {answer.search_notes}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-200 px-6 py-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -420,351 +592,387 @@ function FilterBar({
 function BatchView({
   applicants,
   questions,
+  templateId,
 }: {
   applicants: BatchExtractionResponse["applicants"];
   questions: Question[];
+  templateId?: string | null;
 }) {
+  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(
+    questions.length > 0 ? questions[0].id : null,
+  );
+  const [viewMode, setViewMode] = useState<"by-question" | "table">("by-question");
+  const [selectedConfidences, setSelectedConfidences] = useState<Set<Confidence>>(
+    new Set(["found", "inferred", "not_found"]),
+  );
+  // Table view state
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
-  const [compact, setCompact] = useState(true);
-  const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState<Filters>({});
   const [sortCol, setSortCol] = useState<SortColumn>(null);
   const [sortDir, setSortDir] = useState<SortDirection>("none");
-  const tableRef = useRef<HTMLDivElement>(null);
-  const colRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
 
-  const toggleCell = (key: string) => {
-    if (compact) {
-      setExpandedCell((prev) => (prev === key ? null : key));
-    } else {
-      setExpandedCell((prev) => (prev === key ? null : key));
+  const selectedQuestion = selectedQuestionId
+    ? questions.find((q) => q.id === selectedQuestionId)
+    : null;
+
+  const labels = getWorkflowLabels(templateId);
+
+  // Compute counts per question
+  const counts = useMemo(() => {
+    return questions.map((q) => {
+      let found = 0;
+      let inferred = 0;
+      let notFound = 0;
+      for (const ap of applicants) {
+        const a = ap.answers.find((ans) => ans.question_id === q.id);
+        if (!a || a.confidence === "not_found") notFound++;
+        else if (a.confidence === "found") found++;
+        else inferred++;
+      }
+      return { questionId: q.id, found, inferred, notFound };
+    });
+  }, [applicants, questions]);
+
+  // Filter applicants by selected confidences on current question
+  const filteredApplicants = useMemo(() => {
+    if (!selectedQuestion) return applicants;
+    return applicants.filter((ap) => {
+      const a = ap.answers.find((ans) => ans.question_id === selectedQuestion.id);
+      const conf = a ? a.confidence : "not_found";
+      return selectedConfidences.has(conf);
+    });
+  }, [applicants, selectedQuestion, selectedConfidences]);
+
+  // Sort logic for table view
+  const processedApplicants = useMemo(() => {
+    let list = [...applicants];
+    if (sortCol && sortDir !== "none") {
+      const dir = sortDir === "asc" ? 1 : -1;
+      if (sortCol === "_name") {
+        list.sort((a, b) =>
+          dir * a.applicant_name.localeCompare(b.applicant_name),
+        );
+      } else {
+        list.sort((a, b) => {
+          const aAns = a.answers.find((ans) => ans.question_id === sortCol);
+          const bAns = b.answers.find((ans) => ans.question_id === sortCol);
+          const aOrd = CONFIDENCE_ORDER[aAns?.confidence ?? "not_found"];
+          const bOrd = CONFIDENCE_ORDER[bAns?.confidence ?? "not_found"];
+          return dir * (aOrd - bOrd);
+        });
+      }
     }
-  };
+    return list;
+  }, [applicants, sortCol, sortDir]);
 
-  // ── Sort handler ──────────────────────────────────────────────────────
-  const handleSort = useCallback(
-    (columnId: string) => {
-      if (sortCol === columnId) {
-        // Cycle: asc -> desc -> none
+  const handleSort = useCallback((columnId: string) => {
+    setSortCol((prev) => {
+      if (prev === columnId) {
         if (sortDir === "asc") setSortDir("desc");
         else if (sortDir === "desc") {
           setSortDir("none");
-          setSortCol(null);
+          return null;
         }
       } else {
         setSortCol(columnId);
         setSortDir("asc");
       }
-    },
-    [sortCol, sortDir],
-  );
+      return prev === columnId ? prev : columnId;
+    });
+  }, [sortDir]);
 
-  // ── Filter handler ────────────────────────────────────────────────────
-  const toggleFilter = useCallback(
-    (questionId: string, confidence: Confidence) => {
-      setFilters((prev) => {
-        const next = { ...prev };
-        const set = new Set(next[questionId] ?? []);
-        if (set.has(confidence)) set.delete(confidence);
-        else set.add(confidence);
-        next[questionId] = set;
-        return next;
-      });
-    },
-    [],
-  );
+  const toggleConfidence = (conf: Confidence) => {
+    setSelectedConfidences((prev) => {
+      const next = new Set(prev);
+      if (next.has(conf)) next.delete(conf);
+      else next.add(conf);
+      return next;
+    });
+  };
 
-  const clearAllFilters = useCallback(() => setFilters({}), []);
-
-  const hasActiveFilters = Object.values(filters).some((s) => s.size > 0);
-
-  // ── Compute filtered + sorted applicants ──────────────────────────────
-  const processedApplicants = useMemo(() => {
-    let list = [...applicants];
-
-    // Apply filters (AND across questions)
-    if (hasActiveFilters) {
-      list = list.filter((ap) => {
-        const answerMap = new Map(
-          ap.answers.map((a) => [a.question_id, a]),
-        );
-        for (const [qId, required] of Object.entries(filters)) {
-          if (required.size === 0) continue;
-          const a = answerMap.get(qId);
-          const confidence: Confidence = a ? a.confidence : "not_found";
-          if (!required.has(confidence)) return false;
-        }
-        return true;
-      });
-    }
-
-    // Apply sort
-    if (sortCol && sortDir !== "none") {
-      const dir = sortDir === "asc" ? 1 : -1;
-      if (sortCol === "_name") {
-        list.sort(
-          (a, b) =>
-            dir * a.applicant_name.localeCompare(b.applicant_name),
-        );
-      } else {
-        list.sort((a, b) => {
-          const aAnswer = a.answers.find(
-            (ans) => ans.question_id === sortCol,
-          );
-          const bAnswer = b.answers.find(
-            (ans) => ans.question_id === sortCol,
-          );
-          const aOrder =
-            CONFIDENCE_ORDER[aAnswer?.confidence ?? "not_found"];
-          const bOrder =
-            CONFIDENCE_ORDER[bAnswer?.confidence ?? "not_found"];
-          return dir * (aOrder - bOrder);
-        });
-      }
-    }
-
-    return list;
-  }, [applicants, filters, hasActiveFilters, sortCol, sortDir]);
-
-  // ── Scroll to column when stats row is clicked ────────────────────────
-  const scrollToColumn = useCallback((questionId: string) => {
-    const th = colRefs.current[questionId];
-    if (th && tableRef.current) {
-      th.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
-    }
-  }, []);
-
-  // ── Sort icon helper ──────────────────────────────────────────────────
   const SortIcon = ({ columnId }: { columnId: string }) => {
     if (sortCol !== columnId || sortDir === "none")
       return <ArrowUpDown className="h-3 w-3 text-gray-400" />;
-    if (sortDir === "asc")
-      return <ArrowUp className="h-3 w-3 text-blue-600" />;
+    if (sortDir === "asc") return <ArrowUp className="h-3 w-3 text-blue-600" />;
     return <ArrowDown className="h-3 w-3 text-blue-600" />;
   };
 
-  return (
-    <div className="space-y-4">
-      {/* Aggregate stats */}
-      <AggregateStats
-        applicants={applicants}
-        questions={questions}
-        onQuestionClick={scrollToColumn}
-      />
-
-      {/* Toolbar: filter toggle + compact toggle + count */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowFilters((p) => !p)}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-              showFilters || hasActiveFilters
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
-            }`}
-          >
-            <Filter className="h-3.5 w-3.5" />
-            Filter
-            {hasActiveFilters && (
-              <span className="ml-0.5 rounded-full bg-blue-600 px-1.5 py-px text-[10px] font-bold text-white">
-                {Object.values(filters).filter((s) => s.size > 0).length}
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => setCompact((p) => !p)}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-              compact
-                ? "border-blue-300 bg-blue-50 text-blue-700"
-                : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
-            }`}
-          >
-            <Rows3 className="h-3.5 w-3.5" />
-            Compact
-          </button>
-        </div>
-        {hasActiveFilters && (
-          <p className="text-xs text-gray-500">
-            Showing {processedApplicants.length} of {applicants.length} applicant{applicants.length !== 1 ? "s" : ""}
-          </p>
-        )}
-      </div>
-
-      {/* Filter bar */}
-      {showFilters && (
-        <FilterBar
-          questions={questions}
-          filters={filters}
-          onToggle={toggleFilter}
-          onClearAll={clearAllFilters}
-        />
-      )}
-
-      {/* Table */}
-      <div ref={tableRef} className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50">
-              <th className="sticky left-0 z-10 bg-gray-50 px-4 py-3 text-left min-w-[180px]">
-                <button
-                  type="button"
-                  onClick={() => handleSort("_name")}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
-                >
-                  Applicant
-                  <SortIcon columnId="_name" />
-                </button>
-              </th>
-              {questions.map((q) => (
-                <th
-                  key={q.id}
-                  ref={(el) => { colRefs.current[q.id] = el; }}
-                  title={q.text}
-                  className="px-4 py-3 text-left min-w-[200px]"
-                >
+  if (viewMode === "table") {
+    return (
+      <div className="space-y-4">
+        {/* Table toggle back */}
+        <button
+          type="button"
+          onClick={() => setViewMode("by-question")}
+          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+        >
+          ← Back to question view
+        </button>
+        {/* Old table view  */}
+        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50">
+                <th className="sticky left-0 z-10 bg-gray-50 px-4 py-3 text-left min-w-[180px]">
                   <button
                     type="button"
-                    onClick={() => handleSort(q.id)}
+                    onClick={() => handleSort("_name")}
                     className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
                   >
-                    {truncate(q.text, 30)}
-                    <SortIcon columnId={q.id} />
+                    Applicant
+                    <SortIcon columnId="_name" />
                   </button>
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {processedApplicants.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={questions.length + 1}
-                  className="px-4 py-8 text-center text-sm text-gray-400 italic"
-                >
-                  No applicants match the current filters.
-                </td>
+                {questions.map((q) => (
+                  <th
+                    key={q.id}
+                    title={q.text}
+                    className="px-4 py-3 text-left min-w-[180px] max-w-[220px]"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSort(q.id)}
+                      className="inline-flex w-full items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+                    >
+                      <span className="truncate">{q.text}</span>
+                      <SortIcon columnId={q.id} />
+                    </button>
+                  </th>
+                ))}
               </tr>
-            ) : (
-              processedApplicants.map((ap) => {
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {processedApplicants.map((ap) => {
                 const answerMap = new Map(
                   ap.answers.map((a) => [a.question_id, a]),
                 );
-
                 return (
                   <tr key={ap.applicant_id} className="hover:bg-gray-50/50">
-                    {/* Sticky applicant name */}
                     <td className="sticky left-0 z-10 bg-white px-4 py-3 font-medium text-gray-900 border-r border-gray-100">
-                      <span>{ap.applicant_name || "Unnamed"}</span>
-                      {ap.error && (
-                        <span className="ml-2 inline-flex items-center rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-xs text-red-700">
-                          Has error
-                        </span>
-                      )}
+                      {ap.applicant_name || "Unnamed"}
                     </td>
-
-                    {/* One cell per question */}
                     {questions.map((q) => {
                       const a = answerMap.get(q.id);
-                      const cellKey = `${ap.applicant_id}:${q.id}`;
-                      const isExpanded = expandedCell === cellKey;
-
-                      if (!a) {
+                      if (!a)
                         return (
-                          <td
-                            key={q.id}
-                            className="px-4 py-3 text-gray-400 italic text-xs"
-                          >
+                          <td key={q.id} className="px-4 py-3 text-gray-400 italic text-xs">
                             —
                           </td>
                         );
-                      }
-
                       return (
-                        <td key={q.id} className="px-4 py-3 align-top">
-                          <button
-                            type="button"
-                            onClick={() => toggleCell(cellKey)}
-                            className="w-full text-left"
-                          >
-                            <div className="flex items-start gap-2">
-                              <span
-                                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${confidenceDot[a.confidence]}`}
-                                title={confidenceLabel[a.confidence]}
-                              />
-                              <span className="text-sm text-gray-700">
-                                {a.answer ? (
-                                  truncate(a.answer, compact ? 60 : 80)
-                                ) : (
-                                  <span className="italic text-gray-400">
-                                    Not found
-                                  </span>
-                                )}
-                              </span>
-                            </div>
-                          </button>
-
-                          {/* Expanded detail — hidden in compact mode unless explicitly opened */}
-                          {isExpanded && !compact && a.answer && (
-                            <div className="mt-2 space-y-2 rounded-md border border-gray-100 bg-gray-50 p-3">
-                              <ConfidenceBadge confidence={a.confidence} />
-                              <p className="text-sm text-gray-700">
-                                {a.answer}
-                              </p>
-                              {a.source_document && (
-                                <p className="flex items-center gap-1.5 text-xs text-gray-500">
-                                  <ExternalLink className="h-3 w-3 shrink-0" />
-                                  {a.source_document}
-                                  {a.source_page != null &&
-                                    ` · p.${a.source_page}`}
-                                </p>
-                              )}
-                              {a.quote && (
-                                <div className="rounded-md bg-white border border-gray-100 px-3 py-2">
-                                  <p className="text-xs font-mono text-gray-600 leading-relaxed whitespace-pre-wrap">
-                                    {a.quote}
-                                  </p>
-                                </div>
-                              )}
-                              {a.search_notes && (
-                                <p className="text-xs text-gray-500 leading-relaxed">
-                                  <span className="font-medium text-gray-600">
-                                    {a.confidence === "inferred"
-                                      ? "Reasoning: "
-                                      : a.confidence === "not_found"
-                                        ? "Search note: "
-                                        : "Note: "}
-                                  </span>
-                                  {a.search_notes}
-                                </p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Compact expanded — just badge + source, no quote */}
-                          {isExpanded && compact && (
-                            <div className="mt-2 space-y-1.5 rounded-md border border-gray-100 bg-gray-50 p-2">
-                              <ConfidenceBadge confidence={a.confidence} />
-                              {a.source_document && (
-                                <p className="flex items-center gap-1.5 text-xs text-gray-500">
-                                  <ExternalLink className="h-3 w-3 shrink-0" />
-                                  {a.source_document}
-                                  {a.source_page != null &&
-                                    ` · p.${a.source_page}`}
-                                </p>
-                              )}
-                            </div>
-                          )}
+                        <td key={q.id} className="px-4 py-3 text-sm text-gray-700">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`h-2 w-2 rounded-full ${confidenceDot[a.confidence]}`} />
+                            <span>{a.answer ?? "Not found"}</span>
+                          </div>
                         </td>
                       );
                     })}
                   </tr>
                 );
-              })
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // By-question view (default)
+  return (
+    <div className="flex gap-6">
+      {/* Left sidebar: questions */}
+      <div className="w-80 shrink-0 bg-gray-50 rounded-lg border border-gray-200 p-4 max-h-[70vh] overflow-y-auto">
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">
+          {labels.units === "applications"
+            ? "Applications"
+            : labels.units === "reports"
+              ? "Reports"
+              : "Applicants"}
+        </h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Across {applicants.length} {labels.units}
+        </p>
+        <div className="space-y-1">
+          {questions.map((q) => {
+            const isSelected = q.id === selectedQuestionId;
+            const c = counts.find((c) => c.questionId === q.id);
+            return (
+              <button
+                key={q.id}
+                type="button"
+                onClick={() => setSelectedQuestionId(q.id)}
+                className={`w-full text-left rounded-md px-3 py-2.5 text-xs transition ${
+                  isSelected
+                    ? "bg-blue-50 border-l-4 border-blue-600 text-gray-900"
+                    : "hover:bg-gray-100 text-gray-700"
+                }`}
+              >
+                <p className="font-medium leading-snug mb-1">{q.text}</p>
+                {c && (
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.found}`} />
+                      <span className="font-medium text-emerald-700">{c.found}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.inferred}`} />
+                      <span className="font-medium text-amber-700">{c.inferred}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.not_found}`} />
+                      <span className="font-medium text-gray-500">{c.notFound}</span>
+                    </span>
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={() => setViewMode("table")}
+          className="mt-6 w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium text-center hover:bg-blue-50 rounded-md transition"
+        >
+          Show table view
+        </button>
+      </div>
+
+      {/* Right panel: applicant cards for selected question */}
+      <div className="flex-1 max-h-[70vh] overflow-y-auto">
+        {selectedQuestion && (
+          <div className="space-y-3">
+            <div className="sticky top-0 bg-white pt-px pb-4 border-b border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900 leading-snug">
+                {selectedQuestion.text}
+              </h2>
+              {(() => {
+                const c = counts.find((c) => c.questionId === selectedQuestion.id);
+                return c ? (
+                  <div className="mt-2 flex items-center gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.found}`} />
+                      <span className="text-emerald-700">{c.found} found</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.inferred}`} />
+                      <span className="text-amber-700">{c.inferred} inferred</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.not_found}`} />
+                      <span className="text-gray-500">{c.notFound} not found</span>
+                    </span>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+
+            {/* Filter chips */}
+            <div className="flex gap-1.5">
+              {(["found", "inferred", "not_found"] as Confidence[]).map((conf) => {
+                const on = selectedConfidences.has(conf);
+                return (
+                  <button
+                    key={conf}
+                    type="button"
+                    onClick={() => toggleConfidence(conf)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                      on
+                        ? confidenceColor[conf]
+                        : "border-gray-200 bg-white text-gray-400 hover:border-gray-300 hover:text-gray-600"
+                    }`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        on ? confidenceDot[conf] : "bg-gray-300"
+                      }`}
+                    />
+                    {confidenceLabel[conf]}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedConfidences.size < 3 && (
+              <p className="text-xs text-gray-500">
+                Showing {filteredApplicants.length} of {applicants.length}
+              </p>
             )}
-          </tbody>
-        </table>
+
+            {/* Applicant cards */}
+            <div className="space-y-3 pr-4">
+              {filteredApplicants.length === 0 ? (
+                <p className="text-sm text-gray-400 italic py-8 text-center">
+                  No {labels.units} match the selected filters.
+                </p>
+              ) : (
+                filteredApplicants.map((ap) => {
+                  const answer = ap.answers.find(
+                    (a) => a.question_id === selectedQuestion.id,
+                  );
+                  return (
+                    <div
+                      key={ap.applicant_id}
+                      className="border-b border-gray-100 pb-6 last:border-0 last:pb-0"
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <p className="text-base font-semibold text-gray-900">
+                          {ap.applicant_name || "Unnamed"}
+                        </p>
+                        {answer && <ConfidenceBadge confidence={answer.confidence} />}
+                      </div>
+                      {answer?.answer ? (
+                        <p className="text-sm text-gray-800 leading-relaxed mb-2">
+                          {answer.answer}
+                        </p>
+                      ) : (
+                        <p className="text-sm italic text-gray-400 mb-2">
+                          Not found in any document
+                        </p>
+                      )}
+                      {answer?.source_document && (
+                        <p className="flex items-center gap-1.5 text-xs text-gray-500 mb-2">
+                          <ExternalLink className="h-3 w-3 shrink-0" />
+                          {answer.source_document}
+                          {answer.source_page != null && ` · p.${answer.source_page}`}
+                        </p>
+                      )}
+                      {answer?.quote && (
+                        <details className="group">
+                          <summary className="cursor-pointer text-xs font-medium text-blue-600 hover:text-blue-700">
+                            View exact quote
+                          </summary>
+                          <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 px-3 py-2">
+                            <p className="text-xs font-mono text-gray-600 leading-relaxed whitespace-pre-wrap">
+                              {answer.quote}
+                            </p>
+                          </div>
+                        </details>
+                      )}
+                      {answer?.search_notes && (
+                        <p className="text-xs italic text-gray-600 mt-2">
+                          <span className="font-medium">
+                            {answer.confidence === "inferred"
+                              ? "Reasoning: "
+                              : "Search note: "}
+                          </span>
+                          {answer.search_notes}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Table view toggle */}
+            <button
+              type="button"
+              onClick={() => setViewMode("table")}
+              className="sticky bottom-0 mt-6 py-2 px-3 text-xs text-blue-600 hover:text-blue-700 font-medium bg-white rounded-md transition hover:bg-blue-50 border border-gray-200"
+            >
+              Show table view
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
