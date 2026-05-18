@@ -11,6 +11,8 @@ import {
   X,
 } from "lucide-react";
 import type { ApplicantInput } from "@/types";
+import { getWorkflowLabels } from "@/lib/workflow-labels";
+import { detectQuarter } from "@/lib/quarter-detect";
 import { GuidanceCard } from "./GuidanceCard";
 
 /**
@@ -37,6 +39,9 @@ interface ApplicantUploadProps {
   onModeChange: (mode: "single" | "batch") => void;
   applicants: ApplicantInput[];
   onChange: (applicants: ApplicantInput[]) => void;
+  // Drives all workflow-aware copy on this page (placeholders, headers,
+  // mode toggle labels, etc.). Pass-through from the page-level state.
+  templateId?: string | null;
 }
 
 function newId(): string {
@@ -62,7 +67,10 @@ export function ApplicantUpload({
   onModeChange,
   applicants,
   onChange,
+  templateId,
 }: ApplicantUploadProps) {
+  const labels = getWorkflowLabels(templateId);
+
   // Stable id for the placeholder we show in single mode before the user
   // has typed anything. Once they interact, we promote it into real state.
   const [pendingSingleId] = useState(() => newId());
@@ -95,30 +103,27 @@ export function ApplicantUpload({
       <header className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">
-            Upload applications
+            {labels.uploadHeader}
           </h2>
           <p className="mt-1 text-sm text-gray-600">
-            Drop in everything one applicant submitted — registration,
-            profile, audit, proposal. DOCex reads them together.
+            {labels.uploadDescription}
           </p>
         </div>
-        <ModeToggle mode={mode} onChange={onModeChange} />
+        <ModeToggle
+          mode={mode}
+          onChange={onModeChange}
+          singleLabel={labels.singleModeLabel}
+          batchLabel={labels.batchModeLabel}
+        />
       </header>
 
       {mode === "single" ? (
-        <GuidanceCard title="What to upload">
-          Drop in every document the applicant submitted in one go —
-          registration certificate, organisational profile, audit report,
-          proposal, financials. DOCex reads the full bundle together so an
-          answer found in one document can be cross-checked against the
-          others.
+        <GuidanceCard title={labels.singleGuidanceTitle}>
+          {labels.singleGuidanceBody}
         </GuidanceCard>
       ) : (
-        <GuidanceCard title="How batch mode works">
-          Add each applicant and drop in their full document bundle.
-          DOCex screens every organisation against your questions and
-          returns one row per applicant — built for side-by-side comparison.
-          Use this when you have many applications to get through.
+        <GuidanceCard title={labels.batchGuidanceTitle}>
+          {labels.batchGuidanceBody}
         </GuidanceCard>
       )}
 
@@ -126,6 +131,7 @@ export function ApplicantUpload({
         <SingleApplicantView
           applicant={singleApplicant}
           onUpdate={(patch) => updateApplicant(singleApplicant.id, patch)}
+          namePlaceholder={labels.unitNamePlaceholder}
         />
       ) : (
         <BatchApplicantView
@@ -133,6 +139,10 @@ export function ApplicantUpload({
           onUpdate={updateApplicant}
           onRemove={removeApplicant}
           onAdd={addApplicant}
+          namePlaceholder={labels.unitNamePlaceholder}
+          addLabel={labels.addUnitButton}
+          emptyHint={labels.emptyBatchHint}
+          unitSingular={labels.unitSingular}
         />
       )}
     </section>
@@ -144,19 +154,23 @@ export function ApplicantUpload({
 function ModeToggle({
   mode,
   onChange,
+  singleLabel,
+  batchLabel,
 }: {
   mode: "single" | "batch";
   onChange: (m: "single" | "batch") => void;
+  singleLabel: string;
+  batchLabel: string;
 }) {
   return (
     <div className="inline-flex shrink-0 rounded-lg border border-gray-200 bg-gray-50 p-1">
       <ToggleButton active={mode === "single"} onClick={() => onChange("single")}>
         <User className="h-4 w-4" />
-        One applicant
+        {singleLabel}
       </ToggleButton>
       <ToggleButton active={mode === "batch"} onClick={() => onChange("batch")}>
         <Users className="h-4 w-4" />
-        Batch
+        {batchLabel}
       </ToggleButton>
     </div>
   );
@@ -191,9 +205,11 @@ function ToggleButton({
 function SingleApplicantView({
   applicant,
   onUpdate,
+  namePlaceholder,
 }: {
   applicant: ApplicantInput;
   onUpdate: (patch: Partial<ApplicantInput>) => void;
+  namePlaceholder: string;
 }) {
   return (
     <div className="space-y-4">
@@ -201,7 +217,7 @@ function SingleApplicantView({
         type="text"
         value={applicant.name}
         onChange={(e) => onUpdate({ name: e.target.value })}
-        placeholder="Applicant organisation name"
+        placeholder={namePlaceholder}
         className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-base font-medium text-gray-900 placeholder:text-gray-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
       />
       <DropZone
@@ -219,19 +235,25 @@ function BatchApplicantView({
   onUpdate,
   onRemove,
   onAdd,
+  namePlaceholder,
+  addLabel,
+  emptyHint,
+  unitSingular,
 }: {
   applicants: ApplicantInput[];
   onUpdate: (id: string, patch: Partial<ApplicantInput>) => void;
   onRemove: (id: string) => void;
   onAdd: () => void;
+  namePlaceholder: string;
+  addLabel: string;
+  emptyHint: string;
+  unitSingular: string;
 }) {
   return (
     <div className="space-y-4">
       {applicants.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center">
-          <p className="text-sm text-gray-500">
-            No applicants yet. Add the first one to get started.
-          </p>
+          <p className="text-sm text-gray-500">{emptyHint}</p>
         </div>
       ) : (
         applicants.map((a, index) => (
@@ -241,6 +263,8 @@ function BatchApplicantView({
             applicant={a}
             onUpdate={(patch) => onUpdate(a.id, patch)}
             onRemove={() => onRemove(a.id)}
+            namePlaceholder={namePlaceholder}
+            unitSingular={unitSingular}
           />
         ))
       )}
@@ -250,7 +274,7 @@ function BatchApplicantView({
         className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:border-blue-600 hover:text-blue-700"
       >
         <Plus className="h-4 w-4" />
-        Add applicant
+        {addLabel}
       </button>
     </div>
   );
@@ -261,11 +285,15 @@ function ApplicantCard({
   applicant,
   onUpdate,
   onRemove,
+  namePlaceholder,
+  unitSingular,
 }: {
   index: number;
   applicant: ApplicantInput;
   onUpdate: (patch: Partial<ApplicantInput>) => void;
   onRemove: () => void;
+  namePlaceholder: string;
+  unitSingular: string;
 }) {
   return (
     <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
@@ -277,14 +305,14 @@ function ApplicantCard({
           type="text"
           value={applicant.name}
           onChange={(e) => onUpdate({ name: e.target.value })}
-          placeholder="Applicant organisation name"
+          placeholder={namePlaceholder}
           className="flex-1 border-0 bg-transparent text-base font-medium text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
         />
         <button
           type="button"
           onClick={onRemove}
           className="shrink-0 rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-          aria-label={`Remove applicant ${index + 1}`}
+          aria-label={`Remove ${unitSingular} ${index + 1}`}
         >
           <X className="h-4 w-4" />
         </button>
@@ -395,26 +423,44 @@ function DropZone({
             <span>{formatBytes(totalBytes)}</span>
           </div>
           <ul className="divide-y divide-gray-100">
-            {files.map((f) => (
-              <li
-                key={`${f.name}:${f.size}`}
-                className="flex items-center gap-3 px-3 py-2"
-              >
-                <FileText className="h-4 w-4 shrink-0 text-gray-400" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-gray-900">{f.name}</p>
-                  <p className="text-xs text-gray-500">{formatBytes(f.size)}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeFile(f.name, f.size)}
-                  className="shrink-0 rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-                  aria-label={`Remove ${f.name}`}
+            {files.map((f) => {
+              // Cheap regex over the filename — no API call, no state.
+              // Returns null if we can't tell, in which case we just don't
+              // render a chip. The reviewer can still proceed.
+              const quarter = detectQuarter(f.name);
+              return (
+                <li
+                  key={`${f.name}:${f.size}`}
+                  className="flex items-center gap-3 px-3 py-2"
                 >
-                  <X className="h-4 w-4" />
-                </button>
-              </li>
-            ))}
+                  <FileText className="h-4 w-4 shrink-0 text-gray-400" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-gray-900">{f.name}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs text-gray-500">
+                        {formatBytes(f.size)}
+                      </p>
+                      {quarter && (
+                        <span
+                          title={`Detected: ${quarter.source}`}
+                          className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 ring-1 ring-blue-100"
+                        >
+                          {quarter.label}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(f.name, f.size)}
+                    className="shrink-0 rounded-md p-1 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
+                    aria-label={`Remove ${f.name}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

@@ -58,6 +58,11 @@ class FollowupRequest(BaseModel):
     """Request body for POST /draft-followups."""
     applicants: list[FollowupApplicantIn]
     questions: list[QuestionIn]
+    # Optional. Lets the drafter adapt vocabulary and ask shape to the
+    # workflow — e.g. for quarterly-report-review, say "partner" instead
+    # of "applicant" and "addendum for next cycle" instead of "resubmit
+    # before approval". See _build_followup_system in api/main.py.
+    template_id: Optional[str] = None
 
 
 class FollowupDraft(BaseModel):

@@ -8,6 +8,7 @@ import { QuestionBuilder } from "@/components/QuestionBuilder";
 import { ApplicantUpload } from "@/components/ApplicantUpload";
 import { ExtractionTable } from "@/components/ExtractionTable";
 import { extractSingle, extractBatch } from "@/lib/api";
+import { getWorkflowLabels } from "@/lib/workflow-labels";
 import type {
   Question,
   ApplicantInput,
@@ -17,16 +18,25 @@ import type {
 
 /* ─── Step bar ───────────────────────────────────────────────────────────────*/
 
-const STEPS = [
-  { n: 1, label: "Define questions" },
-  { n: 2, label: "Add applicants" },
-  { n: 3, label: "Review results" },
-];
+// Step labels are workflow-aware — they're built inside the component
+// from the active template's labels. Step 1 and step 3 stay neutral;
+// only step 2 adapts ("Add applicants" / "Add reports" / "Add applications").
 
-function StepBar({ current }: { current: number }) {
+function StepBar({
+  current,
+  step2Label,
+}: {
+  current: number;
+  step2Label: string;
+}) {
+  const steps = [
+    { n: 1, label: "Define questions" },
+    { n: 2, label: step2Label },
+    { n: 3, label: "Review results" },
+  ];
   return (
     <div className="flex items-center">
-      {STEPS.map((step, idx) => {
+      {steps.map((step, idx) => {
         const done = step.n < current;
         const active = step.n === current;
         return (
@@ -50,7 +60,7 @@ function StepBar({ current }: { current: number }) {
                 {step.label}
               </span>
             </div>
-            {idx < STEPS.length - 1 && (
+            {idx < steps.length - 1 && (
               <div
                 className={cn(
                   "flex-1 h-px mx-4 transition-colors",
@@ -63,27 +73,6 @@ function StepBar({ current }: { current: number }) {
       })}
     </div>
   );
-}
-
-/* ─── Workflow labels helper ──────────────────────────────────────────────────*/
-
-function getWorkflowLabels(templateId: string | null | undefined) {
-  if (templateId === "quarterly-report-review") {
-    return {
-      stepTwoButton: "Analyse reports",
-      stepThreeLoadingTitle: "Reading reports...",
-    };
-  }
-  if (templateId === "subaward-application-review") {
-    return {
-      stepTwoButton: "Review applications",
-      stepThreeLoadingTitle: "Reading applications...",
-    };
-  }
-  return {
-    stepTwoButton: "Run review",
-    stepThreeLoadingTitle: "Reading documents...",
-  };
 }
 
 /* ─── Page ───────────────────────────────────────────────────────────────────*/
@@ -177,7 +166,7 @@ export default function AppPage() {
           </Link>
 
           <div className="flex-1 max-w-md">
-            <StepBar current={step} />
+            <StepBar current={step} step2Label={workflowLabels.step2Label} />
           </div>
 
           <div className="w-28" />
@@ -203,6 +192,7 @@ export default function AppPage() {
             onModeChange={setMode}
             applicants={applicants}
             onChange={setApplicants}
+            templateId={templateId}
           />
         )}
 
@@ -217,7 +207,9 @@ export default function AppPage() {
                 </p>
                 <p className="mt-2 text-sm text-gray-500">
                   This usually takes 1–2 minutes
-                  {readyCount > 1 ? ` for ${readyCount} applicants` : ""}.
+                  {readyCount > 1
+                    ? ` for ${readyCount} ${workflowLabels.unitPlural}`
+                    : ""}.
                 </p>
               </div>
             )}

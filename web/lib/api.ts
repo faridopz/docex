@@ -5,6 +5,7 @@ import type {
   Question,
   SingleExtractionResponse,
 } from "@/types";
+import { assignBucket } from "@/lib/buckets";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -80,11 +81,20 @@ export interface FollowupDraft {
 export async function draftFollowups(
   applicants: ApplicantExtraction[],
   questions: Question[],
+  templateId?: string | null,
 ): Promise<FollowupDraft[]> {
   const res = await fetch(`${BASE}/draft-followups`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ applicants, questions }),
+    // template_id (snake_case) matches the Pydantic schema on the backend.
+    // The drafter uses it to pick the right system prompt — for
+    // quarterly-report-review it says "partner" not "applicant", and
+    // asks for an addendum instead of a resubmission.
+    body: JSON.stringify({
+      applicants,
+      questions,
+      template_id: templateId ?? null,
+    }),
   });
   if (!res.ok) {
     const detail = await res.text();
@@ -124,9 +134,13 @@ export async function exportToExcel(
     (templateId ? `docex-${templateId}-results.xlsx` : "docex-results.xlsx");
   const XLSX = await import("xlsx");
 
-  // Build rows: header + one row per applicant
+  // Build rows: header + one row per applicant.
+  // Bucket + justification go in their own columns up front so an auditor
+  // reading the Excel sees the summary classification before the detail.
   const header = [
     "Applicant",
+    "Bucket",
+    "Bucket justification",
     "Documents read",
     ...questions.flatMap((q) => [
       q.text,                        // answer column
@@ -139,6 +153,7 @@ export async function exportToExcel(
 
   const rows = applicants.map((ap) => {
     const answerMap = new Map(ap.answers.map((a) => [a.question_id, a]));
+    const assignment = assignBucket(ap.answers);
 
     const cells = questions.flatMap((q) => {
       const a = answerMap.get(q.id);
@@ -158,6 +173,8 @@ export async function exportToExcel(
 
     return [
       ap.applicant_name,
+      assignment.bucket.label,
+      assignment.justification,
       ap.documents.join(", "),
       ...cells,
       ap.error ?? "",

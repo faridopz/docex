@@ -13,10 +13,21 @@ tokens, not the instructions.
 """
 from __future__ import annotations
 
+import concurrent.futures
+import logging
+import time
+import traceback
 from typing import Optional
 
 import anthropic
 from models import ApplicantExtraction, ExtractionAnswer, Question
+
+logger = logging.getLogger(__name__)
+
+# Tune this if you start hitting Anthropic rate limits. The demo workload
+# (3–5 partners) sits well under, but TA Connect's full 20-partner cycle
+# may want this lowered or made adaptive.
+_BATCH_MAX_PARALLEL = 5
 
 _client = anthropic.Anthropic()
 
@@ -43,8 +54,21 @@ read everything first, then answer.
 For every question, return an object with:
 - question_id      — the id provided in brackets in the question list
 - question_text    — the question as given
-- answer           — the extracted answer in plain language, concise
-                     (one sentence or a short list — never a paragraph)
+- answer           — the extracted answer in plain language.
+                     Formatting rules:
+                       • For a single fact, write ONE short sentence.
+                         e.g. "The organisation is registered with CAC."
+                       • For multiple items (a list of states, achievements,
+                         activities, indicators, risks, etc.), put EACH ITEM
+                         ON ITS OWN LINE prefixed with "- ".
+                         e.g. "- Kano\n- Lagos\n- Borno"
+                              "- Enrolled 64,981 women in G-ANC\n"
+                              "- ANC 4th visit attendance up 34% to 50%\n"
+                              "- IPT4 uptake up 27% to 58%"
+                       • Do NOT use inline "(1)... (2)... (3)..." numbering
+                         pretending to be a list. Use real newlines.
+                       • Never write a paragraph. Never explain in prose
+                         what should be a list.
 - confidence       — one of: "found", "inferred", "not_found"
 - source_document  — the exact filename you took the answer from
 - quote            — the verbatim excerpt from that document that supports
@@ -208,9 +232,12 @@ strictly on the documents above. Return one answer object per question, using
 the question_id from the brackets above. Use exact filenames as the
 source_document. Quote verbatim."""
 
+    # max_tokens sized for 20 structured answers with quotes + search_notes.
+    # Each answer can be 300–600 tokens; with 20 questions we need headroom
+    # well past the previous 8096 cap, which silently truncated big runs.
     response = _client.messages.parse(
         model="claude-sonnet-4-6",
-        max_tokens=8096,
+        max_tokens=16384,
         system=[
             {
                 "type": "text",
@@ -227,8 +254,12 @@ source_document. Quote verbatim."""
     )
 
     if response.parsed_output is None:
+        # Bubble up everything we can see — stop_reason tells us whether we
+        # hit max_tokens, the model refused, or the schema couldn't be parsed.
         raise ValueError(
-            f"Model could not parse output. Stop reason: {response.stop_reason}"
+            f"Model could not parse output. Stop reason: {response.stop_reason}. "
+            f"Usage: in={getattr(response.usage, 'input_tokens', '?')} "
+            f"out={getattr(response.usage, 'output_tokens', '?')}."
         )
 
     # Fill in question_text from our questions list in case Claude omits it
@@ -278,12 +309,25 @@ def extract_applicant(
             answers=answers,
         )
     except Exception as exc:
+        # Log to the uvicorn terminal so the user actually sees what failed.
+        # The exception is also bubbled into the response so the UI can show it.
+        logger.error(
+            "Extraction failed for applicant '%s' (id=%s): %s\n%s",
+            applicant_name,
+            applicant_id,
+            exc,
+            traceback.format_exc(),
+        )
+        print(
+            f"\n[DOCex] Extraction failed for '{applicant_name}': {type(exc).__name__}: {exc}\n",
+            flush=True,
+        )
         return ApplicantExtraction(
             applicant_id=applicant_id,
             applicant_name=applicant_name,
             documents=filenames,
             answers=[],
-            error=str(exc),
+            error=f"{type(exc).__name__}: {exc}",
         )
 
 
@@ -294,20 +338,66 @@ def extract_batch(
 ) -> list[ApplicantExtraction]:
     """
     Run extraction for multiple applicants against the same question set.
-    The system prompt is cached after the first call — subsequent applicants
-    only pay for their document tokens.
+
+    Strategy: HYBRID warmup + parallel fan-out.
+      - The first applicant runs alone and writes the prompt cache on the
+        Anthropic side (the system prompt is heavy and has cache_control:
+        ephemeral set in extract_from_documents).
+      - The remaining applicants run concurrently in a small thread pool.
+        They all benefit from the cached system prompt, so each call only
+        pays for its own document tokens AND completes much faster.
+      - With N=3 applicants and ~60s per call, wall-clock drops from
+        ~180s (sequential) to ~75-90s (1 warmup + 2 parallel).
+      - The threads are I/O-bound (waiting on the HTTPS round-trip to
+        Anthropic), so the GIL is not a bottleneck.
 
     The same context string is applied to every applicant in the batch,
     so a single funder description shapes interpretation across the run.
+    Output order matches input order.
     """
-    results = []
-    for applicant in applicants:
-        result = extract_applicant(
+    if not applicants:
+        return []
+
+    def _run(applicant: dict) -> ApplicantExtraction:
+        return extract_applicant(
             applicant_id=applicant["id"],
             applicant_name=applicant["name"],
             documents=applicant["documents"],
             questions=questions,
             context=context,
         )
-        results.append(result)
-    return results
+
+    n = len(applicants)
+    if n == 1:
+        return [_run(applicants[0])]
+
+    parallel_workers = min(_BATCH_MAX_PARALLEL, n - 1)
+    print(
+        f"[DOCex] Batch extract: {n} applicants "
+        f"(1 cache warmup, then {n - 1} parallel across {parallel_workers} workers)",
+        flush=True,
+    )
+
+    started = time.monotonic()
+
+    # 1) Warm the prompt cache with the first applicant
+    first = _run(applicants[0])
+    print(
+        f"[DOCex] Warmup done in {time.monotonic() - started:.1f}s. "
+        f"Fanning out the remaining {n - 1}...",
+        flush=True,
+    )
+
+    # 2) Fan out the rest — concurrent.futures.map preserves input order
+    fanout_started = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_workers) as ex:
+        rest = list(ex.map(_run, applicants[1:]))
+
+    print(
+        f"[DOCex] Batch complete: {n} applicants in "
+        f"{time.monotonic() - started:.1f}s "
+        f"(fan-out alone: {time.monotonic() - fanout_started:.1f}s).",
+        flush=True,
+    )
+
+    return [first] + rest

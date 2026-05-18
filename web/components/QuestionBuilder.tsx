@@ -1,9 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { Lightbulb, Plus, X, LayoutTemplate, Check } from "lucide-react";
+import {
+  Lightbulb,
+  Plus,
+  X,
+  Check,
+  ClipboardList,
+  LineChart,
+  PenLine,
+  GitCompare,
+} from "lucide-react";
 import type { Question } from "@/types";
 import { QUESTION_TEMPLATES } from "@/lib/templates";
+
+// Per-template visual treatment for the chooser cards. Keyed by template id
+// so the icon stays the same wherever a template is referenced.
+const TEMPLATE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  "subaward-application-review": ClipboardList,
+  "quarterly-report-review": LineChart,
+  "financial-service-reconciliation": GitCompare,
+};
 
 /**
  * QuestionBuilder
@@ -90,6 +107,19 @@ export function QuestionBuilder({
     onChange([...questions, { id: newId(), text }]);
   };
 
+  // True when the current context value is empty or exactly equals some
+  // template's defaultContext — i.e. the user hasn't typed anything custom
+  // and we're free to overwrite it on template switch. If the user has
+  // edited the context at all, this returns false and we leave it alone.
+  const contextIsUntouched = () => {
+    const current = (context ?? "").trim();
+    if (current.length === 0) return true;
+    return QUESTION_TEMPLATES.some(
+      (t) =>
+        t.defaultContext && t.defaultContext.trim() === current,
+    );
+  };
+
   const swapTemplate = (templateId: string) => {
     if (templateId === activeTemplateId) return; // already active
 
@@ -117,6 +147,12 @@ export function QuestionBuilder({
     setActiveTemplateId(templateId);
     if (onTemplateChange) onTemplateChange(templateId);
 
+    // Offer the template's default context paragraph as a starter — only
+    // when the user hasn't typed their own. Their custom context is sacred.
+    if (next.defaultContext && onContextChange && contextIsUntouched()) {
+      onContextChange(next.defaultContext);
+    }
+
     const msg = previous
       ? `Switched to ${next.name}. ${previous.name} questions removed; your custom questions are preserved.`
       : `Loaded ${additions.length} question${additions.length !== 1 ? "s" : ""} from ${next.name}. You can edit, remove, or add more.`;
@@ -124,8 +160,48 @@ export function QuestionBuilder({
     setTimeout(() => setTemplateMessage(null), 5000);
   };
 
+  const clearTemplate = () => {
+    if (activeTemplateId === null) return;
+    const previous = QUESTION_TEMPLATES.find((t) => t.id === activeTemplateId);
+    if (!previous) {
+      setActiveTemplateId(null);
+      if (onTemplateChange) onTemplateChange(null);
+      return;
+    }
+    const previousTexts = new Set(
+      previous.questions.map((q) => q.text.trim().toLowerCase()),
+    );
+    // Keep customs, drop template questions
+    const survivors = questions.filter(
+      (q) => !previousTexts.has(q.text.trim().toLowerCase()),
+    );
+    onChange(survivors);
+    setActiveTemplateId(null);
+    if (onTemplateChange) onTemplateChange(null);
+
+    // If the context was a template pre-fill, clear it — leave the user's
+    // own writing alone.
+    if (onContextChange && contextIsUntouched()) {
+      onContextChange("");
+    }
+
+    setTemplateMessage(
+      `Switched to custom. ${previous.name} questions removed; your custom questions are preserved.`,
+    );
+    setTimeout(() => setTemplateMessage(null), 5000);
+  };
+
   return (
     <section className="space-y-10">
+      {/* Workflow chooser — promoted to the top so it frames everything
+          downstream (context, questions, upload, results). */}
+      <TemplateChooser
+        activeTemplateId={activeTemplateId}
+        onSelect={swapTemplate}
+        onSelectCustom={clearTemplate}
+        message={templateMessage}
+      />
+
       {onContextChange && (
         <ContextSection
           context={context ?? ""}
@@ -140,7 +216,9 @@ export function QuestionBuilder({
               What do you want to know?
             </h2>
             <p className="mt-1 text-sm text-gray-600">
-              Add the questions DOCex should answer for every applicant.
+              {activeTemplateId
+                ? "Edit, remove, or add questions. Your changes don't affect the template."
+                : "Add the questions DOCex should answer for every document set."}
             </p>
           </div>
           <span
@@ -154,50 +232,6 @@ export function QuestionBuilder({
           </span>
         </header>
 
-        {/* Template chooser */}
-        <div className="space-y-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
-            Start from a template (optional)
-          </p>
-          <div className="flex flex-wrap gap-3">
-            {QUESTION_TEMPLATES.map((t) => {
-              const isActive = t.id === activeTemplateId;
-
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => swapTemplate(t.id)}
-                  disabled={isActive}
-                  className={`group flex items-start gap-3 rounded-lg border px-4 py-3 text-left transition ${
-                    isActive
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                      : "border-blue-200 bg-blue-50/50 text-blue-800 hover:border-blue-400 hover:bg-blue-50"
-                  } disabled:cursor-default`}
-                >
-                  {isActive ? (
-                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-                  ) : (
-                    <LayoutTemplate className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
-                  )}
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">{t.name}</p>
-                    <p className="mt-0.5 truncate text-xs text-gray-500">
-                      {t.description}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          {templateMessage && (
-            <p className="flex items-center gap-1.5 text-sm text-emerald-700">
-              <Check className="h-3.5 w-3.5 shrink-0" />
-              {templateMessage}
-            </p>
-          )}
-        </div>
-
         <GuidanceCard title="How to write good questions">
           Specific questions get sharper answers.{" "}
           <span className="text-gray-900">
@@ -207,10 +241,8 @@ export function QuestionBuilder({
           <span className="text-gray-500">
             &quot;tell me about their money.&quot;
           </span>{" "}
-          Start from a template above if your review workflow is standard
-          &mdash; you can still edit, remove, or add more. DOCex returns the
-          answer, source document, exact quote, and page number for every
-          question.
+          DOCex returns the answer, source document, exact quote, and page
+          number for every question.
         </GuidanceCard>
 
         {remainingSuggestions.length > 0 && (
@@ -267,6 +299,148 @@ export function QuestionBuilder({
         </button>
       </div>
     </section>
+  );
+}
+
+// ── Template chooser ────────────────────────────────────────────────────────
+
+/**
+ * The workflow selector at the top of Step 1.
+ *
+ * Three equal-weight cards: one per built-in template plus an explicit
+ * "Custom" card. Picking a template loads its questions and adapts the
+ * language across the rest of the wizard ("applicant" → "report" → etc.).
+ * Picking Custom clears any template questions and lets the user write
+ * their own from scratch.
+ */
+function TemplateChooser({
+  activeTemplateId,
+  onSelect,
+  onSelectCustom,
+  message,
+}: {
+  activeTemplateId: string | null;
+  onSelect: (templateId: string) => void;
+  onSelectCustom: () => void;
+  message: string | null;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <h2 className="text-xl font-semibold text-gray-900">
+          Pick your review workflow
+        </h2>
+        <p className="text-sm text-gray-600">
+          Templates pre-load standard questions and adapt the language across
+          the app. You can edit anything afterwards.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {QUESTION_TEMPLATES.map((t) => {
+          const isActive = t.id === activeTemplateId;
+          const Icon = TEMPLATE_ICONS[t.id] ?? ClipboardList;
+          return (
+            <TemplateCard
+              key={t.id}
+              active={isActive}
+              onClick={() => (isActive ? null : onSelect(t.id))}
+              icon={<Icon className="h-5 w-5" />}
+              title={t.name}
+              description={t.description}
+              footer={`${t.questions.length} questions`}
+            />
+          );
+        })}
+        <TemplateCard
+          active={activeTemplateId === null}
+          onClick={onSelectCustom}
+          icon={<PenLine className="h-5 w-5" />}
+          title="Custom"
+          description="Define your own questions from a blank list. Good for one-off reviews."
+          footer="Write your own"
+        />
+      </div>
+
+      {message && (
+        <p className="flex items-center gap-1.5 text-sm text-emerald-700">
+          <Check className="h-3.5 w-3.5 shrink-0" />
+          {message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TemplateCard({
+  active,
+  onClick,
+  icon,
+  title,
+  description,
+  footer,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  footer: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={active}
+      aria-pressed={active}
+      className={`group relative flex h-full flex-col gap-3 rounded-xl border p-4 text-left transition disabled:cursor-default ${
+        active
+          ? "border-emerald-300 bg-emerald-50/70 shadow-sm"
+          : "border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40 hover:shadow-sm"
+      }`}
+    >
+      {/* Top-right indicator */}
+      <span
+        className={`absolute right-3 top-3 inline-flex h-5 w-5 items-center justify-center rounded-full transition ${
+          active
+            ? "bg-emerald-500 text-white"
+            : "border border-gray-200 text-transparent group-hover:border-blue-300"
+        }`}
+        aria-hidden="true"
+      >
+        {active && <Check className="h-3 w-3" strokeWidth={3} />}
+      </span>
+
+      {/* Icon */}
+      <span
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-lg transition ${
+          active
+            ? "bg-emerald-100 text-emerald-700"
+            : "bg-blue-50 text-blue-600 group-hover:bg-blue-100"
+        }`}
+      >
+        {icon}
+      </span>
+
+      {/* Title + description */}
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-gray-900 pr-6">{title}</p>
+        <p className="text-xs leading-relaxed text-gray-600">{description}</p>
+      </div>
+
+      {/* Footer pill */}
+      <div className="mt-auto pt-1">
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            active
+              ? "bg-white text-emerald-700 ring-1 ring-emerald-200"
+              : "bg-gray-100 text-gray-600"
+          }`}
+        >
+          {footer}
+        </span>
+      </div>
+    </button>
   );
 }
 

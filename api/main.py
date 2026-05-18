@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -21,8 +22,30 @@ from typing import Annotated
 import anthropic
 import pdfplumber
 from docx import Document as DocxDocument
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load .env from the project root (sibling of /api). Means the user can paste
+# ANTHROPIC_API_KEY into one file once and never re-export it per shell.
+# override=False so an explicit `export ANTHROPIC_API_KEY=...` in the shell
+# still wins, which matters for CI/CD and one-off testing.
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
+
+# Loud startup check — if the API key is missing, every extraction call will
+# fail with a 401 and the user will only see "3 errors" in the UI. Catch it
+# here so the terminal makes the cause obvious before the first request lands.
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    print(
+        "\n" + "=" * 70 + "\n"
+        "[DOCex] WARNING: ANTHROPIC_API_KEY is not set in this environment.\n"
+        "Every extraction call will fail until you export the key in the\n"
+        "same shell that runs uvicorn, e.g.:\n"
+        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+        "  uvicorn api.main:app --reload --port 8000\n"
+        + "=" * 70 + "\n",
+        flush=True,
+    )
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -74,13 +97,52 @@ def _extract_text(upload: UploadFile) -> str:
         return "\n\n".join(parts).strip()
 
     if name.endswith(".docx"):
+        # Walk the document body in order, capturing both paragraphs AND
+        # table cell text. NGO reports put a lot of the substance (indicator
+        # tables, target-vs-actual tables, financial summaries) in tables —
+        # paragraph-only extraction silently drops most of it.
         doc = DocxDocument(io.BytesIO(raw))
-        return "\n".join(para.text for para in doc.paragraphs).strip()
+        return _docx_to_text(doc).strip()
 
     try:
         return raw.decode("utf-8").strip()
     except UnicodeDecodeError:
         return raw.decode("latin-1").strip()
+
+
+def _docx_to_text(doc: DocxDocument) -> str:
+    """
+    Flatten a docx into plain text including table cells.
+
+    Iterates the body element in document order so paragraphs and tables
+    appear in the right sequence — important when answers depend on the
+    table that immediately follows a heading.
+    """
+    from docx.oxml.ns import qn  # local import keeps top of file clean
+
+    parts: list[str] = []
+    body = doc.element.body
+
+    for child in body.iterchildren():
+        tag = child.tag
+        if tag == qn("w:p"):
+            # Paragraph — read its text
+            text = "".join(t.text or "" for t in child.iter(qn("w:t")))
+            if text.strip():
+                parts.append(text)
+        elif tag == qn("w:tbl"):
+            # Table — read each row as a pipe-separated line so structure
+            # is preserved enough for Claude to recognise tabular data.
+            for row in child.iter(qn("w:tr")):
+                cells: list[str] = []
+                for cell in row.iter(qn("w:tc")):
+                    cell_text = "".join(t.text or "" for t in cell.iter(qn("w:t")))
+                    cells.append(cell_text.strip())
+                if any(cells):
+                    parts.append(" | ".join(cells))
+            parts.append("")  # blank line after each table
+
+    return "\n".join(parts)
 
 
 def _parse_questions(questions_json: str) -> list[Question]:
@@ -231,19 +293,59 @@ async def extract_batch_endpoint(
 
 _followup_client = anthropic.Anthropic()
 
-_FOLLOWUP_SYSTEM = """You draft short follow-up notes for NGO partner screening.
+
+def _build_followup_system(template_id: Optional[str]) -> str:
+    """
+    Return a follow-up drafting system prompt tuned to the workflow.
+
+    The shape is the same across templates (acknowledge → list 2-3 specific
+    gaps → close politely), but the vocabulary and the ask differ:
+      - For application screening, partners are "applicants" and the ask is
+        to submit missing items before assessment can complete.
+      - For quarterly report review, the partners are existing collaborators
+        and the ask is for an addendum or for next reporting cycle.
+
+    Mirrors the workflow-labels file used on the frontend.
+    """
+    if template_id == "quarterly-report-review":
+        return """You draft short follow-up notes about partner quarterly progress reports.
+
+The user will give you the partner's name and a summary of gaps a reviewer
+flagged — questions where the answer was "not_found" or confidence was
+"inferred". The partner is an EXISTING collaborator, not a new applicant.
+
+Write a SHORT follow-up note (2-3 sentences, never more):
+- Opens by acknowledging the partner's quarterly submission (not "application")
+- Names 2-3 specific gaps with the missing data point or section
+- Closes with a clear, low-friction ask: a brief addendum, or that the gap
+  be addressed in the next reporting cycle
+- Maintains a respectful, collegial tone — this is a continuing partnership
+
+DO NOT:
+- Use the word "applicant" or "application"
+- Imply an approval or selection decision is pending
+- Assert facts about section letters (Section A/B/C/D) unless the search
+  notes explicitly mention them
+- Use bureaucratic phrasing like "before the review can be completed"
+
+Return ONLY the note body — no greeting, no signature, no subject line.
+Be specific about each gap. Cite the actual data point that was missing, not
+generic phrases like "some areas need improvement"."""
+
+    # Default: application screening (sub-award or generic)
+    return """You draft short follow-up notes for partner application screening.
 
 The user will give you an applicant's name and a summary of screening gaps —
 questions where the answer was "not_found" or confidence was "inferred".
 
-Write a 2-4 sentence follow-up note that:
-- Acknowledges the partner submitted an application
-- Lists 2-3 specific gaps identified during screening
+Write a SHORT follow-up note (2-3 sentences, never more):
+- Acknowledges the applicant submitted their application
+- Names 2-3 specific gaps with the missing document or data point
+- Closes with a clear, low-friction ask for what to provide
 - Maintains a respectful, encouraging tone
 - Does NOT make a final selection decision — that is up to the human reviewer
 
-Return ONLY the note text. No greeting, no signature, no subject line.
-The reviewer will add those before sending.
+Return ONLY the note body — no greeting, no signature, no subject line.
 
 Be specific about the gaps — name the missing document, policy, or data point.
 Do not use generic phrases like "some areas need improvement". Cite what was
@@ -272,24 +374,30 @@ def _build_gap_summary(
 @app.post("/draft-followups", response_model=FollowupResponse, tags=["followups"])
 async def draft_followups(body: FollowupRequest) -> FollowupResponse:
     """
-    Draft short follow-up notes for applicants based on screening gaps.
-    Each applicant gets one Claude call to generate a 2-4 sentence note.
+    Draft short follow-up notes based on extraction gaps.
+    Vocabulary and ask shape adapt to the active template (sub-award
+    application review vs quarterly report review).
     """
+    system_prompt = _build_followup_system(body.template_id)
+    workflow_label = (
+        "partner" if body.template_id == "quarterly-report-review" else "applicant"
+    )
+
     drafts: list[FollowupDraft] = []
 
     for ap in body.applicants:
         gap_summary = _build_gap_summary(ap.answers)
 
         user_msg = (
-            f"Applicant: {ap.applicant_name}\n\n"
-            f"Screening gaps:\n{gap_summary}"
+            f"{workflow_label.capitalize()}: {ap.applicant_name}\n\n"
+            f"Gaps identified:\n{gap_summary}"
         )
 
         try:
             response = _followup_client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=512,
-                system=_FOLLOWUP_SYSTEM,
+                max_tokens=400,
+                system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
             )
             note = response.content[0].text.strip()

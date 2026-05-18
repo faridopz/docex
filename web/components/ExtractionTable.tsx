@@ -40,6 +40,8 @@ import {
   exportFollowupsAsText,
   type FollowupDraft,
 } from "@/lib/api";
+import { getWorkflowLabels } from "@/lib/workflow-labels";
+import { assignBucket, BUCKETS, type BucketId, type Bucket } from "@/lib/buckets";
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -61,38 +63,194 @@ function isBatch(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function getWorkflowLabels(templateId: string | null | undefined) {
-  if (templateId === "quarterly-report-review") {
-    return {
-      unitSingular: "report",
-      unitPlural: "reports",
-      actionVerb: "Analyse",
-      actionVerbPast: "Analysed",
-      pageHeader: "Report analysis",
-      stepTwoButton: "Analyse reports",
-      stepThreeLoadingTitle: "Reading reports...",
-    };
+/**
+ * Bucket badge — small pill that summarises an applicant's overall
+ * answer profile (Complete / Near-complete / Has gaps / Major gaps).
+ *
+ * The bucket itself is derived deterministically from the answers (see
+ * lib/buckets.ts), so the badge is always defensible — the user can verify
+ * the justification on hover or in the Excel export.
+ *
+ * Two sizes:
+ *   • "sm"   — dot + short label, used in tight spots (table first column)
+ *   • "md"   — full pill with label, used in card headers and summary chips
+ */
+function BucketBadge({
+  bucket,
+  justification,
+  size = "md",
+}: {
+  bucket: Bucket;
+  justification: string;
+  size?: "sm" | "md";
+}) {
+  if (size === "sm") {
+    return (
+      <span
+        title={`${bucket.label} — ${justification}`}
+        className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${bucket.colorClasses}`}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${bucket.dotClasses}`} />
+        {bucket.label}
+      </span>
+    );
   }
-  if (templateId === "subaward-application-review") {
-    return {
-      unitSingular: "application",
-      unitPlural: "applications",
-      actionVerb: "Review",
-      actionVerbPast: "Reviewed",
-      pageHeader: "Application review",
-      stepTwoButton: "Review applications",
-      stepThreeLoadingTitle: "Reading applications...",
-    };
+  return (
+    <span
+      title={`${bucket.description} ${justification}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${bucket.colorClasses}`}
+    >
+      <span className={`h-2 w-2 rounded-full ${bucket.dotClasses}`} />
+      {bucket.label}
+    </span>
+  );
+}
+
+/**
+ * Compact cell content for the heatmap table view.
+ * Shows a confidence dot + a tight one-line preview of the answer.
+ * The full content lives in ExpandedAnswerCell, shown when the cell is clicked.
+ */
+function CompactAnswerCell({ answer }: { answer: ExtractionAnswer }) {
+  // For list answers, the first line is the most useful preview.
+  // For prose, take the start of the string. Either way: one line, tight.
+  const firstLine = answer.answer
+    ? answer.answer.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] ?? ""
+    : "";
+  const preview = firstLine.length > 0
+    ? firstLine.length > 48
+      ? firstLine.slice(0, 48) + "…"
+      : firstLine
+    : "Not found";
+
+  return (
+    <div className="flex items-start gap-1.5 text-[11px] leading-snug">
+      <span
+        className={`mt-1 h-2 w-2 shrink-0 rounded-full ${confidenceDot[answer.confidence]}`}
+      />
+      <span
+        className={`${
+          answer.answer ? "text-gray-700" : "text-gray-400 italic"
+        } line-clamp-2`}
+        title={answer.answer ?? "Not found"}
+      >
+        {preview}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Expanded cell content shown when a table cell is clicked.
+ * Full answer (list-aware), source, page, quote — everything from the card
+ * view, packed into the cell.
+ */
+function ExpandedAnswerCell({
+  answer,
+  onClose,
+}: {
+  answer: ExtractionAnswer;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="space-y-1.5 text-xs"
+      // Stop propagation so clicking internals (quote toggle, close button)
+      // doesn't bubble up to the cell's onClick and re-collapse the view.
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <ConfidenceBadge confidence={answer.confidence} />
+        <button
+          type="button"
+          onClick={onClose}
+          className="-mt-0.5 -mr-0.5 shrink-0 rounded p-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+          aria-label="Collapse cell"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+      {answer.answer ? (
+        <AnswerText
+          text={answer.answer}
+          className="text-xs text-gray-800 leading-relaxed"
+        />
+      ) : (
+        <p className="text-xs italic text-gray-400">Not found in any document</p>
+      )}
+      {answer.source_document && (
+        <p className="flex items-start gap-1 text-[10px] text-gray-500">
+          <ExternalLink className="mt-0.5 h-2.5 w-2.5 shrink-0" />
+          <span className="break-all">
+            {answer.source_document}
+            {answer.source_page != null && ` · p.${answer.source_page}`}
+          </span>
+        </p>
+      )}
+      {answer.quote && (
+        <details className="text-[10px]">
+          <summary className="cursor-pointer font-medium text-blue-600 hover:text-blue-700">
+            View quote
+          </summary>
+          <div className="mt-1 rounded border border-gray-100 bg-gray-50 px-2 py-1">
+            <p className="font-mono leading-relaxed text-gray-600 whitespace-pre-wrap">
+              {answer.quote}
+            </p>
+          </div>
+        </details>
+      )}
+      {answer.search_notes && (
+        <p className="text-[10px] italic text-gray-500 leading-relaxed">
+          <span className="font-medium not-italic">
+            {answer.confidence === "inferred"
+              ? "Reasoning: "
+              : answer.confidence === "not_found"
+                ? "Search note: "
+                : "Note: "}
+          </span>
+          {answer.search_notes}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render an answer string with smart list detection.
+ *
+ * If the answer is a single line (or a single short paragraph), it renders
+ * as a paragraph. If it contains newline-separated items — which is what
+ * the system prompt now asks for on list answers — it renders as a bulleted
+ * list. Any common bullet prefix the model added ("- ", "• ", "1. ", etc.)
+ * is stripped so we apply consistent UI styling.
+ */
+function AnswerText({
+  text,
+  className = "text-sm text-gray-700 leading-relaxed",
+}: {
+  text: string;
+  className?: string;
+}) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  if (lines.length <= 1) {
+    return <p className={className}>{text}</p>;
   }
-  return {
-    unitSingular: "applicant",
-    unitPlural: "applicants",
-    actionVerb: "Run",
-    actionVerbPast: "Reviewed",
-    pageHeader: "Review results",
-    stepTwoButton: "Run review",
-    stepThreeLoadingTitle: "Reading documents...",
-  };
+
+  const stripped = lines
+    .map((l) => l.replace(/^(\s*[-•*–—]\s+|\s*\(?\d+[.)]\s+)/, "").trim())
+    .filter(Boolean);
+
+  return (
+    <ul className={`${className} list-disc space-y-1 pl-5 marker:text-gray-400`}>
+      {stripped.map((line, i) => (
+        <li key={i}>{line}</li>
+      ))}
+    </ul>
+  );
 }
 
 function truncate(str: string, max: number): string {
@@ -142,7 +300,7 @@ export function ExtractionTable({
     setFollowupState("loading");
     setFollowupError(null);
     try {
-      const drafts = await draftFollowups(applicants, questions);
+      const drafts = await draftFollowups(applicants, questions, templateId);
       setOriginalDrafts(drafts);
       setEditedDrafts(drafts.map((d) => ({ ...d })));
       setFollowupState("ready");
@@ -165,6 +323,25 @@ export function ExtractionTable({
     if (original) updateDraftNote(applicantId, original.note);
   };
 
+  // Per-applicant error messages from the backend. Surface these prominently
+  // — without them the user sees "3 errors" with no idea what went wrong.
+  const erroredApplicants = applicants.filter((ap) => ap.error);
+
+  // Bucket distribution across the run. We compute once and re-use for the
+  // summary chip row and (later) the by-bucket view mode. Note this only
+  // makes sense in batch mode — in single mode there's only one applicant
+  // to bucket and we surface it differently.
+  const bucketDistribution = useMemo(() => {
+    const counts = new Map<BucketId, number>();
+    for (const ap of applicants) {
+      const id = assignBucket(ap.answers).bucket.id;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([id, count]) => ({ bucket: BUCKETS[id], count }))
+      .sort((a, b) => a.bucket.order - b.bucket.order);
+  }, [applicants]);
+
   return (
     <section className="space-y-6">
       {/* Summary */}
@@ -173,6 +350,54 @@ export function ExtractionTable({
           ? `${labels.actionVerbPast} ${applicants.length} ${applicants.length === 1 ? labels.unitSingular : labels.unitPlural}${errorCount > 0 ? ` · ${errorCount} error${errorCount !== 1 ? "s" : ""}` : ""}.`
           : `${labels.actionVerbPast} ${result.applicant_name} — ${result.documents.length} document${result.documents.length !== 1 ? "s" : ""} read.`}
       </GuidanceCard>
+
+      {/* Bucket distribution — one chip per bucket present in the run,
+          batch-only because single-mode bucketing is surfaced inside the cards. */}
+      {batch && applicants.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            Distribution
+          </span>
+          {bucketDistribution.map(({ bucket, count }) => (
+            <span
+              key={bucket.id}
+              title={bucket.description}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${bucket.colorClasses}`}
+            >
+              <span className={`h-2 w-2 rounded-full ${bucket.dotClasses}`} />
+              <span className="font-semibold">{count}</span>
+              <span>{bucket.label.toLowerCase()}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Per-applicant error banner — diagnostic surface for failed extractions */}
+      {erroredApplicants.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 space-y-2">
+          <p className="text-sm font-semibold text-red-900">
+            {erroredApplicants.length === 1
+              ? "1 extraction failed"
+              : `${erroredApplicants.length} extractions failed`}
+          </p>
+          <ul className="space-y-1 text-xs text-red-800">
+            {erroredApplicants.map((ap) => (
+              <li key={ap.applicant_id} className="font-mono">
+                <span className="font-sans font-medium not-italic">
+                  {ap.applicant_name || "Unnamed"}:
+                </span>{" "}
+                {ap.error}
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-red-700">
+            Check the backend terminal (uvicorn) for the full traceback. Common
+            causes: <code>ANTHROPIC_API_KEY</code> not set in the shell running
+            the API, an unsupported model name, or the response exceeding
+            <code> max_tokens</code>.
+          </p>
+        </div>
+      )}
 
       {/* Export buttons */}
       <div className="flex flex-wrap justify-end gap-3">
@@ -247,7 +472,11 @@ export function ExtractionTable({
       {mode === "single" ? (
         <SingleView answers={(result as SingleExtractionResponse).answers} />
       ) : (
-        <BatchView applicants={applicants} questions={questions} />
+        <BatchView
+          applicants={applicants}
+          questions={questions}
+          templateId={templateId}
+        />
       )}
     </section>
   );
@@ -256,8 +485,19 @@ export function ExtractionTable({
 // ── Single mode: two-column answer list ─────────────────────────────────────
 
 function SingleView({ answers }: { answers: ExtractionAnswer[] }) {
+  const assignment = assignBucket(answers);
   return (
     <div className="space-y-4">
+      {answers.length > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border border-gray-100 bg-gray-50 px-4 py-2.5">
+          <BucketBadge
+            bucket={assignment.bucket}
+            justification={assignment.justification}
+            size="md"
+          />
+          <p className="text-xs text-gray-600">{assignment.justification}</p>
+        </div>
+      )}
       {answers.map((a) => (
         <AnswerCard key={a.question_id} answer={a} />
       ))}
@@ -274,9 +514,9 @@ function AnswerCard({ answer }: { answer: ExtractionAnswer }) {
         <ConfidenceBadge confidence={answer.confidence} />
       </div>
 
-      {/* Answer */}
+      {/* Answer — list-aware rendering (newlines become bullets) */}
       {answer.answer ? (
-        <p className="text-sm text-gray-700 leading-relaxed">{answer.answer}</p>
+        <AnswerText text={answer.answer} />
       ) : (
         <p className="text-sm italic text-gray-400">Not found in any document</p>
       )}
@@ -616,7 +856,9 @@ function BatchView({
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(
     questions.length > 0 ? questions[0].id : null,
   );
-  const [viewMode, setViewMode] = useState<"by-question" | "table">("by-question");
+  const [viewMode, setViewMode] = useState<"by-question" | "table" | "by-bucket">(
+    "by-question",
+  );
   const [selectedConfidences, setSelectedConfidences] = useState<Set<Confidence>>(
     new Set<Confidence>(["found", "inferred", "not_found"]),
   );
@@ -711,17 +953,139 @@ function BatchView({
     return <ArrowDown className="h-3 w-3 text-blue-600" />;
   };
 
-  if (viewMode === "table") {
+  if (viewMode === "by-bucket") {
+    // Group applicants by their assigned bucket, ordered Complete → Major gaps.
+    const groups = new Map<
+      BucketId,
+      { bucket: Bucket; members: typeof applicants; assignments: ReturnType<typeof assignBucket>[] }
+    >();
+    for (const ap of applicants) {
+      const a = assignBucket(ap.answers);
+      const existing = groups.get(a.bucket.id);
+      if (existing) {
+        existing.members.push(ap);
+        existing.assignments.push(a);
+      } else {
+        groups.set(a.bucket.id, {
+          bucket: a.bucket,
+          members: [ap],
+          assignments: [a],
+        });
+      }
+    }
+    const ordered = Array.from(groups.values()).sort(
+      (a, b) => a.bucket.order - b.bucket.order,
+    );
+
     return (
       <div className="space-y-4">
-        {/* Table toggle back */}
-        <button
-          type="button"
-          onClick={() => setViewMode("by-question")}
-          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
-        >
-          ← Back to question view
-        </button>
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setViewMode("by-question")}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            ← Back to question view
+          </button>
+          <p className="text-[11px] text-gray-500">
+            {applicants.length} {labels.unitPlural} across {ordered.length}{" "}
+            bucket{ordered.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {ordered.map(({ bucket, members, assignments }) => (
+            <section
+              key={bucket.id}
+              className="rounded-lg border border-gray-200 bg-white overflow-hidden"
+            >
+              <header
+                className={`flex items-center justify-between px-4 py-2.5 ${bucket.colorClasses}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${bucket.dotClasses}`} />
+                  <span className="text-sm font-semibold">{bucket.label}</span>
+                  <span className="text-xs opacity-80">·</span>
+                  <span className="text-xs">
+                    {members.length} {labels.unitPlural}
+                  </span>
+                </div>
+                <p className="hidden sm:block text-[11px] opacity-80">
+                  {bucket.description}
+                </p>
+              </header>
+              <ul className="divide-y divide-gray-100">
+                {members.map((ap, i) => {
+                  const assignment = assignments[i];
+                  return (
+                    <li
+                      key={ap.applicant_id}
+                      className="flex items-start justify-between gap-3 px-4 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900">
+                          {ap.applicant_name || "Unnamed"}
+                        </p>
+                        <p className="mt-0.5 text-xs text-gray-600">
+                          {assignment.justification}
+                        </p>
+                        {ap.error && (
+                          <p className="mt-1 text-[11px] font-mono text-red-700">
+                            {ap.error}
+                          </p>
+                        )}
+                      </div>
+                      {/* Mini confidence breakdown bar */}
+                      <div className="shrink-0 flex items-center gap-1.5 text-[10px] text-gray-600">
+                        <span className="inline-flex items-center gap-1">
+                          <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.found}`} />
+                          <span className="font-medium text-emerald-700">
+                            {assignment.counts.found}
+                          </span>
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.inferred}`} />
+                          <span className="font-medium text-amber-700">
+                            {assignment.counts.inferred}
+                          </span>
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot.not_found}`} />
+                          <span className="font-medium text-gray-500">
+                            {assignment.counts.notFound}
+                          </span>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (viewMode === "table") {
+    return (
+      <div className="space-y-3">
+        {/* Toolbar: back link + density hint */}
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => {
+              setExpandedCell(null);
+              setViewMode("by-question");
+            }}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            ← Back to question view
+          </button>
+          <p className="text-[11px] text-gray-500">
+            Click any cell to expand · {applicants.length} {labels.unitPlural} × {questions.length} questions
+          </p>
+        </div>
         {/* Old table view  */}
         <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
           <table className="w-full text-sm">
@@ -733,7 +1097,7 @@ function BatchView({
                     onClick={() => handleSort("_name")}
                     className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
                   >
-                    Applicant
+                    {labels.unitSingularCapital}
                     <SortIcon columnId="_name" />
                   </button>
                 </th>
@@ -741,14 +1105,16 @@ function BatchView({
                   <th
                     key={q.id}
                     title={q.text}
-                    className="px-4 py-3 text-left min-w-[180px] max-w-[220px]"
+                    className="px-3 py-3 text-left min-w-[140px] max-w-[170px]"
                   >
                     <button
                       type="button"
                       onClick={() => handleSort(q.id)}
-                      className="inline-flex w-full items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+                      className="inline-flex w-full items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
                     >
-                      <span className="truncate">{q.text}</span>
+                      <span className="truncate" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "normal" }}>
+                        {q.text}
+                      </span>
                       <SortIcon columnId={q.id} />
                     </button>
                   </th>
@@ -761,24 +1127,52 @@ function BatchView({
                   ap.answers.map((a) => [a.question_id, a]),
                 );
                 return (
-                  <tr key={ap.applicant_id} className="hover:bg-gray-50/50">
-                    <td className="sticky left-0 z-10 bg-white px-4 py-3 font-medium text-gray-900 border-r border-gray-100">
-                      {ap.applicant_name || "Unnamed"}
+                  <tr key={ap.applicant_id} className="hover:bg-gray-50/30">
+                    <td className="sticky left-0 z-10 bg-white px-4 py-2.5 font-medium text-gray-900 border-r border-gray-100 align-top">
+                      <div className="space-y-1">
+                        <p>{ap.applicant_name || "Unnamed"}</p>
+                        <BucketBadge
+                          bucket={assignBucket(ap.answers).bucket}
+                          justification={assignBucket(ap.answers).justification}
+                          size="sm"
+                        />
+                      </div>
                     </td>
                     {questions.map((q) => {
                       const a = answerMap.get(q.id);
-                      if (!a)
+                      const cellId = `${ap.applicant_id}:${q.id}`;
+                      const isExpanded = expandedCell === cellId;
+                      if (!a) {
                         return (
-                          <td key={q.id} className="px-4 py-3 text-gray-400 italic text-xs">
+                          <td
+                            key={q.id}
+                            className="px-3 py-2.5 text-gray-300 italic text-xs align-top"
+                          >
                             —
                           </td>
                         );
+                      }
                       return (
-                        <td key={q.id} className="px-4 py-3 text-sm text-gray-700">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`h-2 w-2 rounded-full ${confidenceDot[a.confidence]}`} />
-                            <span>{a.answer ?? "Not found"}</span>
-                          </div>
+                        <td
+                          key={q.id}
+                          onClick={() =>
+                            setExpandedCell(isExpanded ? null : cellId)
+                          }
+                          className={`px-3 py-2 align-top cursor-pointer transition ${
+                            isExpanded
+                              ? "bg-blue-50/60"
+                              : "hover:bg-blue-50/30"
+                          }`}
+                          aria-expanded={isExpanded}
+                        >
+                          {isExpanded ? (
+                            <ExpandedAnswerCell
+                              answer={a}
+                              onClose={() => setExpandedCell(null)}
+                            />
+                          ) : (
+                            <CompactAnswerCell answer={a} />
+                          )}
                         </td>
                       );
                     })}
@@ -798,11 +1192,7 @@ function BatchView({
       {/* Left sidebar: questions */}
       <div className="w-80 shrink-0 bg-gray-50 rounded-lg border border-gray-200 p-4 max-h-[70vh] overflow-y-auto">
         <h3 className="text-sm font-semibold text-gray-900 mb-1">
-          {labels.unitPlural === "applications"
-            ? "Applications"
-            : labels.unitPlural === "reports"
-              ? "Reports"
-              : "Applicants"}
+          {labels.sidebarHeader}
         </h3>
         <p className="text-xs text-gray-500 mb-4">
           Across {applicants.length} {labels.unitPlural}
@@ -843,13 +1233,22 @@ function BatchView({
             );
           })}
         </div>
-        <button
-          type="button"
-          onClick={() => setViewMode("table")}
-          className="mt-6 w-full py-2 text-xs text-blue-600 hover:text-blue-700 font-medium text-center hover:bg-blue-50 rounded-md transition"
-        >
-          Show table view
-        </button>
+        <div className="mt-6 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setViewMode("by-bucket")}
+            className="py-2 text-xs text-blue-600 hover:text-blue-700 font-medium text-center hover:bg-blue-50 rounded-md transition border border-gray-200 bg-white"
+          >
+            Group by bucket
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("table")}
+            className="py-2 text-xs text-blue-600 hover:text-blue-700 font-medium text-center hover:bg-blue-50 rounded-md transition border border-gray-200 bg-white"
+          >
+            Table view
+          </button>
+        </div>
       </div>
 
       {/* Right panel: applicant cards for selected question */}
@@ -923,21 +1322,37 @@ function BatchView({
                   const answer = ap.answers.find(
                     (a) => a.question_id === selectedQuestion.id,
                   );
+                  const assignment = assignBucket(ap.answers);
                   return (
                     <div
                       key={ap.applicant_id}
                       className="border-b border-gray-100 pb-6 last:border-0 last:pb-0"
                     >
-                      <div className="flex items-start justify-between gap-3 mb-2">
-                        <p className="text-base font-semibold text-gray-900">
-                          {ap.applicant_name || "Unnamed"}
-                        </p>
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-base font-semibold text-gray-900">
+                            {ap.applicant_name || "Unnamed"}
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <BucketBadge
+                              bucket={assignment.bucket}
+                              justification={assignment.justification}
+                              size="sm"
+                            />
+                            <span className="text-[10px] text-gray-500">
+                              {assignment.justification}
+                            </span>
+                          </div>
+                        </div>
                         {answer && <ConfidenceBadge confidence={answer.confidence} />}
                       </div>
                       {answer?.answer ? (
-                        <p className="text-sm text-gray-800 leading-relaxed mb-2">
-                          {answer.answer}
-                        </p>
+                        <div className="mb-2">
+                          <AnswerText
+                            text={answer.answer}
+                            className="text-sm text-gray-800 leading-relaxed"
+                          />
+                        </div>
                       ) : (
                         <p className="text-sm italic text-gray-400 mb-2">
                           Not found in any document
