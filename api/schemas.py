@@ -13,7 +13,14 @@ from pydantic import BaseModel
 from sys import path
 from pathlib import Path
 path.insert(0, str(Path(__file__).parent.parent))
-from models import ExtractionAnswer, ApplicantExtraction  # noqa: E402
+from models import (  # noqa: E402
+    ApplicantExtraction,
+    ComplianceCheckBatchResult,
+    ComplianceCheckResult,
+    ExtractionAnswer,
+    PolicyRule,
+    PolicyRulebook,
+)
 
 
 class QuestionIn(BaseModel):
@@ -75,3 +82,69 @@ class FollowupDraft(BaseModel):
 class FollowupResponse(BaseModel):
     """Response for POST /draft-followups."""
     drafts: list[FollowupDraft]
+
+
+# ── Compliance Check schemas ──────────────────────────────────────────────
+#
+# The check endpoints return the core models from models.py directly
+# (PolicyRulebook, ComplianceCheckResult, ComplianceCheckBatchResult) so we
+# only need extra schemas for: (a) the rulebook editor PUT body and (b) the
+# summary list view, which is a slimmer projection of PolicyRulebook for
+# the saved-rulebooks landing page.
+
+
+class RulebookUpdateIn(BaseModel):
+    """Body for PUT /compliance/rulebooks/{id}.
+
+    Full replacement of the rules list — the frontend sends the entire
+    edited rulebook back rather than a diff. Simpler to reason about and
+    matches the natural shape of the rules editor (you save the whole form).
+    """
+    # If None or empty, keep the current name. Otherwise rename.
+    name: Optional[str] = None
+    rules: list[PolicyRule]
+    interpretation_notes: Optional[str] = None
+    # Notification settings — fully optional, opt-in per rulebook.
+    notification_email: Optional[str] = None
+    notification_trigger: Optional[str] = None  # "always" | "flagged_or_blocked" | "blocked_only"
+
+
+class RulebookSummary(BaseModel):
+    """Item in GET /compliance/rulebooks — slimmer projection for the list view."""
+    id: str
+    name: str
+    rule_count: int
+    active_rule_count: int
+    source_documents: list[str]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class RulebookListResponse(BaseModel):
+    """Response for GET /compliance/rulebooks."""
+    rulebooks: list[RulebookSummary]
+
+
+class CheckSummary(BaseModel):
+    """Slimmer projection of a ComplianceCheckResult for list views.
+
+    Excludes the rule-by-rule results and the rulebook snapshot — those
+    can be huge and aren't needed for a list. The full check is fetched
+    by ID when the user clicks into it.
+    """
+    payment_id: str
+    payment_label: str
+    rulebook_id: str
+    rulebook_name: str
+    overall_verdict: str          # "approved" | "flagged" | "blocked"
+    overall_summary: str
+    document_count: int
+    created_at: Optional[str] = None
+    approved: bool = False
+    approved_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CheckListResponse(BaseModel):
+    """Response for GET /compliance/checks."""
+    checks: list[CheckSummary]

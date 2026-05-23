@@ -1,0 +1,42 @@
+# Files NOT to copy into the Docker image — keeps it small and avoids
+# leaking secrets or shipping the frontend build into the backend container.
+
+# Frontend (deployed separately to Vercel)
+web/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets — these must come via env vars, never baked into the image
+.env
+.env.local
+
+# Version control + editor
+.git/
+.gitignore
+.gitattributes
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# Docs / assets that don't ship
+*.md
+docexassets/
+DOCex_overview.pdf
+docker-compose.yml
+
+# Persistent data — must come from a mounted volume, not the image
+rulebooks/
+checks/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

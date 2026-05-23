@@ -10,6 +10,7 @@ import {
   LineChart,
   PenLine,
   GitCompare,
+  Receipt,
 } from "lucide-react";
 import type { Question } from "@/types";
 import { QUESTION_TEMPLATES } from "@/lib/templates";
@@ -20,6 +21,7 @@ const TEMPLATE_ICONS: Record<string, React.ComponentType<{ className?: string }>
   "subaward-application-review": ClipboardList,
   "quarterly-report-review": LineChart,
   "financial-service-reconciliation": GitCompare,
+  "invoice-receipt-extraction": Receipt,
 };
 
 /**

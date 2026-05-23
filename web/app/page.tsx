@@ -26,11 +26,13 @@ const steps = [
   { n: "03", label: "Review ranked results" },
 ];
 
-const useCases = [
-  { label: "Grant applications", desc: "Shortlist partners from 200 submissions in an afternoon" },
-  { label: "CV screening", desc: "Score candidates against a job spec automatically" },
-  { label: "Supplier bids", desc: "Extract and compare key terms across proposals" },
-  { label: "Compliance docs", desc: "Check documents against a checklist at scale" },
+// Each card links somewhere — extraction-flavoured cases all go to /app,
+// the compliance card routes to /compliance. Better than passive copy.
+const useCases: { label: string; desc: string; href: string }[] = [
+  { label: "Grant applications", desc: "Shortlist partners from 200 submissions in an afternoon", href: "/app" },
+  { label: "CV screening", desc: "Score candidates against a job spec automatically", href: "/app" },
+  { label: "Supplier bids", desc: "Extract and compare key terms across proposals", href: "/app" },
+  { label: "Compliance docs", desc: "Check payments against your policy in seconds — receipts, vendors, approvals, all flagged", href: "/compliance" },
 ];
 
 const socialProof = [
@@ -150,10 +152,14 @@ export default function LandingPage() {
           </p>
           <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-4">
             {useCases.map((u) => (
-              <div key={u.label} className="rounded-2xl border border-gray-100 bg-white p-6 shadow-card">
-                <p className="font-semibold text-gray-900 mb-2">{u.label}</p>
+              <Link
+                key={u.label}
+                href={u.href}
+                className="group rounded-2xl border border-gray-100 bg-white p-6 shadow-card transition hover:border-brand-200 hover:shadow-card-hover"
+              >
+                <p className="font-semibold text-gray-900 mb-2 transition-colors group-hover:text-brand-700">{u.label}</p>
                 <p className="text-sm text-gray-500 leading-relaxed">{u.desc}</p>
-              </div>
+              </Link>
             ))}
           </div>
         </section>

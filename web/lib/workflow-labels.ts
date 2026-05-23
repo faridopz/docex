@@ -176,6 +176,38 @@ const FINANCIAL_SERVICE_RECONCILIATION: WorkflowLabels = {
   sidebarHeader: "Partners",
 };
 
+const INVOICE_RECEIPT: WorkflowLabels = {
+  unitSingular: "invoice",
+  unitPlural: "invoices",
+  unitSingularCapital: "Invoice",
+  unitPluralCapital: "Invoices",
+  actionVerb: "Extract",
+  actionVerbPast: "Extracted",
+
+  step2Label: "Add invoices",
+
+  uploadHeader: "Upload invoices and receipts",
+  uploadDescription:
+    "Drop in invoices, receipts, or expense vouchers. DOCex pulls vendor info, amounts, dates, and line items — one row per document.",
+  singleGuidanceTitle: "What to upload",
+  singleGuidanceBody:
+    "Drop in one or more invoices or receipts for the same expense. DOCex extracts the structured fields (vendor, amounts, dates, line items) and you get a clean answer set you can paste straight into your finance spreadsheet.",
+  batchGuidanceTitle: "Processing many invoices at once",
+  batchGuidanceBody:
+    "Add each invoice or receipt bundle and drop in its documents. DOCex extracts the fields from each and returns one row per bundle in the Excel export — built for finance teams reconciling stacks at month-end.",
+  singleModeLabel: "One invoice",
+  batchModeLabel: "Many invoices",
+  unitNamePlaceholder: "Label (e.g. INV-2025-04-17 or Vendor X — Office Supplies)",
+  addUnitButton: "Add invoice",
+  emptyBatchHint: "No invoices yet. Add the first one to get started.",
+
+  stepTwoButton: "Extract data",
+  stepThreeLoadingTitle: "Reading invoices…",
+
+  pageHeader: "Invoice data",
+  sidebarHeader: "Invoices",
+};
+
 export function getWorkflowLabels(
   templateId: string | null | undefined,
 ): WorkflowLabels {
@@ -183,5 +215,6 @@ export function getWorkflowLabels(
   if (templateId === "subaward-application-review") return SUBAWARD_APPLICATION;
   if (templateId === "financial-service-reconciliation")
     return FINANCIAL_SERVICE_RECONCILIATION;
+  if (templateId === "invoice-receipt-extraction") return INVOICE_RECEIPT;
   return DEFAULT;
 }

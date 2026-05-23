@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402
+from .compliance_routes import router as compliance_router  # noqa: E402
 from .schemas import (  # noqa: E402
     BatchExtractionResponse,
     FollowupDraft,
@@ -69,16 +70,34 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# CORS configuration.
+#   - Localhost origins are always allowed (so `npm run dev` works without
+#     any env var setup).
+#   - Production origins come from the ALLOWED_ORIGINS env var as a
+#     comma-separated list. On Railway/Fly set this to your Vercel URL,
+#     e.g. ALLOWED_ORIGINS=https://docex.vercel.app,https://docex.com
+_default_dev_origins = [
+    "http://localhost:3000", "http://127.0.0.1:3000",
+    "http://localhost:3001", "http://127.0.0.1:3001",
+]
+_extra_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+_extra_origins = (
+    [o.strip() for o in _extra_origins_env.split(",") if o.strip()]
+    if _extra_origins_env
+    else []
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:3001", "http://127.0.0.1:3001",
-    ],
+    allow_origins=_default_dev_origins + _extra_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compliance Check routes — policy interpretation, rulebook CRUD, payment
+# checks (single + batch). See api/compliance_routes.py.
+app.include_router(compliance_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

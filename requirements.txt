@@ -1,0 +1,22 @@
+# DOCex backend dependencies.
+#
+# Pinned to known-good ranges. Compatible with Python 3.11+.
+# Update bounds when you upgrade — run the existing tests first.
+
+# Web framework
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9,<1.0
+
+# AI engine
+anthropic>=0.40,<1.0
+
+# Document parsing
+pdfplumber>=0.11,<1.0
+python-docx>=1.1,<2.0
+
+# Config
+python-dotenv>=1.0,<2.0
+
+# Data validation — pinned to v2 (we use model_validate_json, model_dump_json)
+pydantic>=2.9,<3.0

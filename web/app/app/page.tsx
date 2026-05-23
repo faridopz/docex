@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { QuestionBuilder } from "@/components/QuestionBuilder";
 import { ApplicantUpload } from "@/components/ApplicantUpload";
@@ -169,7 +169,18 @@ export default function AppPage() {
             <StepBar current={step} step2Label={workflowLabels.step2Label} />
           </div>
 
-          <div className="w-28" />
+          <div className="flex w-28 justify-end">
+            {/* Cross-mode link — keeps both workflows discoverable from each
+                other without forcing a chooser between landing and app. */}
+            <Link
+              href="/compliance"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Switch to Compliance Check"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Compliance
+            </Link>
+          </div>
         </div>
       </header>
 

@@ -67,6 +67,37 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
     ],
   },
   {
+    id: "invoice-receipt-extraction",
+    name: "Invoice & Receipt Extraction",
+    description:
+      "Pull structured data from invoices and receipts — vendor, amount, dates, line items — into one row per document. Built for finance teams reconciling stacks of receipts at month-end.",
+    // Finance teams typically need the same metadata fields off every
+    // invoice or receipt: vendor identity, amounts, dates, line items,
+    // and proof markers (signature, stamp, original/duplicate). Extracting
+    // these into one row per document means the Excel export becomes a
+    // ready-to-reconcile spreadsheet that finance can drop into their
+    // existing GL workflow.
+    defaultContext:
+      "These are vendor invoices, payment receipts, or expense receipts. The goal is to extract structured metadata so finance can reconcile them against payment vouchers, budgets, and bank statements. One row per document in the output. If a field is genuinely missing from the document, mark it not_found rather than inferring — finance audits depend on knowing what's actually present versus what's been guessed.",
+    questions: [
+      { text: "What is the vendor or supplier name?" },
+      { text: "What is the vendor's full address?" },
+      { text: "What is the vendor's contact information (phone, email, tax ID where present)?" },
+      { text: "What is the invoice or receipt number?" },
+      { text: "What is the invoice or receipt date?" },
+      { text: "What is the total amount, including any tax or VAT?" },
+      { text: "What is the subtotal before tax?" },
+      { text: "What is the tax or VAT amount, and what is the tax rate?" },
+      { text: "What currency are the amounts in?" },
+      { text: "List each line item with description, quantity, unit price, and line total." },
+      { text: "What is the payment method (cash, bank transfer, cheque, card, or other)?" },
+      { text: "If a payment due date or payment terms are specified, what are they?" },
+      { text: "Is there a signature, stamp, or authorization mark on the document? If yes, whose name or title appears with it?" },
+      { text: "Does the document indicate whether it is an ORIGINAL or a COPY/DUPLICATE? Look for stamps, watermarks, or text markings." },
+      { text: "Is a purchase order number, contract reference, or budget code referenced on the document?" },
+    ],
+  },
+  {
     id: "quarterly-report-review",
     name: "Quarterly Report Review",
     description:
