@@ -11,11 +11,24 @@ web/node_modules/
 web/.env.local
 web/tsconfig.tsbuildinfo
 
-# Runtime data — rulebooks and saved checks are user data, not source code.
-# In production they live on a mounted volume (Railway/Fly). Locally they
-# stay in your working copy but are not committed.
-rulebooks/
-checks/
+# Runtime data — these dirs hold user-generated records, not source. In
+# production they live on a mounted volume (Railway/Fly). Locally they stay
+# in your working copy but are never committed.
+#
+# Note: we ignore the CONTENTS of these dirs rather than the dirs themselves,
+# so that (a) the dir structure stays in source (handy for fresh checkouts)
+# and (b) we can re-include specific files via !-exception below.
+rulebooks/*
+checks/*
+verifications/*
+attendance_runs/*
+rate_cards/*
+decks/*
+diagnostics/*
+
+# EXCEPTION: the seeded sample rulebook IS source — it ships in the Docker
+# image so first-time users see something in their library on Day 1.
+!rulebooks/sample-ngo-procurement.json
 
 # OS
 .DS_Store

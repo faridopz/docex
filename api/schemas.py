@@ -15,6 +15,8 @@ from pathlib import Path
 path.insert(0, str(Path(__file__).parent.parent))
 from models import (  # noqa: E402
     ApplicantExtraction,
+    BankVerifyBatchResult,
+    BankVerifyResult,
     ComplianceCheckBatchResult,
     ComplianceCheckResult,
     ExtractionAnswer,
@@ -148,3 +150,36 @@ class CheckSummary(BaseModel):
 class CheckListResponse(BaseModel):
     """Response for GET /compliance/checks."""
     checks: list[CheckSummary]
+
+
+# ── Bank Verify schemas ───────────────────────────────────────────────────
+#
+# Bank Verify endpoints return the core models from models.py directly
+# (BankVerifyResult, BankVerifyBatchResult). We only need a slimmer summary
+# projection for the saved-batches list view, mirroring CheckSummary.
+
+
+class BatchVerifySummary(BaseModel):
+    """Slimmer projection of a BankVerifyBatchResult for list views.
+
+    Excludes the per-row results array (can run to hundreds of rows in real
+    payment schedules). Frontend fetches the full batch by id when the user
+    clicks into it. Purpose surfaces in the list so the user can filter
+    "show me grantee disbursements" or "show me event payments" without
+    drilling into each batch.
+    """
+    batch_id: str
+    source_schedule: Optional[str] = None
+    purpose: Optional[str] = None
+    purpose_detail: Optional[str] = None
+    total: int
+    verified: int
+    warning: int
+    mismatch: int
+    unverifiable: int
+    created_at: Optional[str] = None
+
+
+class BatchVerifyListResponse(BaseModel):
+    """Response for GET /verify/batches."""
+    batches: list[BatchVerifySummary]

@@ -169,9 +169,11 @@ export default function AppPage() {
             <StepBar current={step} step2Label={workflowLabels.step2Label} />
           </div>
 
-          <div className="flex w-28 justify-end">
-            {/* Cross-mode link — keeps both workflows discoverable from each
-                other without forcing a chooser between landing and app. */}
+          <div className="flex items-center justify-end gap-2">
+            {/* Cross-mode links — keeps all three primitives discoverable from
+                each other without forcing a chooser between landing and app.
+                Order: Compliance, Bank Verify (newest, called out last so the
+                eye lands on it). */}
             <Link
               href="/compliance"
               className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
@@ -179,6 +181,20 @@ export default function AppPage() {
             >
               <ShieldCheck className="h-3.5 w-3.5" />
               Compliance
+            </Link>
+            <Link
+              href="/verify"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Switch to Bank Verify"
+            >
+              Bank Verify
+            </Link>
+            <Link
+              href="/agents/attendance-payment"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Attendance Payment Agent"
+            >
+              Attendance
             </Link>
           </div>
         </div>

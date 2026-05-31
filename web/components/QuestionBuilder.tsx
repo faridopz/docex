@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Lightbulb,
   Plus,
+  Sparkles,
   X,
   Check,
   ClipboardList,
@@ -88,7 +89,26 @@ export function QuestionBuilder({
 }: QuestionBuilderProps) {
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+  // When set, the next render shows a subtle "Auto-filled from X" hint on
+  // the context section so users understand why the textarea suddenly has
+  // text. Cleared once the user starts typing or switches templates.
+  const [contextAutoFilledFrom, setContextAutoFilledFrom] = useState<string | null>(null);
   const atLimit = questions.length >= MAX_QUESTIONS;
+
+  // Ref for the questions section so we can scroll to it after a template
+  // is picked. Gives the user a sense of motion + confirms that picking
+  // the template actually did something downstream.
+  const questionsRef = useRef<HTMLDivElement | null>(null);
+  const [pendingScrollToQuestions, setPendingScrollToQuestions] = useState(false);
+
+  useEffect(() => {
+    if (!pendingScrollToQuestions) return;
+    questionsRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+    setPendingScrollToQuestions(false);
+  }, [pendingScrollToQuestions, questions.length]);
 
   // Hide chips that are already in the list — keeps the chip row tidy
   const usedTexts = new Set(questions.map((q) => q.text.trim().toLowerCase()));
@@ -153,6 +173,9 @@ export function QuestionBuilder({
     // when the user hasn't typed their own. Their custom context is sacred.
     if (next.defaultContext && onContextChange && contextIsUntouched()) {
       onContextChange(next.defaultContext);
+      setContextAutoFilledFrom(next.name);
+    } else {
+      setContextAutoFilledFrom(null);
     }
 
     const msg = previous
@@ -160,6 +183,11 @@ export function QuestionBuilder({
       : `Loaded ${additions.length} question${additions.length !== 1 ? "s" : ""} from ${next.name}. You can edit, remove, or add more.`;
     setTemplateMessage(msg);
     setTimeout(() => setTemplateMessage(null), 5000);
+
+    // Smooth-scroll the user down to the questions section so they see
+    // the questions that just appeared. Goal-gradient — selecting a
+    // workflow should feel like progress, not just a UI state change.
+    setPendingScrollToQuestions(true);
   };
 
   const clearTemplate = () => {
@@ -167,6 +195,7 @@ export function QuestionBuilder({
     const previous = QUESTION_TEMPLATES.find((t) => t.id === activeTemplateId);
     if (!previous) {
       setActiveTemplateId(null);
+      setContextAutoFilledFrom(null);
       if (onTemplateChange) onTemplateChange(null);
       return;
     }
@@ -179,6 +208,7 @@ export function QuestionBuilder({
     );
     onChange(survivors);
     setActiveTemplateId(null);
+    setContextAutoFilledFrom(null);
     if (onTemplateChange) onTemplateChange(null);
 
     // If the context was a template pre-fill, clear it — leave the user's
@@ -207,16 +237,26 @@ export function QuestionBuilder({
       {onContextChange && (
         <ContextSection
           context={context ?? ""}
-          onChange={onContextChange}
+          onChange={(next) => {
+            // User started typing — clear the auto-fill hint
+            if (next !== context) setContextAutoFilledFrom(null);
+            onContextChange(next);
+          }}
+          autoFilledFrom={contextAutoFilledFrom}
         />
       )}
 
-      <div className="space-y-6">
+      <div ref={questionsRef} className="space-y-6 scroll-mt-20">
         <header className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-semibold text-gray-900">
-              What do you want to know?
-            </h2>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+                {onContextChange ? 3 : 2}
+              </span>
+              <h2 className="text-xl font-semibold text-gray-900">
+                Your questions
+              </h2>
+            </div>
             <p className="mt-1 text-sm text-gray-600">
               {activeTemplateId
                 ? "Edit, remove, or add questions. Your changes don't affect the template."
@@ -307,13 +347,18 @@ export function QuestionBuilder({
 // ── Template chooser ────────────────────────────────────────────────────────
 
 /**
- * The workflow selector at the top of Step 1.
+ * The workflow selector — the first thing the user sees on Step 1.
  *
- * Three equal-weight cards: one per built-in template plus an explicit
- * "Custom" card. Picking a template loads its questions and adapts the
- * language across the rest of the wizard ("applicant" → "report" → etc.).
- * Picking Custom clears any template questions and lets the user write
- * their own from scratch.
+ * Templates and Custom are visually distinct because they're semantically
+ * different. Templates are pre-built workflows the team can adopt. Custom
+ * is the absence of a template — write your own questions. So:
+ *   - Templates render as a 2x2 grid of equal-weight cards
+ *   - Custom renders below as a single horizontal strip — present but
+ *     visually subordinate. The user picks it intentionally, not by
+ *     accident
+ *
+ * Picking a template loads its questions and adapts the language across
+ * the rest of the wizard ("applicant" → "report" → etc.).
  */
 function TemplateChooser({
   activeTemplateId,
@@ -326,19 +371,28 @@ function TemplateChooser({
   onSelectCustom: () => void;
   message: string | null;
 }) {
+  const isCustomActive = activeTemplateId === null;
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      {/* Section header */}
       <div className="space-y-1">
-        <h2 className="text-xl font-semibold text-gray-900">
-          Pick your review workflow
-        </h2>
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+            1
+          </span>
+          <h2 className="text-xl font-semibold text-gray-900">
+            Pick a workflow
+          </h2>
+        </div>
         <p className="text-sm text-gray-600">
           Templates pre-load standard questions and adapt the language across
           the app. You can edit anything afterwards.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {/* 2x2 grid of templates — balanced layout for 4 cards */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {QUESTION_TEMPLATES.map((t) => {
           const isActive = t.id === activeTemplateId;
           const Icon = TEMPLATE_ICONS[t.id] ?? ClipboardList;
@@ -354,16 +408,47 @@ function TemplateChooser({
             />
           );
         })}
-        <TemplateCard
-          active={activeTemplateId === null}
-          onClick={onSelectCustom}
-          icon={<PenLine className="h-5 w-5" />}
-          title="Custom"
-          description="Define your own questions from a blank list. Good for one-off reviews."
-          footer="Write your own"
-        />
       </div>
 
+      {/* Custom — semantically the "no template" option, visually distinct */}
+      <button
+        type="button"
+        onClick={isCustomActive ? undefined : onSelectCustom}
+        disabled={isCustomActive}
+        aria-pressed={isCustomActive}
+        className={`group flex w-full items-center justify-between gap-3 rounded-xl border p-4 text-left transition disabled:cursor-default ${
+          isCustomActive
+            ? "border-emerald-300 bg-emerald-50/70"
+            : "border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40"
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition ${
+              isCustomActive
+                ? "bg-emerald-100 text-emerald-700"
+                : "bg-gray-100 text-gray-600 group-hover:bg-blue-100 group-hover:text-blue-700"
+            }`}
+          >
+            <PenLine className="h-4 w-4" />
+          </span>
+          <div>
+            <p className="text-sm font-semibold text-gray-900">
+              Or define your own questions from scratch
+            </p>
+            <p className="text-xs leading-relaxed text-gray-600">
+              Start blank. Good for one-off reviews or custom workflows.
+            </p>
+          </div>
+        </div>
+        {isCustomActive && (
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+            <Check className="h-3 w-3" strokeWidth={3} />
+          </span>
+        )}
+      </button>
+
+      {/* Transient confirmation banner */}
       {message && (
         <p className="flex items-center gap-1.5 text-sm text-emerald-700">
           <Check className="h-3.5 w-3.5 shrink-0" />
@@ -451,9 +536,15 @@ function TemplateCard({
 function ContextSection({
   context,
   onChange,
+  autoFilledFrom,
 }: {
   context: string;
   onChange: (next: string) => void;
+  // When set, shows a small "Auto-filled from <X>" badge so the user
+  // understands why the textarea suddenly has text after picking a template.
+  // Closes the silent-autofill loop — without it the prefill feels magical
+  // in a bad way.
+  autoFilledFrom?: string | null;
 }) {
   const overLimit = context.length > MAX_CONTEXT_CHARS;
 
@@ -461,12 +552,20 @@ function ContextSection({
     <div className="space-y-4">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">
-            Tell DOCex what you're looking for
-          </h2>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+              2
+            </span>
+            <h2 className="text-xl font-semibold text-gray-900">
+              Add context{" "}
+              <span className="text-sm font-normal text-gray-400">
+                (optional)
+              </span>
+            </h2>
+          </div>
           <p className="mt-1 text-sm text-gray-600">
-            Optional — a short paragraph that helps DOCex understand answers
-            in your context.
+            A short paragraph that helps DOCex understand answers in your
+            context.
           </p>
         </div>
         <span
@@ -488,6 +587,17 @@ function ContextSection({
           It does not score, rank, or judge applicants.
         </span>
       </GuidanceCard>
+
+      {autoFilledFrom && (
+        <div className="flex items-center gap-2 rounded-md bg-emerald-50/60 px-3 py-2 text-xs text-emerald-800">
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+          <span>
+            Auto-filled from{" "}
+            <span className="font-semibold">{autoFilledFrom}</span> — feel
+            free to edit.
+          </span>
+        </div>
+      )}
 
       <textarea
         value={context}

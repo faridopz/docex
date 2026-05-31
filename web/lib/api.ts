@@ -1,19 +1,31 @@
 import type {
   ApplicantExtraction,
   ApplicantInput,
+  AssistantBrief,
+  BankVerifyBatchResult,
   BatchExtractionResponse,
+  BatchVerifyListResponse,
+  BatchVerifySummary,
   CheckListResponse,
   CheckSummary,
   ComplianceCheckBatchResult,
   ComplianceCheckResult,
+  DiagnosticReport,
+  DiagnosticReportSummary,
+  KnowledgeAnswer,
   PolicyRule,
   PolicyRulebook,
   Question,
+  RateCard,
+  RateLine,
   RulebookListResponse,
   RulebookSummary,
   SingleExtractionResponse,
+  SlideDeck,
+  SlideDeckSummary,
 } from "@/types";
 import { assignBucket } from "@/lib/buckets";
+import { throwFriendly } from "@/lib/errors";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -41,10 +53,7 @@ export async function extractSingle(
   for (const f of files) body.append("documents", f);
 
   const res = await fetch(`${BASE}/extract/single`, { method: "POST", body });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`API error ${res.status}: ${detail}`);
-  }
+  if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<SingleExtractionResponse>;
 }
 
@@ -71,10 +80,7 @@ export async function extractBatch(
   }
 
   const res = await fetch(`${BASE}/extract/batch`, { method: "POST", body });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`API error ${res.status}: ${detail}`);
-  }
+  if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<BatchExtractionResponse>;
 }
 
@@ -104,10 +110,7 @@ export async function draftFollowups(
       template_id: templateId ?? null,
     }),
   });
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Failed to draft follow-up notes: ${detail}`);
-  }
+  if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as { drafts: FollowupDraft[] };
   return data.drafts;
 }
@@ -564,4 +567,485 @@ export async function exportChecksListToExcel(
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, sheet, "Compliance Checks");
   XLSX.writeFile(wb, filename);
+}
+
+// ─── Bank Verify ─────────────────────────────────────────────────────────────
+//
+// Bank Verify is DOCex's third primitive. The API surface mirrors the
+// compliance pattern — multipart upload for the heavy operation, JSON
+// reads + deletes for everything else. exportBatchToXlsx triggers a file
+// download directly because the backend already produces a polished xlsx
+// (colour-coded by verdict) — no need to re-emit it on the client.
+
+/**
+ * Run a verification batch against a payment schedule.
+ *
+ * @param schedule  The .xlsx file containing recipient + account + bank columns.
+ * @param purpose   WHY the verification ran (event_payment, grantee_disbursement,
+ *                  vendor_payment, partner_reimbursement, or 'other' / custom).
+ *                  Tags the audit trail and routes future notifications.
+ * @param purposeDetail Optional free-text elaboration. Especially useful when
+ *                  purpose is 'other' — describes the specific use-case.
+ * @param delayMs   Delay between Paystack calls. 200ms keeps us under test-
+ *                  mode's ~60 RPM limit. Drop to 50 in live mode.
+ */
+export async function verifyBankBatch(
+  schedule: File,
+  purpose: string,
+  purposeDetail?: string,
+  delayMs = 200,
+): Promise<BankVerifyBatchResult> {
+  const body = new FormData();
+  body.append("schedule", schedule);
+  body.append("purpose", purpose);
+  if (purposeDetail) body.append("purpose_detail", purposeDetail);
+  body.append("delay_ms", String(delayMs));
+  body.append("persist", "true");
+
+  const res = await fetch(`${BASE}/verify/bank-batch`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<BankVerifyBatchResult>;
+}
+
+/** List every saved verification batch, newest first. */
+export async function listVerifyBatches(): Promise<BatchVerifySummary[]> {
+  const res = await fetch(`${BASE}/verify/batches`);
+  if (!res.ok) await throwFriendly(res);
+  const data = (await res.json()) as BatchVerifyListResponse;
+  return data.batches;
+}
+
+/** Fetch one saved verification batch in full. */
+export async function getVerifyBatch(
+  batchId: string,
+): Promise<BankVerifyBatchResult> {
+  const res = await fetch(`${BASE}/verify/batches/${batchId}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<BankVerifyBatchResult>;
+}
+
+/**
+ * Trigger a browser download of the verified schedule .xlsx.
+ *
+ * The backend already produces a polished, colour-coded xlsx with summary
+ * row + verdict columns appended — finance-officer-grade. We don't re-emit
+ * on the client because the backend version benefits from the canonical
+ * verdict colour palette already applied, and downloading direct from the
+ * API avoids round-tripping the data through JS.
+ */
+export async function exportVerifyBatchToXlsx(batchId: string): Promise<void> {
+  const res = await fetch(`${BASE}/verify/batches/${batchId}/export.xlsx`);
+  if (!res.ok) await throwFriendly(res);
+  const blob = await res.blob();
+  // Pull the filename from Content-Disposition so the downloaded file
+  // matches what the server set (with _verified suffix).
+  const cd = res.headers.get("content-disposition") ?? "";
+  const match = cd.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : `bank-verify-${batchId}.xlsx`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Delete one saved verification batch. */
+export async function deleteVerifyBatch(batchId: string): Promise<void> {
+  const res = await fetch(`${BASE}/verify/batches/${batchId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) await throwFriendly(res);
+}
+
+// ─── Attendance Payment Agent ───────────────────────────────────────────────
+//
+// First composite agent — chains attendance + payment-info parsing,
+// fuzzy name matching, and (optionally) the Bank Verify primitive into
+// a single button-click. Backend endpoints under /agents/attendance-payment.
+
+/**
+ * Run the agent: parse both files, cross-match, build a draft schedule.
+ */
+export async function runAttendanceAgent(
+  attendance: File,
+  paymentInfo: File,
+  eventName: string,
+  ratePerDay: number,
+): Promise<import("@/types").AttendancePaymentRun> {
+  const body = new FormData();
+  body.append("attendance", attendance);
+  body.append("payment_info", paymentInfo);
+  body.append("event_name", eventName);
+  body.append("rate_per_day", String(ratePerDay));
+  body.append("persist", "true");
+
+  const res = await fetch(`${BASE}/agents/attendance-payment/run`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+/** List every saved attendance payment run, newest first. */
+export async function listAttendanceRuns(): Promise<
+  import("@/types").AttendancePaymentRunSummary[]
+> {
+  const res = await fetch(`${BASE}/agents/attendance-payment/runs`);
+  if (!res.ok) await throwFriendly(res);
+  const data = (await res.json()) as {
+    runs: import("@/types").AttendancePaymentRunSummary[];
+  };
+  return data.runs;
+}
+
+/** Fetch one saved attendance payment run in full. */
+export async function getAttendanceRun(
+  runId: string,
+): Promise<import("@/types").AttendancePaymentRun> {
+  const res = await fetch(`${BASE}/agents/attendance-payment/runs/${runId}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+/**
+ * Hand the run's paid bucket to Bank Verify. Returns the resulting batch.
+ * The run is updated server-side with the bank_verify_batch_id back-link.
+ */
+export async function verifyAttendanceRun(
+  runId: string,
+): Promise<import("@/types").BankVerifyBatchResult> {
+  const res = await fetch(
+    `${BASE}/agents/attendance-payment/runs/${runId}/verify`,
+    { method: "POST" },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+/** Download the run's paid bucket as a payment schedule .xlsx. */
+export async function exportAttendanceSchedule(runId: string): Promise<void> {
+  const res = await fetch(
+    `${BASE}/agents/attendance-payment/runs/${runId}/schedule.xlsx`,
+  );
+  if (!res.ok) await throwFriendly(res);
+  const blob = await res.blob();
+  const cd = res.headers.get("content-disposition") ?? "";
+  const match = cd.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : `attendance-payment-${runId}.xlsx`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Delete a saved attendance run. */
+export async function deleteAttendanceRun(runId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/attendance-payment/runs/${runId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) await throwFriendly(res);
+}
+
+// ─── Rate cards ─────────────────────────────────────────────────────────────
+//
+// Reusable per-diem schedules. CRUD against /rate-cards. The Attendance
+// Payment Agent run endpoint accepts a rate_card_id to apply per-role rates.
+
+export async function listRateCards(): Promise<RateCard[]> {
+  const res = await fetch(`${BASE}/rate-cards`);
+  if (!res.ok) await throwFriendly(res);
+  const data = (await res.json()) as { rate_cards: RateCard[] };
+  return data.rate_cards;
+}
+
+export async function getRateCard(id: string): Promise<RateCard> {
+  const res = await fetch(`${BASE}/rate-cards/${id}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function createRateCard(payload: {
+  name: string;
+  default_rate_per_day: number;
+  roles: RateLine[];
+  currency?: string;
+}): Promise<RateCard> {
+  const res = await fetch(`${BASE}/rate-cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currency: "NGN", ...payload }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function updateRateCard(
+  id: string,
+  payload: {
+    name: string;
+    default_rate_per_day: number;
+    roles: RateLine[];
+    currency?: string;
+  },
+): Promise<RateCard> {
+  const res = await fetch(`${BASE}/rate-cards/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currency: "NGN", ...payload }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function deleteRateCard(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/rate-cards/${id}`, { method: "DELETE" });
+  if (!res.ok) await throwFriendly(res);
+}
+
+// ─── Attendance agent — upgraded run signature ──────────────────────────────
+//
+// The original runAttendanceAgent above hard-codes file uploads + flat rate.
+// runAttendanceAgentAdvanced lets the caller pass EITHER a file OR a Google
+// Sheets URL per input, AND an optional rate_card_id. The original is kept
+// for backward compat with any code that still calls it.
+
+export async function runAttendanceAgentAdvanced(opts: {
+  eventName: string;
+  ratePerDay?: number;
+  rateCardId?: string;
+  attendanceFile?: File;
+  attendanceSheetUrl?: string;
+  paymentInfoFile?: File;
+  paymentInfoSheetUrl?: string;
+}): Promise<import("@/types").AttendancePaymentRun> {
+  const body = new FormData();
+  body.append("event_name", opts.eventName);
+  if (opts.ratePerDay != null) body.append("rate_per_day", String(opts.ratePerDay));
+  if (opts.rateCardId) body.append("rate_card_id", opts.rateCardId);
+  if (opts.attendanceFile) body.append("attendance", opts.attendanceFile);
+  if (opts.attendanceSheetUrl)
+    body.append("attendance_sheet_url", opts.attendanceSheetUrl);
+  if (opts.paymentInfoFile) body.append("payment_info", opts.paymentInfoFile);
+  if (opts.paymentInfoSheetUrl)
+    body.append("payment_info_sheet_url", opts.paymentInfoSheetUrl);
+  body.append("persist", "true");
+
+  const res = await fetch(`${BASE}/agents/attendance-payment/run`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+// ─── Self-Check Agent ──────────────────────────────────────────────────────
+//
+// Runtime diagnostic — exercises every primitive and reports health.
+// V1 of the Self-Improvement Agent. Reports persist server-side.
+//
+// Admin-gated: when the backend has ADMIN_SECRET set, every /diagnostics/*
+// request must include a matching X-Admin-Secret header. We read the
+// secret from localStorage (set by the admin page's secret-input form).
+// The custom AdminAuthError class lets the page surface a re-auth UI when
+// the stored secret is missing or stale.
+
+const ADMIN_SECRET_KEY = "docex.admin_secret";
+
+export class AdminAuthError extends Error {
+  constructor() {
+    super("Admin authentication required");
+    this.name = "AdminAuthError";
+  }
+}
+
+function adminHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const secret = window.localStorage.getItem(ADMIN_SECRET_KEY);
+  return secret ? { "X-Admin-Secret": secret } : {};
+}
+
+export function setAdminSecret(secret: string): void {
+  if (typeof window === "undefined") return;
+  if (secret) window.localStorage.setItem(ADMIN_SECRET_KEY, secret);
+  else window.localStorage.removeItem(ADMIN_SECRET_KEY);
+}
+
+export function getAdminSecret(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(ADMIN_SECRET_KEY);
+}
+
+export async function runDiagnostic(): Promise<DiagnosticReport> {
+  const res = await fetch(`${BASE}/diagnostics/run`, {
+    method: "POST",
+    headers: adminHeaders(),
+  });
+  if (res.status === 404) throw new AdminAuthError();
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function getLastDiagnostic(): Promise<DiagnosticReport | null> {
+  const res = await fetch(`${BASE}/diagnostics/last`, {
+    headers: adminHeaders(),
+  });
+  // 404 has two meanings here: (a) admin gate rejected the request, or
+  // (b) no reports exist yet. We disambiguate by attempting to read the
+  // detail — but for simplicity we treat both as "no report available".
+  // The page differentiates by calling runDiagnostic() (which throws
+  // AdminAuthError on auth failure) when the user clicks "Run".
+  if (res.status === 404) return null;
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function listDiagnosticReports(): Promise<DiagnosticReportSummary[]> {
+  const res = await fetch(`${BASE}/diagnostics`, { headers: adminHeaders() });
+  if (res.status === 404) throw new AdminAuthError();
+  if (!res.ok) await throwFriendly(res);
+  const data = (await res.json()) as { reports: DiagnosticReportSummary[] };
+  return data.reports;
+}
+
+// ─── DOCex Assistant ────────────────────────────────────────────────────────
+//
+// Agentic narrator. Every result page calls this on mount with the result
+// payload — Claude returns a plain-English briefing + ranked next actions.
+
+export async function summarizeForAssistant(
+  contextKind: string,
+  payload: unknown,
+  contextId?: string,
+): Promise<AssistantBrief> {
+  const res = await fetch(`${BASE}/assistant/summarize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      context_kind: contextKind,
+      context_id: contextId ?? null,
+      payload,
+    }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+// ─── Knowledge Hub ──────────────────────────────────────────────────────────
+//
+// Slide-deck ingestion + chat. Upload .pptx, save, ask questions, get cited
+// answers. Same persistence + URL pattern as every other primitive.
+
+export async function uploadDeck(
+  file: File,
+  opts?: { name?: string; description?: string; tags?: string[] },
+): Promise<SlideDeck> {
+  const body = new FormData();
+  body.append("file", file);
+  if (opts?.name) body.append("name", opts.name);
+  if (opts?.description) body.append("description", opts.description);
+  if (opts?.tags && opts.tags.length > 0)
+    body.append("tags", opts.tags.join(", "));
+
+  const res = await fetch(`${BASE}/knowledge/decks`, { method: "POST", body });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function listDecks(): Promise<SlideDeckSummary[]> {
+  const res = await fetch(`${BASE}/knowledge/decks`);
+  if (!res.ok) await throwFriendly(res);
+  const data = (await res.json()) as { decks: SlideDeckSummary[] };
+  return data.decks;
+}
+
+export async function getDeck(deckId: string): Promise<SlideDeck> {
+  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function deleteDeck(deckId: string): Promise<void> {
+  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) await throwFriendly(res);
+}
+
+export async function chatWithDeck(
+  deckId: string,
+  question: string,
+): Promise<KnowledgeAnswer> {
+  const res = await fetch(`${BASE}/knowledge/decks/${deckId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+// ─── Library-wide chat + folder management ──────────────────────────────────
+
+export async function chatWithLibrary(
+  question: string,
+  opts?: { folder?: string | null; tags?: string[] },
+): Promise<KnowledgeAnswer> {
+  const res = await fetch(`${BASE}/knowledge/library/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question,
+      folder: opts?.folder ?? null,
+      tags: opts?.tags ?? null,
+    }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function updateDeck(
+  deckId: string,
+  patch: {
+    name?: string;
+    folder?: string | null;
+    description?: string;
+    tags?: string[];
+  },
+): Promise<SlideDeck> {
+  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...patch,
+      // null folder must serialize to "" so the backend clears it
+      folder: patch.folder === null ? "" : patch.folder,
+    }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function suggestFolder(
+  deckId: string,
+): Promise<{ suggested_folder: string; reasoning: string }> {
+  const res = await fetch(`${BASE}/knowledge/folders/suggest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deck_id: deckId }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
 }

@@ -9,6 +9,7 @@ import {
   Loader2,
   ShieldCheck,
 } from "lucide-react";
+import { AssistantBrief } from "@/components/AssistantBrief";
 import { VerdictScreen } from "@/components/compliance/VerdictScreen";
 import { approveCheck, getCheck, unapproveCheck } from "@/lib/api";
 import type { ComplianceCheckResult } from "@/types";
@@ -150,8 +151,16 @@ export default function SavedCheckPage({
         )}
 
         {check && (
-          <VerdictScreen
-            result={check}
+          <>
+            <div className="mb-6">
+              <AssistantBrief
+                contextKind="compliance_check"
+                contextId={check.payment_id}
+                payload={check}
+              />
+            </div>
+            <VerdictScreen
+              result={check}
             // In saved-check mode, use the frozen snapshot so the audit
             // trail stays consistent with the moment of check, even if
             // the rulebook has been edited since.
@@ -160,7 +169,8 @@ export default function SavedCheckPage({
             approvalLoading={approvalLoading}
             approvalError={approvalError}
             bannerText={bannerText}
-          />
+            />
+          </>
         )}
       </main>
     </div>

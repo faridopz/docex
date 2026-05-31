@@ -283,3 +283,445 @@ export const categoryColor: Record<RuleCategory, string> = {
   documentation: "bg-teal-50 text-teal-700 ring-1 ring-teal-200",
   general: "bg-gray-50 text-gray-700 ring-1 ring-gray-200",
 };
+
+// ── Bank Verify ──────────────────────────────────────────────────────────
+//
+// Bank Verify is the third DOCex primitive — alongside Extraction and
+// Compliance Check. Mirrors models.py / api/schemas.py. Field names must
+// stay in sync across all three.
+//
+// Bank Verify is a standalone tool (anyone can drop accounts in and verify
+// them, no agent context required) AND a composable step inside larger
+// agents (Attendance Payment Agent, Sub-award Agent, Procurement Agent).
+// The 'purpose' field captures WHY the verification ran so the audit trail
+// stays meaningful and notifications route to the right person.
+
+export type BankVerifyVerdict =
+  | "verified"
+  | "warning"
+  | "mismatch"
+  | "unverifiable";
+
+export interface BankVerifyResult {
+  recipient_name: string;
+  account_number: string;
+  bank_code: string;
+  bank_name: string | null;
+  resolved_name: string | null;
+  verdict: BankVerifyVerdict;
+  match_score: number | null;
+  error_message: string | null;
+  timestamp: string | null;
+  amount: number | null;
+  notes: string | null;
+}
+
+export interface BankVerifyBatchResult {
+  total: number;
+  verified: number;
+  warning: number;
+  mismatch: number;
+  unverifiable: number;
+  results: BankVerifyResult[];
+  batch_id: string | null;
+  source_schedule: string | null;
+  created_at: string | null;
+  purpose: string | null;
+  purpose_detail: string | null;
+}
+
+export interface BatchVerifySummary {
+  batch_id: string;
+  source_schedule: string | null;
+  purpose: string | null;
+  purpose_detail: string | null;
+  total: number;
+  verified: number;
+  warning: number;
+  mismatch: number;
+  unverifiable: number;
+  created_at: string | null;
+}
+
+export interface BatchVerifyListResponse {
+  batches: BatchVerifySummary[];
+}
+
+// ── Verify display tokens ────────────────────────────────────────────────
+//
+// Same vocabulary as confidenceColor / verdictColor — emerald/amber/rose/
+// gray for the four verdict bands. Keeping the palette consistent across
+// every DOCex primitive means an officer who learns one screen can read
+// any other screen without re-training their eye.
+
+export const bankVerdictLabel: Record<BankVerifyVerdict, string> = {
+  verified: "Verified",
+  warning: "Warning",
+  mismatch: "Mismatch",
+  unverifiable: "Unverifiable",
+};
+
+export const bankVerdictColor: Record<BankVerifyVerdict, string> = {
+  verified: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  warning: "text-amber-700 bg-amber-50 border-amber-200",
+  mismatch: "text-rose-700 bg-rose-50 border-rose-200",
+  unverifiable: "text-gray-600 bg-gray-50 border-gray-200",
+};
+
+export const bankVerdictRing: Record<BankVerifyVerdict, string> = {
+  verified: "ring-1 ring-emerald-200",
+  warning: "ring-1 ring-amber-200",
+  mismatch: "ring-1 ring-rose-200",
+  unverifiable: "ring-1 ring-gray-200",
+};
+
+export const bankVerdictDot: Record<BankVerifyVerdict, string> = {
+  verified: "bg-emerald-500",
+  warning: "bg-amber-400",
+  mismatch: "bg-rose-500",
+  unverifiable: "bg-gray-300",
+};
+
+// ── Purpose taxonomy ─────────────────────────────────────────────────────
+//
+// The 'why' of a verification batch. Standard values offered as buttons
+// in the UI; 'other' opens a free-text field for custom purposes.
+
+export type StandardPurpose =
+  | "event_payment"
+  | "grantee_disbursement"
+  | "vendor_payment"
+  | "partner_reimbursement"
+  | "other";
+
+export const purposeLabel: Record<StandardPurpose, string> = {
+  event_payment: "Event payment",
+  grantee_disbursement: "Grantee disbursement",
+  vendor_payment: "Vendor payment",
+  partner_reimbursement: "Partner reimbursement",
+  other: "Other",
+};
+
+export const purposeDescription: Record<StandardPurpose, string> = {
+  event_payment: "Per-diems and honoraria for training or workshop attendees",
+  grantee_disbursement: "Payout to a sub-award partner after their grant is awarded",
+  vendor_payment: "Payment to a procurement vendor for goods or services",
+  partner_reimbursement: "Reimbursing a partner organisation for an agreed expense",
+  other: "Anything else — describe the purpose in your own words",
+};
+
+// ── Attendance Payment Agent ─────────────────────────────────────────────
+//
+// DOCex's first *composite* agent — chains parse-attendance, parse-payment-
+// info, fuzzy-match, calculate-amounts, hand-off-to-bank-verify. Targets
+// the Programs team's end-to-end pain of paying event attendees.
+
+export type AttendeeStatus = "paid" | "no_attendance" | "no_payment_info";
+
+export interface MatchedAttendee {
+  payment_info_name: string | null;
+  attendance_name: string | null;
+  match_score: number | null;
+  status: AttendeeStatus;
+  days_attended: number;
+  day_labels: string[];
+  organisation: string | null;
+  account_number: string | null;
+  bank_code: string | null;
+  bank_name: string | null;
+  role: string | null;
+  applied_rate_per_day: number;
+  amount: number;
+}
+
+export interface AttendancePaymentRun {
+  event_name: string;
+  rate_per_day: number;
+  days_in_event: number;
+  matched: MatchedAttendee[];
+  no_attendance: MatchedAttendee[];
+  no_payment_info: MatchedAttendee[];
+  total_to_pay: number;
+  paid_count: number;
+  no_attendance_count: number;
+  no_payment_info_count: number;
+  run_id: string | null;
+  created_at: string | null;
+  attendance_filename: string | null;
+  payment_info_filename: string | null;
+  bank_verify_batch_id: string | null;
+  rate_card_id: string | null;
+  rate_card_name: string | null;
+  rate_card_snapshot: RateCard | null;
+  accuracy_flags: string[];
+  attendance_source: "xlsx" | "google_sheets";
+  payment_info_source: "xlsx" | "google_sheets";
+}
+
+export interface AttendancePaymentRunSummary {
+  run_id: string;
+  event_name: string;
+  rate_per_day: number;
+  days_in_event: number;
+  paid_count: number;
+  no_attendance_count: number;
+  no_payment_info_count: number;
+  total_to_pay: number;
+  created_at: string | null;
+  attendance_filename: string | null;
+  payment_info_filename: string | null;
+  bank_verify_batch_id: string | null;
+}
+
+export const attendeeStatusLabel: Record<AttendeeStatus, string> = {
+  paid: "Paid",
+  no_attendance: "No attendance",
+  no_payment_info: "No bank info",
+};
+
+export const attendeeStatusColor: Record<AttendeeStatus, string> = {
+  paid: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  no_attendance: "text-rose-700 bg-rose-50 border-rose-200",
+  no_payment_info: "text-amber-700 bg-amber-50 border-amber-200",
+};
+
+export const attendeeStatusDot: Record<AttendeeStatus, string> = {
+  paid: "bg-emerald-500",
+  no_attendance: "bg-rose-500",
+  no_payment_info: "bg-amber-400",
+};
+
+// ── Knowledge Hub ────────────────────────────────────────────────────────
+//
+// Slide-deck ingestion + chat. The fifth DOCex primitive. Mirrors the
+// SlideDeck / Slide / KnowledgeAnswer Pydantic models exactly.
+
+export interface Slide {
+  number: number;
+  title: string | null;
+  body: string[];
+  speaker_notes: string | null;
+  table_text: string[];
+}
+
+// Document type drives the chunk vocabulary ("Slide N" / "Page N" / "Section N")
+// and the badge shown on each document card.
+export type DocumentContentType = "pptx" | "docx" | "pdf";
+
+export interface SlideDeck {
+  id: string;
+  name: string;
+  source_filename: string;
+  content_type: DocumentContentType;
+  slide_count: number;
+  slides: Slide[];
+  tags: string[];
+  description: string | null;
+  // Slash-delimited folder path. null = root level. "Reports/2026/Q1"
+  // renders as a 3-deep tree in the library sidebar.
+  folder: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SlideDeckSummary {
+  id: string;
+  name: string;
+  source_filename: string;
+  content_type: DocumentContentType;
+  slide_count: number;
+  tags: string[];
+  description: string | null;
+  folder: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// The label shown for one chunk of a doc — used in citation chips, the
+// slide list header, the empty-chat example questions, etc. Keep this
+// in sync with the backend chunk_label_for() helper in slides.py.
+export const chunkLabel: Record<DocumentContentType, string> = {
+  pptx: "Slide",
+  docx: "Section",
+  pdf: "Page",
+};
+
+export const chunkLabelPlural: Record<DocumentContentType, string> = {
+  pptx: "slides",
+  docx: "sections",
+  pdf: "pages",
+};
+
+// Format badge styling for the document cards.
+export const contentTypeBadge: Record<DocumentContentType, string> = {
+  pptx: "bg-orange-50 text-orange-700 ring-1 ring-orange-200",
+  docx: "bg-blue-50 text-blue-700 ring-1 ring-blue-200",
+  pdf: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
+};
+
+export const contentTypeLabel: Record<DocumentContentType, string> = {
+  pptx: "PowerPoint",
+  docx: "Word",
+  pdf: "PDF",
+};
+
+export interface SlideCitation {
+  slide_number: number;
+  excerpt: string | null;
+  // Set for library-wide citations so the chip can deep-link to the right
+  // document. Null for per-document chat where the deck context is implicit.
+  deck_id: string | null;
+  deck_name: string | null;
+}
+
+export interface KnowledgeAnswer {
+  question: string;
+  answer: string;
+  citations: SlideCitation[];
+  deck_id: string;
+  deck_name: string;
+  error: string | null;
+  created_at: string | null;
+  // Library-wide chat only: documents skipped because the library
+  // exceeded Claude's context budget. Empty for per-document chat.
+  truncated_decks?: string[];
+}
+
+// ── DOCex Assistant ──────────────────────────────────────────────────────
+//
+// The agentic narrator. Every result page renders an AssistantBrief at the
+// top — Claude's plain-English summary of what just happened plus 0-5
+// suggested next actions.
+
+export type SuggestedActionUrgency = "high" | "medium" | "low";
+
+export interface SuggestedAction {
+  label: string;
+  urgency: SuggestedActionUrgency;
+  reason: string | null;
+}
+
+export interface AssistantBrief {
+  narrative: string;
+  actions: SuggestedAction[];
+  headline: string | null;
+  context_kind: string;
+  context_id: string | null;
+}
+
+export const urgencyColor: Record<SuggestedActionUrgency, string> = {
+  high: "bg-rose-50 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100",
+  medium: "bg-amber-50 text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100",
+  low: "bg-gray-50 text-gray-700 ring-1 ring-gray-200 hover:bg-gray-100",
+};
+
+export const urgencyDot: Record<SuggestedActionUrgency, string> = {
+  high: "bg-rose-500",
+  medium: "bg-amber-400",
+  low: "bg-gray-400",
+};
+
+// ── Self-Check Agent ─────────────────────────────────────────────────────
+//
+// Runtime diagnostic. V1 of the longer-term Self-Improvement Agent.
+
+export type CheckStatus = "pass" | "warn" | "fail" | "skip";
+export type DiagnosticOverall = "healthy" | "degraded" | "broken";
+
+export interface CheckResult {
+  id: string;
+  category: string;
+  title: string;
+  status: CheckStatus;
+  summary: string;
+  evidence: string | null;
+  fix_hint: string | null;
+  duration_ms: number;
+}
+
+export interface DiagnosticReport {
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  total: number;
+  passed: number;
+  warned: number;
+  failed: number;
+  skipped: number;
+  overall: DiagnosticOverall;
+  checks: CheckResult[];
+  report_id: string | null;
+}
+
+export interface DiagnosticReportSummary {
+  report_id: string;
+  started_at: string;
+  duration_ms: number;
+  overall: DiagnosticOverall;
+  total: number;
+  passed: number;
+  warned: number;
+  failed: number;
+  skipped: number;
+}
+
+export const checkStatusColor: Record<CheckStatus, string> = {
+  pass: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  warn: "text-amber-700 bg-amber-50 border-amber-200",
+  fail: "text-rose-700 bg-rose-50 border-rose-200",
+  skip: "text-gray-500 bg-gray-50 border-gray-200",
+};
+
+export const checkStatusDot: Record<CheckStatus, string> = {
+  pass: "bg-emerald-500",
+  warn: "bg-amber-400",
+  fail: "bg-rose-500",
+  skip: "bg-gray-300",
+};
+
+export const checkStatusIcon: Record<CheckStatus, string> = {
+  pass: "✓",
+  warn: "!",
+  fail: "✗",
+  skip: "·",
+};
+
+export const overallColor: Record<DiagnosticOverall, string> = {
+  healthy: "text-emerald-800 bg-emerald-50 ring-1 ring-emerald-200",
+  degraded: "text-amber-800 bg-amber-50 ring-1 ring-amber-200",
+  broken: "text-rose-800 bg-rose-50 ring-1 ring-rose-200",
+};
+
+// ── Rate cards ───────────────────────────────────────────────────────────
+//
+// Reusable per-diem schedules. One default rate + per-role overrides.
+// Agents consult a card at run time to compute amounts.
+
+export interface RateLine {
+  role: string;
+  amount_per_day: number;
+}
+
+export interface RateCard {
+  id: string;
+  name: string;
+  default_rate_per_day: number;
+  roles: RateLine[];
+  currency: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// Extended MatchedAttendee + AttendancePaymentRun fields — kept on the
+// originals above as optional. Re-export with the new fields documented
+// so consumers can rely on the shape. (TS structural typing means we
+// don't have to re-declare; this comment is for human readers.)
+//
+// MatchedAttendee.role: string | null
+// MatchedAttendee.applied_rate_per_day: number
+// AttendancePaymentRun.rate_card_id: string | null
+// AttendancePaymentRun.rate_card_name: string | null
+// AttendancePaymentRun.rate_card_snapshot: RateCard | null
+// AttendancePaymentRun.accuracy_flags: string[]
+// AttendancePaymentRun.attendance_source: "xlsx" | "google_sheets"
+// AttendancePaymentRun.payment_info_source: "xlsx" | "google_sheets"

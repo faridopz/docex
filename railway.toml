@@ -1,0 +1,22 @@
+# Railway deployment config for the DOCex API.
+#
+# Railway autodetects this file at the repo root. Builds from api/Dockerfile,
+# runs on a persistent volume so /app data survives restarts.
+#
+# Required env vars to set in Railway dashboard:
+#   ANTHROPIC_API_KEY    — Claude API key
+#   PAYSTACK_SECRET_KEY  — Paystack live or test key
+#   ALLOWED_ORIGINS      — comma-separated list of frontend origins,
+#                          e.g. "https://docex.vercel.app,https://docex.com"
+#   ADMIN_SECRET         — optional; locks /admin/diagnostics when set
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "api/Dockerfile"
+
+[deploy]
+# Railway provides $PORT at runtime; the Dockerfile CMD already respects it.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

@@ -1,0 +1,156 @@
+{
+  "id": "sample-ngo-procurement",
+  "name": "Sample · Standard NGO Procurement Policy 2026",
+  "source_documents": [
+    "DOCex Sample Procurement Policy.pdf"
+  ],
+  "interpretation_notes": "This is a sample rulebook bundled with DOCex so new users can see the Compliance Check flow end-to-end without uploading their own policy first. The rules below reflect common NGO procurement controls drawn from BMGF, USAID 2 CFR 200, and standard NGO finance manuals. Clone this rulebook and edit the rules to match your own policy — every rule is independently editable, deactivatable, or removable.",
+  "rules": [
+    {
+      "id": "rule-three-quotes",
+      "clause_reference": "Section 3.1",
+      "description": "Purchases above ₦500,000 must include three independent vendor quotations attached to the payment request.",
+      "condition": "amount > 500000",
+      "evidence_required": [
+        "Three quotation documents from distinct vendors",
+        "Bid analysis or vendor selection memo"
+      ],
+      "category": "procurement",
+      "source_quote": "All procurements with value exceeding five hundred thousand naira (₦500,000) require three independent quotations from registered vendors.",
+      "source_page": 4,
+      "active": true
+    },
+    {
+      "id": "rule-director-signoff",
+      "clause_reference": "Section 3.2",
+      "description": "Purchases above ₦1,000,000 require sign-off by the Director of Operations or equivalent.",
+      "condition": "amount > 1000000",
+      "evidence_required": [
+        "Signed approval from Director or equivalent",
+        "Date of approval predates payment date"
+      ],
+      "category": "approvals",
+      "source_quote": "Procurements in excess of one million naira require written approval from the Director of Operations prior to commitment.",
+      "source_page": 5,
+      "active": true
+    },
+    {
+      "id": "rule-vendor-cac",
+      "clause_reference": "Section 4.1",
+      "description": "Every vendor must be CAC-registered. CAC registration certificate must be on file before any payment is released.",
+      "condition": null,
+      "evidence_required": [
+        "Vendor CAC registration certificate",
+        "Vendor TIN where applicable"
+      ],
+      "category": "vendor",
+      "source_quote": "All vendors must produce evidence of registration with the Corporate Affairs Commission (CAC) before any commitment is made.",
+      "source_page": 6,
+      "active": true
+    },
+    {
+      "id": "rule-invoice-completeness",
+      "clause_reference": "Section 5.2",
+      "description": "Invoices must carry the vendor address, TIN (where applicable), invoice date, and itemised line items.",
+      "condition": null,
+      "evidence_required": [
+        "Vendor address visible on invoice",
+        "TIN where vendor is VAT-registered",
+        "Itemised line items (no lump-sum 'services rendered')"
+      ],
+      "category": "receipts",
+      "source_quote": "All invoices submitted for payment must include the vendor's full address, tax identification number where applicable, date of issue, and itemised description of goods or services.",
+      "source_page": 7,
+      "active": true
+    },
+    {
+      "id": "rule-grn-required",
+      "clause_reference": "Section 5.3",
+      "description": "For goods purchases, a signed Goods Received Note (GRN) must accompany the payment request, signed by the receiver and storekeeper.",
+      "condition": "category in (goods, supplies, equipment)",
+      "evidence_required": [
+        "GRN signed by receiver",
+        "GRN signed by storekeeper or equivalent",
+        "GRN quantity matches invoice quantity"
+      ],
+      "category": "receipts",
+      "source_quote": "All goods deliveries must be confirmed via a Goods Received Note (GRN) signed by both the receiver and the storekeeper before payment is processed.",
+      "source_page": 8,
+      "active": true
+    },
+    {
+      "id": "rule-travel-advance-retirement",
+      "clause_reference": "Section 6.2",
+      "description": "Travel advances must be retired with supporting receipts within 14 days of trip completion.",
+      "condition": "category == 'travel_advance'",
+      "evidence_required": [
+        "Boarding passes or travel tickets",
+        "Hotel receipts",
+        "Per-diem retirement form"
+      ],
+      "category": "retirement",
+      "source_quote": "All travel advances must be fully retired with supporting documentation within fourteen (14) calendar days of trip completion. Unretired advances are recoverable from staff salaries.",
+      "source_page": 11,
+      "active": true
+    },
+    {
+      "id": "rule-cash-limit",
+      "clause_reference": "Section 7.1",
+      "description": "Cash payments above ₦100,000 are prohibited. Payments must be made via bank transfer.",
+      "condition": "payment_method == 'cash' and amount > 100000",
+      "evidence_required": [
+        "Bank transfer confirmation or payment voucher referencing a bank account"
+      ],
+      "category": "general",
+      "source_quote": "No cash disbursement in excess of one hundred thousand naira (₦100,000) shall be permitted under any circumstance. All such payments must be effected through bank transfer.",
+      "source_page": 13,
+      "active": true
+    },
+    {
+      "id": "rule-per-diem-rate-card",
+      "clause_reference": "Section 8.2",
+      "description": "Per-diem payments to event attendees and staff must follow the approved rate card on file.",
+      "condition": "category == 'per_diem'",
+      "evidence_required": [
+        "Rate card reference number or version",
+        "Per-diem calculation showing days × approved rate"
+      ],
+      "category": "advance",
+      "source_quote": "Per-diem rates are governed by the approved rate card published annually. Payments must match the rate-card amount for the recipient's role and event type.",
+      "source_page": 15,
+      "active": true
+    },
+    {
+      "id": "rule-requisition-approved",
+      "clause_reference": "Section 9.1",
+      "description": "Every payment must be backed by an approved requisition signed prior to the commitment date.",
+      "condition": null,
+      "evidence_required": [
+        "Signed requisition document",
+        "Requisition signed before invoice date"
+      ],
+      "category": "approvals",
+      "source_quote": "All disbursements must be supported by a duly approved requisition. The requisition must be signed by an authorised approver prior to the commitment of funds.",
+      "source_page": 16,
+      "active": true
+    },
+    {
+      "id": "rule-original-receipts",
+      "clause_reference": "Section 10.3",
+      "description": "Receipts must be originals (or signed scans). Photocopies without endorsement are not acceptable.",
+      "condition": null,
+      "evidence_required": [
+        "Original receipt or signed scan",
+        "Endorsement where copy is submitted"
+      ],
+      "category": "documentation",
+      "source_quote": "Only original receipts, or photocopies bearing the authorised endorsement of the finance officer, shall be acceptable as supporting documentation for any payment.",
+      "source_page": 18,
+      "active": true
+    }
+  ],
+  "created_at": "2026-05-30T00:00:00+00:00",
+  "updated_at": "2026-05-30T00:00:00+00:00",
+  "notification_email": null,
+  "notification_trigger": null
+}

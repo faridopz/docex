@@ -25,6 +25,7 @@ from docx import Document as DocxDocument
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 # Load .env from the project root (sibling of /api). Means the user can paste
 # ANTHROPIC_API_KEY into one file once and never re-export it per shell.
@@ -32,26 +33,55 @@ from fastapi.middleware.cors import CORSMiddleware
 # still wins, which matters for CI/CD and one-off testing.
 load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 
-# Loud startup check — if the API key is missing, every extraction call will
-# fail with a 401 and the user will only see "3 errors" in the UI. Catch it
-# here so the terminal makes the cause obvious before the first request lands.
+# Loud startup checks — if a required env var is missing, every call to the
+# affected primitive will fail with a 401/RuntimeError and the user will
+# only see "errors" in the UI. Catch them here so the terminal makes the
+# cause obvious before the first request lands. The diagnostic at
+# /admin/diagnostics surfaces the same issues at runtime; the startup
+# print is the loud first-line-of-defence for ops.
+_missing_secrets: list[str] = []
 if not os.environ.get("ANTHROPIC_API_KEY"):
+    _missing_secrets.append("ANTHROPIC_API_KEY  (powers Extraction + Compliance Check + follow-up drafting)")
+if not os.environ.get("PAYSTACK_SECRET_KEY"):
+    _missing_secrets.append("PAYSTACK_SECRET_KEY  (powers Bank Verify + Attendance Payment Agent verification)")
+
+if _missing_secrets:
     print(
         "\n" + "=" * 70 + "\n"
-        "[DOCex] WARNING: ANTHROPIC_API_KEY is not set in this environment.\n"
-        "Every extraction call will fail until you export the key in the\n"
-        "same shell that runs uvicorn, e.g.:\n"
-        "  export ANTHROPIC_API_KEY=sk-ant-...\n"
-        "  uvicorn api.main:app --reload --port 8000\n"
+        "[DOCex] WARNING — missing environment variables:\n  "
+        + "\n  ".join(f"• {s}" for s in _missing_secrets) + "\n\n"
+        "Affected calls will fail. Add the values to .env at the project\n"
+        "root, then restart uvicorn. /admin/diagnostics will show the\n"
+        "same status with fix hints once the API is running.\n"
         + "=" * 70 + "\n",
         flush=True,
     )
+
+# Bootstrap persistence directories at app boot — every primitive's storage
+# layer is file-based JSON under {project_root}/{thing}/. Creating these
+# at import time means a fresh checkout doesn't trip on the first request
+# that tries to write. mkdir(exist_ok=True) is idempotent so re-runs are safe.
+for _dirname in ("rulebooks", "checks", "verifications",
+                  "attendance_runs", "rate_cards", "diagnostics", "decks"):
+    try:
+        (Path(__file__).parent.parent / _dirname).mkdir(parents=True, exist_ok=True)
+    except Exception as _exc:
+        # Non-fatal — the lazy _ensure_dir() in each routes file will retry.
+        # We don't want a chmod issue on one directory to prevent the whole
+        # API from booting.
+        print(f"[DOCex] Notice: could not pre-create {_dirname}/: {_exc}", flush=True)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402
+from .assistant_routes import router as assistant_router  # noqa: E402
+from .attendance_agent_routes import router as attendance_router  # noqa: E402
+from .bank_verify_routes import router as bank_verify_router  # noqa: E402
 from .compliance_routes import router as compliance_router  # noqa: E402
+from .knowledge_routes import router as knowledge_router  # noqa: E402
+from .rate_card_routes import router as rate_card_router  # noqa: E402
+from .self_check_routes import router as self_check_router  # noqa: E402
 from .schemas import (  # noqa: E402
     BatchExtractionResponse,
     FollowupDraft,
@@ -95,9 +125,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# GZip compression — shrinks JSON responses ~60-80% on payloads over 1KB.
+# Cost is a tiny CPU bump on the API; benefit is faster page loads everywhere
+# the frontend hits a list endpoint (Bank Verify batches, attendance runs,
+# rate cards, diagnostic reports). FastAPI's stock GZipMiddleware handles
+# the Accept-Encoding negotiation correctly.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.
 app.include_router(compliance_router)
+
+# Bank Verify routes — bulk verification of recipient bank accounts against
+# Paystack /bank/resolve, with fuzzy name matching. See api/bank_verify_routes.py.
+app.include_router(bank_verify_router)
+
+# Attendance Payment Agent — DOCex's first composite agent. Chains the
+# attendance-log + payment-info parsing primitives with cross-matching,
+# then hands the resulting schedule off to Bank Verify for verification.
+# See api/attendance_agent_routes.py.
+app.include_router(attendance_router)
+
+# Rate cards — reusable per-diem schedules consumed by the Attendance
+# Payment Agent and (later) any other agent that needs to compute payment
+# amounts. See api/rate_card_routes.py.
+app.include_router(rate_card_router)
+
+# Self-Check Agent — runtime diagnostic that exercises every primitive and
+# reports health. V1 of the longer-term Self-Improvement Agent (observe →
+# recommend). See api/self_check_routes.py.
+app.include_router(self_check_router)
+
+# DOCex Assistant — agentic narrator. Every result page calls this to get
+# a plain-English briefing on what just happened plus recommended next
+# actions. See api/assistant_routes.py.
+app.include_router(assistant_router)
+
+# Knowledge Hub — slide-deck ingestion + chat-with-slides. The fifth
+# DOCex primitive. Upload .pptx → parsed slide-by-slide → ask questions
+# with slide-N citations. See api/knowledge_routes.py.
+app.include_router(knowledge_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

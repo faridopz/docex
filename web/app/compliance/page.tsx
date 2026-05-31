@@ -89,7 +89,7 @@ export default function ComplianceListPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-[#fafaf7]">
       <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
         <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-6 px-6">
           <Link
@@ -115,6 +115,20 @@ export default function ComplianceListPage() {
               Saved checks
             </Link>
             <Link
+              href="/agents/attendance-payment"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Attendance Payment Agent"
+            >
+              Attendance
+            </Link>
+            <Link
+              href="/verify"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Switch to bank account verification"
+            >
+              Bank Verify
+            </Link>
+            <Link
               href="/app"
               className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
               title="Switch to extraction mode"
@@ -131,12 +145,15 @@ export default function ComplianceListPage() {
           <div className="flex items-start justify-between gap-6">
             <div>
               <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-                Saved rulebooks
+                Your internal auditor, automated.
               </h1>
               <p className="mt-2 max-w-xl text-base text-gray-600">
-                Each rulebook is one policy DOCex has interpreted.{" "}
+                DOCex reads your procurement, travel, or donor policy and
+                turns it into a rulebook. Every payment voucher gets checked
+                rule by rule, with citations from both the policy and the
+                payment.{" "}
                 <span className="text-gray-900">
-                  Upload once, run checks forever.
+                  Upload your policy once. Audit-grade checks forever.
                 </span>
               </p>
             </div>
@@ -259,19 +276,27 @@ function EmptyState() {
         No rulebooks yet
       </h2>
       <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-600">
-        Upload your first policy — procurement, travel, expense, anything.
-        DOCex extracts the rules, you review and edit them once, and then
-        every payment gets checked against the same rulebook in seconds.
+        Upload your own procurement, travel, or expense policy — or start
+        with our pre-built sample so you can see the full flow in 60 seconds.
       </p>
-      <Link
-        href="/compliance/new"
-        className="mt-6 inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-brand-100 transition hover:bg-brand-700"
-      >
-        <Sparkles className="h-4 w-4" />
-        Upload your first policy
-      </Link>
+      <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        <Link
+          href="/compliance/rulebooks/sample-ngo-procurement"
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-brand-100 transition hover:bg-brand-700"
+        >
+          <Sparkles className="h-4 w-4" />
+          Try the sample rulebook
+        </Link>
+        <Link
+          href="/compliance/new"
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:border-brand-300 hover:text-brand-700"
+        >
+          <FileText className="h-4 w-4" />
+          Upload your own policy
+        </Link>
+      </div>
       <p className="mt-4 text-xs text-gray-400">
-        PDF, DOCX, or TXT · Takes about 30 seconds to interpret
+        Sample: Standard NGO Procurement Policy · 10 rules · pre-loaded for demo
       </p>
     </div>
   );

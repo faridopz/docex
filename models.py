@@ -172,3 +172,471 @@ class ComplianceCheckBatchResult(BaseModel):
     flagged: int
     blocked: int
     checks: list[ComplianceCheckResult]
+
+
+# ─── Bank Verify models ─────────────────────────────────────────────────────
+#
+# Bank Verify is DOCex's third primitive — alongside Extraction and Compliance.
+# It targets the NGO programs-team pain of manually verifying recipient bank
+# accounts against payment schedules by typing each account number into a bank
+# app one at a time.
+#
+# Architecture (mirrors compliance.py's two-pass approach):
+#   Pass 1 — resolve each account number against a bank-resolution endpoint
+#            (Paystack /bank/resolve), capturing the registered account
+#            holder name from the bank record.
+#   Pass 2 — fuzzy-match the resolved name against the recipient name on the
+#            payment schedule, producing a per-row verdict.
+
+
+class BankAccountRow(BaseModel):
+    """One row from a payment schedule, before verification."""
+    recipient_name: str                  # name as written on the payment schedule
+    account_number: str                  # NUBAN (10 digits in Nigeria)
+    bank_code: str                       # Paystack bank code, e.g. "058" for GTBank
+    bank_name: Optional[str] = None      # display only — e.g. "GTBank"
+    amount: Optional[float] = None       # payment amount in NGN (carried for audit trail)
+    notes: Optional[str] = None          # purpose / description column from the schedule
+
+
+# verified      — resolved name closely matches the recipient name
+# warning       — partial match; could be name variant, requires human review
+# mismatch      — resolved name clearly differs from the recipient name
+# unverifiable  — bank API could not resolve (invalid account, network error, etc.)
+BankVerifyVerdict = Literal["verified", "warning", "mismatch", "unverifiable"]
+
+
+class BankVerifyResult(BaseModel):
+    """Outcome of verifying one BankAccountRow against the bank record."""
+    recipient_name: str
+    account_number: str
+    bank_code: str
+    bank_name: Optional[str] = None
+    # The source-of-truth name returned by the bank (None if unverifiable).
+    resolved_name: Optional[str] = None
+    verdict: BankVerifyVerdict
+    # 0-100 fuzzy similarity between recipient_name and resolved_name. Null
+    # when unverifiable (no resolved name to compare against).
+    match_score: Optional[int] = None
+    # Filled when verdict is "unverifiable" — the upstream error message, or
+    # our own description ("bank code not recognised", "account too short").
+    error_message: Optional[str] = None
+    timestamp: Optional[str] = None       # ISO 8601 when this verification ran
+    # Pass-through from BankAccountRow so the downstream Excel export can
+    # re-emit the original schedule shape with verdict columns appended.
+    # Finance officers want their working file back, augmented — not a
+    # foreign export. Carrying these here is cheaper than rejoining rows
+    # to results by index downstream.
+    amount: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class BankVerifyBatchResult(BaseModel):
+    """Batch verification result — many rows verified at once."""
+    total: int
+    verified: int
+    warning: int
+    mismatch: int
+    unverifiable: int
+    results: list[BankVerifyResult]
+    # ─── Persistence + audit metadata ──────────────────────────────────
+    # Like ComplianceCheckResult, the engine produces transient results;
+    # the storage layer (api/bank_verify_routes.py, coming Day 2) decides
+    # when to write them. These fields are populated on save.
+    batch_id: Optional[str] = None        # uuid set on save
+    source_schedule: Optional[str] = None # original payment schedule filename
+    created_at: Optional[str] = None      # ISO 8601 when the batch ran
+    # Foreign keys to upstream agents. When this batch was created by an
+    # agent (Attendance Payment Agent, Sub-award Agent, etc.) rather than
+    # by a direct user upload, attendance_run_id is the run that produced
+    # the schedule. Audit-essential — answers "where did this verification
+    # come from?" three months later without spelunking.
+    attendance_run_id: Optional[str] = None
+    # ─── Purpose / context ─────────────────────────────────────────────
+    # WHY this verification ran. Tagged at upload time so the audit trail
+    # answers "show me all grantee disbursement verifications for Q2" in
+    # one filter. Also drives notification routing (vendor → procurement,
+    # grantee → sub-award, event → programs) and unlocks per-purpose
+    # threshold tuning later (grantee disbursements run at a tighter
+    # warning band than event per-diems).
+    #
+    # Standard values:
+    #   "event_payment"          — per-diem/honoraria to event attendees
+    #   "grantee_disbursement"   — payout to an awarded sub-award partner
+    #   "vendor_payment"         — payment to a procurement vendor
+    #   "partner_reimbursement"  — reimbursing a partner organisation
+    #   "other"                  — anything else; purpose_detail explains
+    #
+    # Free-text rather than an enum so users can capture nuance the
+    # standard categories miss ("Q2 grantee top-up disbursement",
+    # "supplier final invoice after delivery"). Validation lives in the
+    # API layer where we suggest standard values but accept custom.
+    purpose: Optional[str] = None
+    purpose_detail: Optional[str] = None  # optional free-text elaboration
+
+
+# ─── Knowledge Hub models ─────────────────────────────────────────────────
+#
+# DOCex's fifth primitive — slide-deck ingestion + chat. Targets the NGO
+# knowledge-management pain: check-in slides, donor reports, training
+# decks, board presentations all accumulate in shared drives where they
+# go to die. The Knowledge Hub parses them once, stores them queryably,
+# and lets the team chat across the corpus with Claude.
+#
+# MVP scope: per-deck chat. Slide-N citations. Each deck is one logical
+# unit (e.g. "Gates Foundation March 2026 Check-in"). Multi-deck chat +
+# saved insights are Phase 2.
+#
+# Why model slides individually rather than dumping deck text as one blob:
+# (a) citations need slide numbers, (b) the user wants to navigate by slide,
+# (c) future semantic retrieval will rank by slide.
+
+
+class Slide(BaseModel):
+    """One chunk of a document — slide for PPTX, page for PDF, section for DOCX.
+
+    Kept the name "Slide" for backward compatibility with persisted records
+    on disk that were written before multi-format support landed. Future
+    refactor (when we touch the on-disk schema for other reasons) can
+    rename to KnowledgeChunk or similar. The frontend handles the label
+    variation ("Slide N" vs "Page N" vs "Section N") based on the parent
+    document's content_type.
+    """
+    number: int                               # 1-indexed chunk number
+    title: Optional[str] = None               # heading / first heading-like text
+    body: list[str] = []                      # all other text as lines
+    speaker_notes: Optional[str] = None       # PPTX-only: speaker notes pane
+    table_text: list[str] = []                # flattened table rows
+    # Future: image OCR, embeddings vector, auto-extracted topic.
+
+
+# Document type — drives which parser ran AND how the frontend labels
+# chunks. "pptx" stays the default for backward-compat with existing
+# decks persisted before this field existed.
+DocumentContentType = Literal["pptx", "docx", "pdf"]
+
+
+class SlideDeck(BaseModel):
+    """A persisted document in the Knowledge Hub library.
+
+    Originally "slide deck" — the Knowledge Hub started PPTX-only — but
+    now holds any document type (DOCX proposals, PDF training manuals,
+    PPTX check-ins). The model name stays SlideDeck for backward
+    compatibility with the JSON files on disk; the frontend surfaces it
+    as "Document" in the UI.
+
+    The chunk vocabulary varies by format:
+      - PPTX: slides numbered 1..N (with optional speaker notes)
+      - PDF:  pages numbered 1..N
+      - DOCX: sections numbered 1..N, split by heading hierarchy
+    """
+    id: str
+    name: str                                 # user-facing label (defaults to filename)
+    source_filename: str                      # original filename
+    # Format the doc came from. Default keeps every persisted record from
+    # before this field as a slide-deck so we never break old data.
+    content_type: DocumentContentType = "pptx"
+    slide_count: int                          # total chunks, regardless of format
+    slides: list[Slide]
+    # Optional metadata captured at upload time. Lets the user/team
+    # categorise documents ("Gates Foundation", "Q2 2026", "Inception") for
+    # later filtering and library-wide chat.
+    tags: list[str] = []
+    description: Optional[str] = None
+    # Folder path — a slash-delimited string like "Reports/2026/Q1" or
+    # "Policies/Anti-Fraud". One folder per document (vs many-to-many for
+    # tags). Empty/None means "root" — appears at the top level of the
+    # library tree. We use a single string rather than a separate Folder
+    # model because:
+    #   (a) folders don't need their own metadata (no permissions yet)
+    #   (b) reordering is trivial (just rename the prefix)
+    #   (c) renders as a tree by client-side splitting on "/"
+    # This makes folders feel like a filesystem without the overhead of one.
+    folder: Optional[str] = None
+    # Persistence + audit metadata
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# Citation = a slide reference attached to a chat answer. The frontend
+# renders these as clickable chips next to the answer so the user can
+# verify Claude's source.
+#
+# In per-document chat, deck_id and deck_name are redundant (the user is
+# already on the document's page) but we carry them anyway so the same
+# shape works for library-wide chat. In library-wide chat, deck_id is
+# essential — that's how the chip knows which document to deep-link to.
+class SlideCitation(BaseModel):
+    slide_number: int
+    excerpt: Optional[str] = None             # short verbatim quote from the slide
+    deck_id: Optional[str] = None             # which document this slide belongs to
+    deck_name: Optional[str] = None           # display name for library-wide citation chips
+
+
+class KnowledgeAnswer(BaseModel):
+    """Claude's response to a user question about a deck."""
+    question: str
+    answer: str                               # natural-language response with [Slide N] markers inline
+    citations: list[SlideCitation] = []       # parsed citations with excerpts
+    deck_id: str
+    deck_name: str
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    # When library-wide chat truncates due to Claude's context cap, the
+    # engine populates this with the names of the documents it had to skip.
+    # The frontend surfaces this as a soft warning chip so the user knows
+    # the answer didn't see every document. Empty / not set for per-doc chat.
+    truncated_decks: list[str] = []
+
+
+# ─── DOCex Assistant models ───────────────────────────────────────────────
+#
+# The Assistant is the agentic narrator that briefs the user on what just
+# happened in any agent run. Every result page (Bank Verify, Attendance
+# Payment, Compliance Check, Self-Check) gets one of these cards at the
+# top. The goal is to turn a verdict table into a conversation — Claude
+# reads the result, summarises in plain English, and proposes actions.
+#
+# Why a dedicated primitive rather than inlining the prompt at each call
+# site: (a) one place to refine tone and structure, (b) one place to
+# improve the prompt as we learn what makes briefings land, (c) the
+# briefing surface composes into the future Self-Improvement Agent and
+# the Flow Builder.
+
+
+# Urgency drives visual weight in the UI. high = primary CTA / red;
+# medium = secondary CTA / amber; low = informational / gray.
+SuggestedActionUrgency = Literal["high", "medium", "low"]
+
+
+class SuggestedAction(BaseModel):
+    """One next-step suggestion the Assistant proposes after a run."""
+    label: str                                # short verb phrase, e.g. "Block this payment"
+    urgency: SuggestedActionUrgency
+    reason: Optional[str] = None              # 1-sentence why
+
+
+class AssistantBrief(BaseModel):
+    """The Assistant's response to a result. Returned by /assistant/summarize."""
+    narrative: str                            # 2-4 sentence plain-English summary
+    actions: list[SuggestedAction] = []       # 0-5 ranked next steps
+    headline: Optional[str] = None            # optional one-line takeaway
+    # Provenance — what context the Assistant was given. Helps debugging
+    # when the brief reads wrong ("oh, we didn't pass it the rule_results").
+    context_kind: str                         # "bank_verify_batch" | "attendance_run" | "compliance_check" | "diagnostic"
+    context_id: Optional[str] = None
+
+
+# ─── Self-Check Agent models ──────────────────────────────────────────────
+#
+# Runtime diagnostic that exercises every primitive and reports health.
+# Categories: environment, filesystem, engines, API routes, end-to-end
+# smoke, data integrity. V1 of the longer-term Self-Improvement Agent —
+# this one observes, that one will also propose.
+
+# pass — check ran and confirmed the thing works
+# warn — check ran and the thing works but is suboptimal (e.g. test-mode
+#        Paystack key, no rate cards saved, no sample data)
+# fail — check ran and the thing is broken (e.g. missing API key,
+#        unwritable persistence dir, engine import error)
+# skip — check intentionally skipped (e.g. live-mode-only checks when
+#        in test mode)
+CheckStatus = Literal["pass", "warn", "fail", "skip"]
+
+
+class CheckResult(BaseModel):
+    """One diagnostic check's outcome."""
+    id: str                                   # stable kebab-case key, e.g. "env-anthropic-key"
+    category: str                             # "environment" | "filesystem" | "engines" | "api" | "smoke" | "data"
+    title: str                                # short human-readable label
+    status: CheckStatus
+    summary: str                              # one-sentence outcome (the verdict)
+    evidence: Optional[str] = None            # what the check actually saw — file path, count, value, exception
+    fix_hint: Optional[str] = None            # actionable next step when status != pass
+    duration_ms: int = 0                      # how long the check took
+
+
+class DiagnosticReport(BaseModel):
+    """Full result of running the Self-Check Agent suite."""
+    started_at: str                           # ISO 8601
+    finished_at: str
+    duration_ms: int
+    total: int                                # len(checks)
+    passed: int
+    warned: int
+    failed: int
+    skipped: int
+    # Overall verdict — derived from per-check statuses.
+    # "healthy" (no fails, ≤2 warns), "degraded" (no fails, >2 warns),
+    # "broken" (any fail).
+    overall: Literal["healthy", "degraded", "broken"]
+    checks: list[CheckResult]
+    report_id: Optional[str] = None           # uuid, set on save
+
+
+# ─── Rate Card models ─────────────────────────────────────────────────────
+#
+# Rate cards let an org define their standard per-diem schedule once and
+# reuse it across every event. Each card holds one default rate + zero-to-
+# many per-role overrides. The Attendance Payment Agent consults a card
+# at run time: look up each payee's role in the card, fall back to the
+# default rate when no role match.
+#
+# Why per-role rather than per-person: in practice, NGOs price events by
+# function (Facilitator vs Participant vs M&E Officer), not by individual.
+# The role-based shape is what finance officers actually maintain in their
+# spreadsheets, and what auditors expect to see.
+#
+# File-based persistence under {project_root}/rate_cards/{id}.json,
+# matching the existing rulebook + verification persistence pattern.
+
+
+class RateLine(BaseModel):
+    """One role-specific rate in a rate card."""
+    role: str                                 # e.g. "Facilitator", "Participant"
+    amount_per_day: float                     # NGN per day attended
+
+
+class RateCard(BaseModel):
+    """A reusable schedule of per-diem rates."""
+    id: str
+    name: str                                 # e.g. "TA Connect Standard Rates 2026"
+    # Default rate applied when an attendee has no role, or their role
+    # isn't in the per-role list. Always required — drives the no-role
+    # fallback path.
+    default_rate_per_day: float
+    # Per-role overrides. Empty list is legal — a card with just a default
+    # rate is effectively the flat-rate behaviour the agent had before.
+    roles: list[RateLine] = []
+    # Optional: which currency / display label. Defaults to NGN; not used
+    # for math, just display on the schedule and review pages.
+    currency: str = "NGN"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# ─── Attendance Payment Agent models ──────────────────────────────────────
+#
+# The Attendance Payment Agent is DOCex's first *composite* agent — it
+# chains multiple primitives rather than being a primitive itself. The
+# flow it automates:
+#
+#   1. Parse the attendance log (who showed up which days)
+#   2. Parse the payment info form (name + org + bank for everyone)
+#   3. Fuzzy cross-match names across both files (same blended scorer
+#      the Bank Verify primitive uses)
+#   4. Bucket each person: paid / no_attendance / no_payment_info
+#   5. Calculate days_attended × rate
+#   6. Hand off to Bank Verify primitive (purpose=event_payment)
+#   7. Email finance with the verified schedule
+#
+# Models below cover steps 1-5. Steps 6-7 reuse BankVerify* models above.
+#
+# Targets the Programs team's end-to-end pain: today this whole flow is
+# ~3-4 hours of cross-checking spreadsheets by hand, plus the dreaded
+# bank-app thumb-typing. The agent collapses it to ~3 minutes.
+
+
+class AttendanceRecord(BaseModel):
+    """One person's attendance across all days of an event."""
+    name: str                                 # as written on the attendance log
+    days_attended: int                        # number of days marked present
+    day_labels: list[str] = []                # which specific days (e.g. ["Day 1", "Day 3"])
+
+
+class PaymentInfoRecord(BaseModel):
+    """One person's registration / payment info, before matching."""
+    name: str                                 # as written on the payment info form
+    organisation: Optional[str] = None        # the partner org they represent
+    account_number: str                       # NUBAN (10 digits in Nigeria)
+    bank_code: str                            # Paystack 3-digit code or fintech code
+    bank_name: Optional[str] = None           # display only — e.g. "GTBank", "Opay"
+    role: Optional[str] = None                # "Facilitator", "Participant", etc.
+
+
+# paid               — registered AND attended ≥1 day; will be on the schedule
+# no_attendance      — registered but attendance log shows 0 days; blocked
+# no_payment_info    — attended but no bank info on file; needs chasing
+AttendeeStatus = Literal["paid", "no_attendance", "no_payment_info"]
+
+
+class MatchedAttendee(BaseModel):
+    """One person reconciled across the attendance log and payment info."""
+    # Identity — payment_info_name is the canonical name (it's what we'll
+    # use on the payment schedule, since that name was self-reported with
+    # bank details so it matches the bank record best).
+    payment_info_name: Optional[str] = None
+    attendance_name: Optional[str] = None
+    # 0-100 fuzzy similarity between the two names. Null when the person
+    # is on only one side of the match (no_attendance or no_payment_info).
+    match_score: Optional[int] = None
+    # The status drives whether this row appears on the payment schedule.
+    status: AttendeeStatus
+    # Attendance + payment fields. Filled when available; null otherwise.
+    days_attended: int = 0
+    day_labels: list[str] = []
+    organisation: Optional[str] = None
+    account_number: Optional[str] = None
+    bank_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    # Role from the payment info form (e.g. "Facilitator", "Participant").
+    # Null when no role column existed in the input file. Drives rate
+    # lookup against the active RateCard.
+    role: Optional[str] = None
+    # The exact rate that was applied to this row, per day. Carried on
+    # the result so the audit trail can answer "why did this person get
+    # ₦45k for 3 days?" → "Facilitator role, ₦15k/day from card X" without
+    # re-running the engine.
+    applied_rate_per_day: float = 0.0
+    # Calculated amount (days_attended × applied_rate_per_day). Zero for
+    # non-paid statuses — they don't get paid by definition.
+    amount: float = 0.0
+
+
+class AttendancePaymentRun(BaseModel):
+    """A full run of the Attendance Payment Agent."""
+    event_name: str                           # e.g. "Q2 Training Workshop — Abuja"
+    rate_per_day: float                       # NGN per day attended
+    days_in_event: int                        # how many days the event ran
+    # All people, bucketed by status. We carry them all (not just the
+    # paid ones) because the no_attendance + no_payment_info buckets are
+    # the actionable findings the programs officer most needs to see.
+    matched: list[MatchedAttendee]            # bucket: paid
+    no_attendance: list[MatchedAttendee]      # bucket: no_attendance
+    no_payment_info: list[MatchedAttendee]    # bucket: no_payment_info
+    # Roll-ups for the dashboard / summary card.
+    total_to_pay: float                       # sum of matched amounts
+    paid_count: int                           # len(matched)
+    no_attendance_count: int                  # len(no_attendance)
+    no_payment_info_count: int                # len(no_payment_info)
+    # Persistence + audit metadata. Populated when saved to disk by the
+    # storage layer in api/attendance_agent_routes.py.
+    run_id: Optional[str] = None              # uuid set on save
+    created_at: Optional[str] = None          # ISO 8601 when the run completed
+    attendance_filename: Optional[str] = None # source attendance log filename
+    payment_info_filename: Optional[str] = None
+    # Foreign key to the downstream Bank Verify batch when the user clicks
+    # "verify these accounts" from the run page. Lets us pivot from a
+    # payment run to its verification, and vice-versa, in one click.
+    bank_verify_batch_id: Optional[str] = None
+    # ─── Rate context ──────────────────────────────────────────────────
+    # Snapshot of the rate card that was applied. Carried on the run so
+    # the audit trail survives even if the underlying card is later edited
+    # — same defensive pattern as ComplianceCheckResult.rulebook_snapshot_rules.
+    rate_card_id: Optional[str] = None
+    rate_card_name: Optional[str] = None
+    rate_card_snapshot: Optional[RateCard] = None
+    # ─── Accuracy gate ─────────────────────────────────────────────────
+    # Flags surfaced to the user BEFORE Bank Verify runs. Each flag is a
+    # human-readable warning that warrants review. Examples:
+    #   - "2 rows share account number 7042310445"
+    #   - "Aisha Bello attended 5 days but the event is 3 days long"
+    #   - "3 paid rows have match score below 85 — confirm identity"
+    # The frontend renders these in a red panel above the verify button
+    # to make the team's existing 'eyeball check' step explicit.
+    accuracy_flags: list[str] = []
+    # Source format of each input file — "xlsx" or "google_sheets". Lets
+    # the UI badge the run with the input type and lets us tune parsers
+    # per format. Default to xlsx for backward compat.
+    attendance_source: str = "xlsx"
+    payment_info_source: str = "xlsx"
