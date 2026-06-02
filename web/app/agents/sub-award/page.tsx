@@ -30,7 +30,7 @@ import type {
  * /agents/sub-award — Abosede's full workflow as one branded agent.
  *
  * This is DOCex's second composite agent. Unlike the Attendance Payment
- * Agent (which has its own engine), the Sub-award Agent is a *lifecycle
+ * Agent (which has its own engine), the Sub-award Co-Pilot is a *lifecycle
  * shell* over existing primitives:
  *
  *   1. Screen applicants             → Extraction (sub-award template)
@@ -103,7 +103,7 @@ export default function SubAwardAgentPage() {
           </Link>
           <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
             <Sparkles className="h-4 w-4 text-brand-600" />
-            Sub-award Agent
+            Sub-award Co-Pilot
           </span>
           <div className="flex items-center gap-2">
             <Link
@@ -121,7 +121,7 @@ export default function SubAwardAgentPage() {
           {/* Hero */}
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-              Sub-award Agent
+              Sub-award Co-Pilot
             </h1>
             <p className="mt-2 max-w-2xl text-base text-gray-600">
               The whole grantee lifecycle in one place — from initial

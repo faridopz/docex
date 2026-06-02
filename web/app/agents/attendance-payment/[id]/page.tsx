@@ -48,7 +48,7 @@ import type {
  *   - Verify accounts → routes through Bank Verify with one click
  *
  * The verify action is the most important moment in the agent — it's where
- * one product (Attendance Payment Agent) hands off to another (Bank Verify)
+ * one product (Attendance Payment Co-Pilot) hands off to another (Bank Verify)
  * with no re-upload, no copy-paste. That's the agent thesis in motion.
  */
 

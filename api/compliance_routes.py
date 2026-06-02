@@ -22,7 +22,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, Optional
 
 import pdfplumber
 from docx import Document as DocxDocument
@@ -39,8 +39,11 @@ from compliance import (  # noqa: E402
 from models import (  # noqa: E402
     ComplianceCheckBatchResult,
     ComplianceCheckResult,
+    DecisionEvent,
+    DecisionEventType,
     PolicyRulebook,
 )
+from pydantic import BaseModel  # noqa: E402
 from notifications import send_check_notification  # noqa: E402
 from .schemas import (  # noqa: E402
     CheckListResponse,
@@ -241,16 +244,49 @@ def _save_check(
     rulebook: PolicyRulebook,
 ) -> ComplianceCheckResult:
     """Persist a check result. Snapshots the active rules at check time so
-    later rulebook edits don't change historical checks."""
+    later rulebook edits don't change historical checks. Also seeds the
+    decision_log with a check_run event on first save."""
     _ensure_check_dir()
-    if not check.created_at:
+    is_first_save = not check.created_at
+    if is_first_save:
         check.created_at = _now_iso()
     # Snapshot active rules — only on first save, never overwrite an existing
     # snapshot. This protects the audit trail against accidental re-saves.
     if check.rulebook_snapshot_rules is None:
         check.rulebook_snapshot_rules = [r for r in rulebook.rules if r.active]
+    # Seed the decision log with the first event on initial save. Subsequent
+    # events get appended by dedicated endpoints (approve, note, dismiss,
+    # etc.) — never here, so re-saves don't double-log.
+    if is_first_save and not check.decision_log:
+        flag_count = sum(1 for r in check.results if r.verdict in ("flag", "block"))
+        check.decision_log.append(
+            DecisionEvent(
+                type="check_run",
+                timestamp=check.created_at,
+                note=(
+                    f"Check ran against rulebook '{rulebook.name}' — verdict "
+                    f"{check.overall_verdict}"
+                    + (
+                        f" with {flag_count} flag(s) or block(s) to review."
+                        if flag_count
+                        else " — all rules satisfied."
+                    )
+                ),
+            )
+        )
     _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
     return check
+
+
+def _append_decision_event(
+    check: ComplianceCheckResult, event: DecisionEvent
+) -> None:
+    """Append an event to a check's decision log and persist. Used by every
+    endpoint that mutates check state (approve, unapprove, note, dismiss).
+    The event-log is append-only; existing entries are never edited or
+    removed — that's the whole point of an audit trail."""
+    check.decision_log.append(event)
+    _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
 
 
 def _load_check(check_id: str) -> ComplianceCheckResult:
@@ -300,6 +336,8 @@ def _to_check_summary(c: ComplianceCheckResult) -> CheckSummary:
         approved=c.approved,
         approved_at=c.approved_at,
         error=c.error,
+        pending_with=c.pending_with,
+        pending_question=c.pending_question,
     )
 
 
@@ -563,19 +601,48 @@ async def get_check_endpoint(check_id: str) -> ComplianceCheckResult:
     return _load_check(check_id)
 
 
+class ApproveRequest(BaseModel):
+    """Approve a check. Optionally with a signature for audit defensibility.
+
+    Both fields are optional — pre-pilot demos can approve without
+    signing, but for any real payment going out, the signature + typed
+    name make the audit trail defensible under the Nigerian Electronic
+    Transactions Bill.
+    """
+    signature_data_url: Optional[str] = None  # data:image/png;base64,... from canvas
+    signed_name: Optional[str] = None         # typed name to accompany the signature
+
+
 @router.post(
     "/checks/{check_id}/approve",
     response_model=ComplianceCheckResult,
 )
-async def approve_check_endpoint(check_id: str) -> ComplianceCheckResult:
-    """Mark a check as ED-approved. Sets the approved flag and timestamp."""
+async def approve_check_endpoint(
+    check_id: str,
+    body: Optional[ApproveRequest] = None,
+) -> ComplianceCheckResult:
+    """Mark a check as ED-approved. Sets the approved flag + timestamp,
+    appends an 'approved' event to the decision log, optionally captures
+    a signature + signed name on the event for audit-defensibility."""
     check = _load_check(check_id)
+    now = _now_iso()
     check.approved = True
-    check.approved_at = _now_iso()
-    # Direct write — don't pass through _save_check or it would try to
-    # re-snapshot the rulebook (which we don't have at this point and
-    # which is already correctly captured).
-    _check_path(check_id).write_text(check.model_dump_json(indent=2))
+    check.approved_at = now
+    sig_url = body.signature_data_url if body else None
+    sig_name = body.signed_name.strip() if (body and body.signed_name) else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="approved",
+            timestamp=now,
+            note=(
+                f"Check approved — overall verdict was '{check.overall_verdict}'."
+                + (f" Signed by {sig_name}." if sig_name else "")
+            ),
+            signature_data_url=sig_url,
+            signed_name=sig_name,
+        ),
+    )
     return check
 
 
@@ -584,12 +651,313 @@ async def approve_check_endpoint(check_id: str) -> ComplianceCheckResult:
     response_model=ComplianceCheckResult,
 )
 async def unapprove_check_endpoint(check_id: str) -> ComplianceCheckResult:
-    """Reverse approval — sets approved=False, clears approved_at."""
+    """Reverse approval — sets approved=False, clears approved_at, and
+    appends an 'unapproved' event to the decision log. Rare but
+    audit-relevant when an approval is later retracted."""
     check = _load_check(check_id)
     check.approved = False
     check.approved_at = None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="unapproved",
+            timestamp=_now_iso(),
+            note="Approval revoked.",
+        ),
+    )
+    return check
+
+
+# ─── Decision log endpoints ─────────────────────────────────────────────────
+
+
+class AddNoteRequest(BaseModel):
+    """Officer adds a free-text note to a check (or to a specific rule)."""
+    note: str                                 # required — the officer's reason / context
+    rule_id: Optional[str] = None             # optional — when note is rule-specific
+
+
+@router.post("/checks/{check_id}/notes", response_model=ComplianceCheckResult)
+async def add_check_note(
+    check_id: str, body: AddNoteRequest
+) -> ComplianceCheckResult:
+    """Append a free-text note to a check's decision log.
+
+    Used when the officer wants to record context — "confirmed via email
+    with vendor", "rate card is in renewal", "ED briefed on this on 17/05".
+    Optionally tied to a specific rule_id when the note explains a single
+    rule's verdict.
+    """
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(status_code=422, detail="Note can't be empty.")
+    check = _load_check(check_id)
+    rule_desc = None
+    if body.rule_id:
+        match = next(
+            (r for r in check.results if r.rule_id == body.rule_id),
+            None,
+        )
+        if match:
+            rule_desc = match.rule_description
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="note_added",
+            timestamp=_now_iso(),
+            note=note,
+            rule_id=body.rule_id,
+            rule_description=rule_desc,
+        ),
+    )
+    return check
+
+
+class RuleDecisionRequest(BaseModel):
+    """Officer takes an explicit action on a specific rule's verdict.
+
+    Action is one of:
+      - dismiss: "this flag is fine — here's why" (most common — vendor
+        is pre-approved, document is in renewal, etc.)
+      - escalate: "this needs a higher reviewer" (typically ED)
+      - clarification_requested: "I've asked the submitter for the
+        missing item" (records the action for the audit trail)
+
+    A reason is REQUIRED — the whole point of this endpoint is to make
+    the officer commit their justification to the audit log.
+    """
+    action: Literal["dismiss", "escalate", "clarification_requested"]
+    reason: str
+
+
+@router.post(
+    "/checks/{check_id}/rules/{rule_id}/decision",
+    response_model=ComplianceCheckResult,
+)
+async def record_rule_decision(
+    check_id: str,
+    rule_id: str,
+    body: RuleDecisionRequest,
+) -> ComplianceCheckResult:
+    """Record an officer's explicit decision on one rule of a check."""
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A reason is required — this is the line an auditor will "
+                "read when they ask why this rule was dismissed."
+            ),
+        )
+    check = _load_check(check_id)
+    match = next((r for r in check.results if r.rule_id == rule_id), None)
+    if match is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Rule '{rule_id}' not found in this check.",
+        )
+
+    event_type_map: dict[str, DecisionEventType] = {
+        "dismiss": "rule_dismissed",
+        "escalate": "rule_escalated",
+        "clarification_requested": "clarification_requested",
+    }
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type=event_type_map[body.action],
+            timestamp=_now_iso(),
+            note=reason,
+            rule_id=rule_id,
+            rule_description=match.rule_description,
+        ),
+    )
+    return check
+
+
+class EscalateRequest(BaseModel):
+    """Escalate the whole check to a named reviewer. Replaces the
+    email-back-and-forth pattern with a single in-product handoff that
+    sets pending_with + appends an event to the audit trail. Optionally
+    carries a signature (the officer's drawn signature + typed name)
+    so the handoff is audit-defensible."""
+    pending_with: str                         # who's now responsible — name or email
+    reason: Optional[str] = None              # optional note for the recipient
+    signature_data_url: Optional[str] = None
+    signed_name: Optional[str] = None
+
+
+@router.post(
+    "/checks/{check_id}/escalate",
+    response_model=ComplianceCheckResult,
+)
+async def escalate_check(
+    check_id: str, body: EscalateRequest
+) -> ComplianceCheckResult:
+    """Hand the check off to a named reviewer. They'll see it in their
+    inbox at /compliance/pending. The decision log captures who escalated
+    it, to whom, and why — so the audit trail reconstructs the route."""
+    target = body.pending_with.strip()
+    if not target:
+        raise HTTPException(
+            status_code=422,
+            detail="pending_with is required — specify who you're escalating to.",
+        )
+    check = _load_check(check_id)
+    check.pending_with = target
+    # Clear any outstanding clarification — escalating shifts the
+    # responsibility to a new person, not a question waiting for an answer.
+    check.pending_question = None
+    sig_name = body.signed_name.strip() if body.signed_name else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="escalated",
+            timestamp=_now_iso(),
+            note=(body.reason or f"Escalated to {target}.").strip(),
+            signature_data_url=body.signature_data_url,
+            signed_name=sig_name,
+        ),
+    )
+    return check
+
+
+class ClarificationRequest(BaseModel):
+    """Request structured clarification from the submitter / finance team.
+
+    Unlike a free-text note, a clarification has a clear shape — there's
+    a SPECIFIC question, optionally tied to a SPECIFIC rule, addressed to
+    a SPECIFIC person who is now pending_with. The response (when it
+    comes) gets logged with a 'clarification_received' event that closes
+    the loop. This is the in-app replacement for the email chain.
+    """
+    question: str
+    pending_with: str                         # who the question is going to
+    rule_id: Optional[str] = None             # optional — rule the question relates to
+    signature_data_url: Optional[str] = None  # officer raising the question signs
+    signed_name: Optional[str] = None
+
+
+@router.post(
+    "/checks/{check_id}/clarification",
+    response_model=ComplianceCheckResult,
+)
+async def request_clarification(
+    check_id: str, body: ClarificationRequest
+) -> ComplianceCheckResult:
+    """Send a structured clarification request to someone. Sets pending_with,
+    stores the question, appends an event. The recipient sees the question
+    in their inbox at /compliance/pending with a 'respond' affordance.
+
+    This is the workflow that replaces the constant email back-and-forth
+    that NGO finance/compliance teams currently fight through: the
+    question, the recipient, and the answer all live in one auditable
+    record on the check itself.
+    """
+    q = body.question.strip()
+    target = body.pending_with.strip()
+    if not q:
+        raise HTTPException(status_code=422, detail="A clarification question is required.")
+    if not target:
+        raise HTTPException(
+            status_code=422,
+            detail="pending_with is required — who should answer this?",
+        )
+    check = _load_check(check_id)
+    check.pending_with = target
+    check.pending_question = q
+    rule_desc: Optional[str] = None
+    if body.rule_id:
+        match = next(
+            (r for r in check.results if r.rule_id == body.rule_id), None
+        )
+        if match:
+            rule_desc = match.rule_description
+    sig_name = body.signed_name.strip() if body.signed_name else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="clarification_requested",
+            timestamp=_now_iso(),
+            note=f"To {target}: {q}",
+            rule_id=body.rule_id,
+            rule_description=rule_desc,
+            signature_data_url=body.signature_data_url,
+            signed_name=sig_name,
+        ),
+    )
+    return check
+
+
+class ClarificationResponseRequest(BaseModel):
+    """The recipient responds to a clarification — could be a text answer
+    and/or "I've uploaded the missing docs." Clears the pending_question
+    and logs the response in the decision log."""
+    response: str
+    signature_data_url: Optional[str] = None
+    signed_name: Optional[str] = None
+
+
+@router.post(
+    "/checks/{check_id}/clarification/respond",
+    response_model=ComplianceCheckResult,
+)
+async def respond_to_clarification(
+    check_id: str, body: ClarificationResponseRequest
+) -> ComplianceCheckResult:
+    """Respond to an outstanding clarification. Logs the response, clears
+    pending_question, and resets pending_with to the original officer
+    (an explicit "I've answered, back to you" handoff)."""
+    response_text = body.response.strip()
+    if not response_text:
+        raise HTTPException(
+            status_code=422,
+            detail="A response is required.",
+        )
+    check = _load_check(check_id)
+    if not check.pending_question:
+        raise HTTPException(
+            status_code=400,
+            detail="No outstanding clarification to respond to on this check.",
+        )
+    sig_name = body.signed_name.strip() if body.signed_name else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="clarification_received",
+            timestamp=_now_iso(),
+            note=response_text,
+            signature_data_url=body.signature_data_url,
+            signed_name=sig_name,
+        ),
+    )
+    # Hand back to whoever raised the clarification — we don't know exactly
+    # who in pre-auth mode, but clearing pending_with surfaces it in the
+    # inbox under "needs decision" rather than "awaiting reply".
+    check.pending_question = None
+    check.pending_with = None
     _check_path(check_id).write_text(check.model_dump_json(indent=2))
     return check
+
+
+# ─── Pending inbox ──────────────────────────────────────────────────────────
+
+
+@router.get("/pending", response_model=CheckListResponse)
+def list_pending_checks() -> CheckListResponse:
+    """Every compliance check that's not yet approved. Sorted by created_at
+    descending (newest first). This is the 'queue' an officer opens to
+    start their morning — what needs my attention today?
+
+    Doesn't filter by pending_with yet (no auth → we'd need to know who
+    the current user is). Post-Supabase, this will filter to checks
+    where pending_with matches the logged-in user."""
+    checks = _list_checks()
+    pending = [c for c in checks if not c.approved]
+    return CheckListResponse(checks=[_to_check_summary(c) for c in pending])
+
+
+# ─── End decision log endpoints ─────────────────────────────────────────────
 
 
 @router.delete("/checks/{check_id}")

@@ -393,15 +393,23 @@ export async function getCheck(id: string): Promise<ComplianceCheckResult> {
   return res.json() as Promise<ComplianceCheckResult>;
 }
 
-export async function approveCheck(id: string): Promise<ComplianceCheckResult> {
+export async function approveCheck(
+  id: string,
+  signature?: { signature_data_url?: string | null; signed_name?: string | null },
+): Promise<ComplianceCheckResult> {
+  const init: RequestInit = { method: "POST" };
+  if (signature && (signature.signature_data_url || signature.signed_name)) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify({
+      signature_data_url: signature.signature_data_url ?? null,
+      signed_name: signature.signed_name ?? null,
+    });
+  }
   const res = await fetch(
     `${BASE}/compliance/checks/${encodeURIComponent(id)}/approve`,
-    { method: "POST" },
+    init,
   );
-  if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(`Failed to approve check (${res.status}): ${detail}`);
-  }
+  if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<ComplianceCheckResult>;
 }
 
@@ -664,7 +672,7 @@ export async function deleteVerifyBatch(batchId: string): Promise<void> {
   if (!res.ok) await throwFriendly(res);
 }
 
-// ─── Attendance Payment Agent ───────────────────────────────────────────────
+// ─── Attendance Payment Co-Pilot ───────────────────────────────────────────────
 //
 // First composite agent — chains attendance + payment-info parsing,
 // fuzzy name matching, and (optionally) the Bank Verify primitive into
@@ -1048,4 +1056,114 @@ export async function suggestFolder(
   });
   if (!res.ok) await throwFriendly(res);
   return res.json();
+}
+
+// ─── Compliance decision log ───────────────────────────────────────────────
+//
+// Officer notes + per-rule decisions. Both append to the check's
+// decision_log (append-only on the backend) — every action is permanent
+// and audit-defensible.
+
+export async function addCheckNote(
+  checkId: string,
+  note: string,
+  ruleId?: string,
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(`${BASE}/compliance/checks/${checkId}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note, rule_id: ruleId ?? null }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function recordRuleDecision(
+  checkId: string,
+  ruleId: string,
+  action: "dismiss" | "escalate" | "clarification_requested",
+  reason: string,
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${checkId}/rules/${ruleId}/decision`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, reason }),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+// ─── Day 15: Approval-chain endpoints with optional signatures ───────────
+
+export async function escalateCheck(
+  checkId: string,
+  payload: {
+    pending_with: string;
+    reason?: string;
+    signature_data_url?: string | null;
+    signed_name?: string | null;
+  },
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/escalate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function requestClarification(
+  checkId: string,
+  payload: {
+    question: string;
+    pending_with: string;
+    rule_id?: string | null;
+    signature_data_url?: string | null;
+    signed_name?: string | null;
+  },
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/clarification`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function respondToClarification(
+  checkId: string,
+  payload: {
+    response: string;
+    signature_data_url?: string | null;
+    signed_name?: string | null;
+  },
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/clarification/respond`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export async function listPendingChecks(): Promise<CheckSummary[]> {
+  const res = await fetch(`${BASE}/compliance/pending`);
+  if (!res.ok) await throwFriendly(res);
+  const json = (await res.json()) as { checks: CheckSummary[] };
+  return json.checks;
 }

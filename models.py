@@ -163,6 +163,84 @@ class ComplianceCheckResult(BaseModel):
     # Clause 4.2 gets edited a month later. The snapshot freezes the rules
     # as they were when the verdict was rendered. Three-year-LLMs proof.
     rulebook_snapshot_rules: Optional[list["PolicyRule"]] = None
+    # ─── Requisition context ───────────────────────────────────────────
+    # Captured from the Payment Requisition Form that originated this
+    # payment — the upstream document compliance officers receive after
+    # finance has processed the voucher. Without this context, the audit
+    # trail can answer "did this payment comply with the rulebook?" but
+    # NOT "what was this payment for, who asked for it, who approved?"
+    # All fields are optional because legacy checks (pre-Day 14) didn't
+    # capture them, and not every flow has all fields available.
+    requisition_date: Optional[str] = None
+    billing_donor: Optional[str] = None       # which donor's funds — Gates, BMGF, USAID, etc.
+    payment_purpose: Optional[str] = None     # 1-2 sentence purpose-of-request narrative
+    items_requested: Optional[str] = None     # what was being paid for (free-text)
+    requested_by: Optional[str] = None        # name/role of the requisitioner
+    approved_by: Optional[str] = None         # name/role who approved the requisition
+    # ─── Approval chain ────────────────────────────────────────────────
+    # When a check is currently "pending with" someone — the compliance
+    # officer escalating to ED, the finance officer being asked for
+    # clarification, the next reviewer in a multi-step approval flow —
+    # this field carries who's responsible to act next. The Pending Inbox
+    # at /compliance/pending lists checks where pending_with matches the
+    # logged-in user (or, pre-auth, all not-yet-approved checks).
+    #
+    # Format: free-text role+name or email. Examples:
+    #   "ED — Dr. Adekunle"
+    #   "Finance — Bola Adeyemi"
+    #   "bola@taconnect-ng.org"
+    pending_with: Optional[str] = None
+    # The structured question that's currently outstanding (set when a
+    # clarification has been requested but not yet answered). Cleared
+    # when the next event lands on the check.
+    pending_question: Optional[str] = None
+    # ─── Human decision log ────────────────────────────────────────────
+    # Append-only list of every human action taken on this check. This is
+    # the audit trail an auditor actually asks for: "this payment was
+    # flagged on 2025-04-17 because the vendor CAC was missing; the
+    # officer added a note on 2025-04-18 that CAC was in renewal; the
+    # ED approved the check on 2025-04-19." Every event carries its own
+    # timestamp + optional actor + optional rule reference + free-text
+    # note. New events are always appended; existing events are never
+    # mutated — preserving defensibility.
+    decision_log: list["DecisionEvent"] = []
+
+
+# Event types are deliberately concrete. Each represents one human action.
+# Adding a new type later is safe (Pydantic literal can extend; older
+# records' enum values continue to validate).
+DecisionEventType = Literal[
+    "check_run",              # the check was created/run for the first time
+    "note_added",             # officer added a free-text note (check-level or rule-level)
+    "rule_dismissed",         # officer marked a specific rule's flag as "OK, here's why"
+    "rule_escalated",         # officer escalated a rule to a higher reviewer
+    "clarification_requested", # officer requested missing info from submitter/vendor
+    "clarification_received", # the requested clarification was received (response/upload)
+    "escalated",              # the whole check was escalated to a named reviewer
+    "approved",               # check marked approved
+    "unapproved",             # approval revoked (rare but audit-relevant)
+]
+
+
+class DecisionEvent(BaseModel):
+    """One entry in a compliance check's human decision log."""
+    type: DecisionEventType
+    timestamp: str                            # ISO 8601 when the action happened
+    actor: Optional[str] = None               # who did it (None until auth lands)
+    note: Optional[str] = None                # free-text reason / context
+    # When the event is about one specific rule (e.g. a dismissal), this
+    # references that rule. Null for check-level events.
+    rule_id: Optional[str] = None
+    rule_description: Optional[str] = None    # snapshot of the rule text for portability
+    # ─── Signature (Day 15) ─────────────────────────────────────────────
+    # When an approver "physically" signs an action — draws on the canvas
+    # pad OR types their name as a signature — both pieces land here. The
+    # data_url is a base64 PNG of the canvas; signed_name is the typed
+    # name that accompanies it. Both optional — most events (notes,
+    # dismissals) don't carry signatures. Approve, escalate, and the final
+    # clarification response are the typical signed actions.
+    signature_data_url: Optional[str] = None  # data:image/png;base64,...
+    signed_name: Optional[str] = None         # typed name accompanying signature
 
 
 class ComplianceCheckBatchResult(BaseModel):

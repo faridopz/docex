@@ -1,0 +1,6 @@
+recipient_name,account_number,bank_name,amount_usd,purpose
+Recipient A Demo,0000000001,Demo Bank PLC,250.00,event
+Recipient B Demo,0000000002,Demo Bank PLC,250.00,event
+Recipient C Demo,0000000003,Sample Microfinance,180.00,event
+Recipient D Demo,0000000004,Demo Bank PLC,180.00,event
+Recipient E Demo,0000000005,Sample Microfinance,180.00,event

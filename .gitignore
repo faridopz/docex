@@ -25,6 +25,10 @@ attendance_runs/*
 rate_cards/*
 decks/*
 diagnostics/*
+demos/*
+demo_uploads/*
+demo_users/*
+analytics/*
 
 # EXCEPTION: the seeded sample rulebook IS source — it ships in the Docker
 # image so first-time users see something in their library on Day 1.

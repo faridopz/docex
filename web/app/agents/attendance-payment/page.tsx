@@ -17,14 +17,14 @@ import { GuidanceCard } from "@/components/GuidanceCard";
 import type { AttendancePaymentRunSummary } from "@/types";
 
 /**
- * Attendance Payment Agent — landing page.
+ * Attendance Payment Co-Pilot — landing page.
  *
  * Shows every past run, jump back into any of them, or start a new one.
  * Mirrors the /verify and /compliance landings so the user's eye doesn't
  * have to retrain layout per agent.
  *
  * This is also the first surface for the "Agents" concept in /app's
- * navigation. As we add more composite agents (Sub-award Agent, Procurement
+ * navigation. As we add more composite agents (Sub-award Co-Pilot, Procurement
  * Agent), each gets a sibling route under /agents/.
  */
 
@@ -66,7 +66,7 @@ export default function AttendanceAgentLandingPage() {
 
           <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
             <Sparkles className="h-4 w-4 text-brand-600" />
-            Attendance Payment Agent
+            Attendance Payment Co-Pilot
           </span>
 
           <div className="flex items-center gap-2">

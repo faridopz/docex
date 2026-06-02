@@ -145,6 +145,11 @@ class CheckSummary(BaseModel):
     approved: bool = False
     approved_at: Optional[str] = None
     error: Optional[str] = None
+    # Approval-chain hints surfaced into the summary so the Pending Inbox
+    # can show who a check is sitting with — and whether someone is
+    # awaiting a clarification — without fetching each check in full.
+    pending_with: Optional[str] = None
+    pending_question: Optional[str] = None
 
 
 class CheckListResponse(BaseModel):

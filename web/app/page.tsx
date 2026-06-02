@@ -11,95 +11,104 @@ import {
 import { Button } from "@/components/ui/button";
 
 /**
- * Landing page — rebuilt May 2026 to reflect DOCex as an agentic platform
- * rather than a single-purpose extraction tool. Design language inspired
- * by Anthropic's homepage: calm, generous whitespace, fewer sections each
- * doing more work, clear "what is this for me" framing.
+ * Landing page — reframed June 2026.
  *
- * Design choices that matter:
- *   - Cream/warm background instead of pure white. Softer feel.
- *   - Big serif-ish hero (using font-serif via tracking, kept system font
- *     to avoid adding a new font dep). Anthropic uses Tiempos; we use a
- *     tighter Geist with serif-like weight contrast.
- *   - Three agents are the primary frame, not "any documents". Specificity
- *     beats versatility on a first impression.
- *   - The Assistant briefing screenshot-style card is the hero of section 3
- *     — show, don't just tell.
- *   - One primary CTA, one secondary. Not five.
- *   - py-32 between major sections (vs the old py-20). Breathing room.
+ * Goals of this rewrite:
+ *   1. Global, cohesive product framing. No country-specific copy
+ *      anywhere on the page. The product happens to test first against
+ *      African NGO workflows, but the primitives generalise — say so.
+ *   2. One sentence per section that a finance lead anywhere in the
+ *      world reads and gets immediately: "verify payments, check
+ *      compliance, read every document, in minutes."
+ *   3. Anonymised examples in the Assistant card (no real personal
+ *      names) — looks more credible to a CTO doing diligence and
+ *      respects everyone's identity.
+ *   4. Trust section reframed around outcomes ("audit trail you can
+ *      defend") not infrastructure ("Paystack") — Paystack is an
+ *      implementation detail, the buyer cares about defensibility.
+ *
+ * Design language: warm cream `#fafaf7`, generous whitespace, single
+ * subtle gradient at the hero, opinionated big type. Reference doc:
+ * `UI_DIRECTION.md` at the repo root.
  */
 
-// Three agents = three jobs. Each card answers "what is this for me?"
-const agents = [
+// Three Co-Pilots = three roles we replace. Each card answers "what is
+// this for someone like me?" without naming a country or person.
+const copilots = [
   {
     icon: Users,
-    name: "Sub-award Agent",
-    audience: "for sub-award teams",
+    name: "Sub-award Co-Pilot",
+    audience: "for sub-award & grants teams",
     pitch:
-      "Screen 200 applications in an afternoon. Verify grantee bank accounts before disbursement. Review quarterly reports. Everything an officer like Abosede does, made fast.",
-    proof: "Screening that took two weeks now finishes by lunchtime.",
+      "Screen hundreds of partner applications in an afternoon. Verify grantee accounts before disbursement. Review quarterly reports against the original proposal. The document-heavy parts of a sub-award officer's week, done by lunchtime.",
+    proof: "Two-week screening cycles compressed to an afternoon.",
     href: "/agents/sub-award",
   },
   {
     icon: Landmark,
-    name: "Programs Agent",
-    audience: "for events & training teams",
+    name: "Programs Co-Pilot",
+    audience: "for events, training & programs teams",
     pitch:
-      "Drop in your attendance log and your payment info form. DOCex matches names, applies your per-diem rates, surfaces who attended without showing up on the bank list, and verifies every account before the schedule reaches finance.",
+      "Drop in your attendance log and your payment list. The Co-Pilot matches names, applies per-diem rates, surfaces attendees who never made it onto the payment schedule, and verifies every bank account before the schedule hits finance.",
     proof: "Three hours of cross-checking becomes a three-minute review.",
     href: "/agents/attendance-payment",
   },
   {
     icon: ShieldCheck,
-    name: "Compliance Agent",
-    audience: "for compliance officers",
+    name: "Compliance Co-Pilot",
+    audience: "for compliance & finance teams",
     pitch:
-      "Upload your procurement policy once. DOCex turns it into an editable rulebook. Every payment voucher gets checked rule by rule, with citations from both sides and an audit trail that survives policy edits.",
+      "Upload your procurement, travel, or donor policy once. The Co-Pilot turns it into an editable rulebook. Every payment voucher gets checked rule by rule, with citations from both the policy and the voucher — and an audit trail that survives later edits.",
     proof: "Defensible compliance, every time, with no extra paperwork.",
     href: "/compliance",
   },
   {
     icon: BookOpen,
     name: "Knowledge Hub",
-    audience: "for anyone who reads slides",
+    audience: "for anyone with a document library",
     pitch:
-      "Upload your check-in decks, board presentations, training slides. DOCex reads every slide and lets you chat with the whole library — answers come back with [Slide N] citations you can click to verify against the source.",
-    proof: "Ask 'which states are below 50% on PPH?' — get the answer in 5 seconds, with citations.",
+      "Upload your board decks, training slides, project reports. The Hub reads every page and lets your team chat with the whole library — every answer comes back with citations you can click to verify against the source document.",
+    proof: "\"What were last quarter's flagged risks?\" — answered in five seconds, with sources.",
     href: "/knowledge",
   },
 ];
 
-// Trust pillars — the "this is real" credibility section. Subtle, not loud.
+// Trust pillars — outcomes, not infrastructure. A buyer cares about
+// "can I defend this to my auditor", not "what payment provider do you
+// use under the hood".
 const trust = [
   {
-    label: "African banks, live",
+    label: "Verified payments, every time",
     detail:
-      "Paystack-powered bank-of-record verification for every recipient. No more thumb-typing account numbers into a phone app.",
+      "Recipient names matched to bank-of-record holders before money moves. No more thumb-typing account numbers into a phone app and hoping.",
   },
   {
-    label: "Audit trail, automatic",
+    label: "Audit trail that doesn't drift",
     detail:
-      "Every check, every verdict, every approval is timestamped and frozen. Edit a policy a year later — yesterday's audit doesn't change.",
+      "Every check, verdict, approval, escalation, and signature is timestamped and frozen. Edit a policy a year later and yesterday's audit doesn't quietly change underneath you.",
   },
   {
-    label: "Any document, any source",
+    label: "Reads the documents you already have",
     detail:
-      "PDFs, Word docs, Excel sheets, Google Forms responses. DOCex reads what your team already collects, however they collect it.",
+      "PDFs, Word docs, Excel sheets, scanned scans, slide decks. No new template to roll out. No spreadsheet macros to maintain. Whatever your team collects today, DOCex reads it tomorrow.",
   },
   {
-    label: "Briefed, not just processed",
+    label: "Briefed in plain English, not just processed",
     detail:
-      "Claude reads every result and tells you what matters in plain English — not just a table of numbers.",
+      "Every result comes with a Claude-written brief — what happened, what matters, what to do next. Tables and citations are there if you want them. Most days, you won't need to scroll.",
   },
 ];
 
 export default function LandingPage() {
   return (
     <div className="flex min-h-screen flex-col bg-[#fafaf7] text-gray-900">
-      {/* Nav — minimal, no clutter */}
+      {/* Nav — minimal */}
       <header className="sticky top-0 z-50 border-b border-gray-100 bg-[#fafaf7]/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <Link href="/" className="text-xl font-bold tracking-tight text-gray-900">
+          <Link
+            href="/"
+            className="text-xl font-bold tracking-tight text-gray-900"
+          >
             DOCex
           </Link>
           <div className="flex items-center gap-3">
@@ -107,7 +116,13 @@ export default function LandingPage() {
               href="/agents/sub-award"
               className="hidden text-sm font-medium text-gray-600 transition hover:text-gray-900 sm:inline"
             >
-              Agents
+              Co-Pilots
+            </Link>
+            <Link
+              href="/compliance"
+              className="hidden text-sm font-medium text-gray-600 transition hover:text-gray-900 sm:inline"
+            >
+              Compliance
             </Link>
             <Link href="/app">
               <Button size="sm" className="rounded-full">
@@ -121,29 +136,30 @@ export default function LandingPage() {
       <main className="flex-1">
         {/* ─── Hero ─────────────────────────────────────────────────────── */}
         <section className="relative overflow-hidden">
-          {/* Subtle warm gradient backdrop — barely there, but it changes
-              the whole feel from "tool" to "considered" */}
+          {/* Warm gradient backdrop — barely there, but reframes the whole
+              feel from "tool" to "considered". */}
           <div
             aria-hidden
-            className="absolute inset-0 -z-10 bg-gradient-to-b from-amber-50/40 via-[#fafaf7] to-[#fafaf7]"
+            className="absolute inset-0 -z-10 bg-gradient-to-br from-amber-50/60 via-[#fafaf7] to-violet-50/40"
           />
           <div className="mx-auto max-w-5xl px-6 pt-32 pb-24 text-center">
             <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3.5 py-1.5 text-xs font-medium text-gray-600 shadow-sm">
               <Sparkles className="h-3 w-3 text-brand-600" />
-              The AI back-office for African NGOs
+              The AI back-office for document-heavy operations
             </div>
 
             <h1 className="mt-8 text-5xl font-semibold leading-[1.05] tracking-tight text-gray-900 sm:text-6xl md:text-7xl">
-              Stop reading every document.
+              Verify payments. Check compliance.
               <br />
-              <span className="text-brand-600">Start doing the work.</span>
+              <span className="text-brand-600">Read every document.</span>{" "}
+              <span className="text-gray-500">In minutes.</span>
             </h1>
 
             <p className="mx-auto mt-8 max-w-2xl text-lg leading-relaxed text-gray-600 sm:text-xl">
-              DOCex reads your applicant files, verifies your payments, and
-              checks your compliance — the things finance, programs, and
-              sub-award teams spend weeks on. Built for how African NGOs
-              actually work.
+              DOCex is the cohesive AI back-office for finance, programs,
+              sub-award, and compliance teams. Three Co-Pilots, four
+              primitives, one audit trail. Built so the document-heavy parts
+              of your week take an afternoon, not two.
             </p>
 
             <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -154,42 +170,43 @@ export default function LandingPage() {
                 </Button>
               </Link>
               <Link
-                href="/agents/sub-award"
+                href="/compliance"
                 className="text-sm font-medium text-gray-600 underline-offset-4 transition hover:text-gray-900 hover:underline"
               >
-                See how it works →
+                See it on a real compliance check →
               </Link>
             </div>
             <p className="mt-5 text-xs text-gray-400">
-              No account required · Your documents stay on your machine
+              No card required · Start with sample data · Bring your own
+              when you're ready
             </p>
           </div>
         </section>
 
-        {/* ─── Three agents, one back-office ────────────────────────────── */}
+        {/* ─── Co-Pilots ────────────────────────────────────────────────── */}
         <section className="border-t border-gray-100 bg-white">
           <div className="mx-auto max-w-6xl px-6 py-32">
             <div className="mb-20 max-w-2xl">
               <p className="text-sm font-semibold uppercase tracking-widest text-brand-600">
-                Three agents, one back-office
+                Co-Pilots, not chatbots
               </p>
               <h2 className="mt-3 text-4xl font-semibold leading-[1.1] tracking-tight text-gray-900 sm:text-5xl">
                 Built for the work that costs you weeks.
               </h2>
               <p className="mt-5 text-lg leading-relaxed text-gray-600">
-                DOCex isn't a chatbot or a dashboard. It's three named agents,
-                each replacing the document-heavy parts of a specific role on
-                your team. They share an engine, an audit trail, and a price
-                tag.
+                DOCex isn't a chatbot you ask questions to. It's three named
+                Co-Pilots — each one replacing the document-heavy parts of a
+                specific role on your team. They share an engine, an audit
+                trail, and a single price.
               </p>
             </div>
 
             <div className="space-y-4">
-              {agents.map((a, i) => (
+              {copilots.map((a) => (
                 <Link
                   key={a.name}
                   href={a.href}
-                  className="group flex flex-col gap-6 rounded-3xl border border-gray-100 bg-white p-8 transition hover:border-brand-200 hover:shadow-card-hover sm:flex-row sm:items-center sm:gap-10 sm:p-10"
+                  className="group flex flex-col gap-6 rounded-3xl border border-gray-200 bg-white p-8 transition hover:border-brand-200 hover:shadow-card-hover sm:flex-row sm:items-center sm:gap-10 sm:p-10"
                 >
                   <div className="flex shrink-0 items-start gap-5 sm:w-72">
                     <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-700 ring-1 ring-amber-100">
@@ -220,7 +237,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        {/* ─── The Assistant moment ─────────────────────────────────────── */}
+        {/* ─── The Assistant ────────────────────────────────────────────── */}
         <section className="border-t border-gray-100 bg-[#fafaf7]">
           <div className="mx-auto max-w-6xl px-6 py-32">
             <div className="grid items-center gap-16 lg:grid-cols-2">
@@ -232,22 +249,23 @@ export default function LandingPage() {
                   Briefed by Claude. Not just processed.
                 </h2>
                 <p className="mt-5 text-lg leading-relaxed text-gray-600">
-                  Every time an agent finishes a run, Claude reads the result
-                  and writes you a plain-English brief. What happened. What
-                  matters. What to do next. The verdict table is still there
-                  — but you don't have to read it first.
+                  Every time a Co-Pilot finishes a run, Claude reads the
+                  full result and writes you a plain-English brief. What
+                  happened. What matters. What to do next. The verdict
+                  table is still there — but you don't have to read it
+                  first.
                 </p>
                 <p className="mt-4 text-sm text-gray-500">
-                  No spreadsheets to interpret. No dashboards to learn. Just
-                  a colleague who reads everything for you and tells you what
-                  to do.
+                  No dashboards to learn. No spreadsheets to interpret.
+                  Just a colleague who reads everything for you and tells
+                  you what to do.
                 </p>
               </div>
 
-              {/* Stylised Assistant brief card — same visual language as the
-                  real component in /components/AssistantBrief.tsx. The text
-                  is a real example from a Bank Verify result. */}
-              <div className="overflow-hidden rounded-3xl border border-brand-100 bg-gradient-to-br from-brand-50/30 via-white to-white p-6 shadow-card sm:p-8">
+              {/* Anonymised Assistant brief example. Visual language
+                  matches /components/AssistantBrief.tsx so a prospect
+                  recognises the pattern when they open the product. */}
+              <div className="overflow-hidden rounded-3xl border border-brand-100 bg-gradient-to-br from-brand-50/30 via-white to-violet-50/20 p-6 shadow-card sm:p-8">
                 <div className="flex items-start gap-3">
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-100 text-brand-700 ring-1 ring-brand-200">
                     <Sparkles className="h-4 w-4" />
@@ -257,14 +275,14 @@ export default function LandingPage() {
                       DOCex Assistant
                     </p>
                     <p className="mt-3 text-base font-semibold leading-snug text-gray-900">
-                      4 of 5 accounts cleared. One blocker.
+                      4 of 5 payments cleared. One blocker.
                     </p>
                     <p className="mt-2 text-sm leading-relaxed text-gray-700">
-                      Mohammed Farid Abdurraman matched 100% — release this
-                      payment. Faridah Abdurraman is likely a typo of the same
-                      name; safe to release after a confirm with the team.
-                      Aisha Bello has a completely different name on
-                      Mohammed's account — recommend blocking pending review.
+                      Recipient A matched 100% — release. Recipient B is a
+                      likely typo of the same holder; safe to release once
+                      programs confirms. Recipient C has a completely
+                      different name on file from the one on the schedule —
+                      block pending review.
                     </p>
                     <div className="mt-5 space-y-1.5">
                       <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-500">
@@ -273,15 +291,15 @@ export default function LandingPage() {
                       <div className="flex flex-wrap gap-2 pt-1">
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 ring-1 ring-rose-200">
                           <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
-                          Block Aisha pending review
+                          Block Recipient C
                         </span>
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-200">
                           <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                          Confirm Faridah with programs
+                          Confirm Recipient B with programs
                         </span>
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-200">
                           <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
-                          Release verified payment
+                          Release the rest
                         </span>
                       </div>
                     </div>
@@ -292,20 +310,21 @@ export default function LandingPage() {
           </div>
         </section>
 
-        {/* ─── Trust / built for ────────────────────────────────────────── */}
+        {/* ─── Trust / outcomes ─────────────────────────────────────────── */}
         <section className="border-t border-gray-100 bg-white">
           <div className="mx-auto max-w-6xl px-6 py-32">
             <div className="mb-16 max-w-2xl">
               <p className="text-sm font-semibold uppercase tracking-widest text-brand-600">
-                Built for African NGOs
+                Built around the work
               </p>
               <h2 className="mt-3 text-4xl font-semibold leading-[1.1] tracking-tight text-gray-900 sm:text-5xl">
                 Designed for how the work actually happens.
               </h2>
               <p className="mt-5 text-lg leading-relaxed text-gray-600">
-                Not retrofitted from a US grant-management tool. Built around
-                Paystack, Nigerian banks, NDPR, Google Forms — the shape your
-                team already runs.
+                Not retrofitted from a generic grant-management tool. Built
+                around the document flows your team already runs —
+                spreadsheets, scanned vouchers, attendance sheets, donor
+                policies, board decks. Whatever you have, DOCex reads.
               </p>
             </div>
 
@@ -313,7 +332,7 @@ export default function LandingPage() {
               {trust.map((t) => (
                 <div
                   key={t.label}
-                  className="rounded-2xl border border-gray-100 bg-[#fafaf7] p-7"
+                  className="rounded-2xl border border-gray-200 bg-[#fafaf7] p-7"
                 >
                   <p className="text-base font-semibold text-gray-900">
                     {t.label}
@@ -334,8 +353,9 @@ export default function LandingPage() {
               The back-office, done.
             </h2>
             <p className="mx-auto mt-5 max-w-xl text-lg leading-relaxed text-gray-600">
-              Spin up the agents you need. Run them on your real files. See
-              what a week of work feels like in three minutes.
+              Spin up the Co-Pilots you need. Run them on sample data first.
+              Bring your own files when you're ready. See what a week of work
+              feels like in three minutes.
             </p>
             <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Link href="/app">
@@ -348,18 +368,18 @@ export default function LandingPage() {
                 href="/agents/sub-award"
                 className="text-sm font-medium text-gray-600 underline-offset-4 transition hover:text-gray-900 hover:underline"
               >
-                Tour the agents →
+                Tour the Co-Pilots →
               </Link>
             </div>
           </div>
         </section>
       </main>
 
-      {/* Footer — minimal, calm, no link soup */}
+      {/* Footer — minimal, calm */}
       <footer className="border-t border-gray-100 bg-[#fafaf7] py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 text-xs text-gray-400 sm:flex-row">
-          <p>DOCex · The AI back-office for African NGOs</p>
-          <p>Built with Claude · Powered by Paystack</p>
+          <p>DOCex · The AI back-office for document-heavy operations</p>
+          <p>Built with Claude</p>
         </div>
       </footer>
     </div>

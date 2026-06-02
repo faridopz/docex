@@ -30,7 +30,7 @@ import type { RateCard, RateLine } from "@/types";
  *   - A default per-diem rate (applied when role lookup misses)
  *   - Zero or more per-role rates (Facilitator vs Participant vs M&E)
  *
- * Cards are consumed by the Attendance Payment Agent — when you run an
+ * Cards are consumed by the Attendance Payment Co-Pilot — when you run an
  * event you pick the card, and the agent applies the right rate to each
  * person based on their role column in the payment info form.
  *
@@ -116,7 +116,7 @@ export default function RateCardsPage() {
           </div>
 
           <GuidanceCard title="How rate cards drive payments">
-            When you run the Attendance Payment Agent, pick a card. The agent
+            When you run the Attendance Payment Co-Pilot, pick a card. The agent
             looks up each payee's <span className="font-medium">Role</span>{" "}
             column in their payment info form, finds the matching rate, and
             multiplies by days attended. If a role isn't listed on the card,

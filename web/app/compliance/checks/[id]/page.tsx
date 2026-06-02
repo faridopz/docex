@@ -10,6 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AssistantBrief } from "@/components/AssistantBrief";
+import { DecisionTimeline } from "@/components/compliance/DecisionTimeline";
 import { VerdictScreen } from "@/components/compliance/VerdictScreen";
 import { approveCheck, getCheck, unapproveCheck } from "@/lib/api";
 import type { ComplianceCheckResult } from "@/types";
@@ -157,6 +158,12 @@ export default function SavedCheckPage({
                 contextKind="compliance_check"
                 contextId={check.payment_id}
                 payload={check}
+              />
+            </div>
+            <div className="mb-6">
+              <DecisionTimeline
+                check={check}
+                onUpdate={(updated) => setCheck(updated)}
               />
             </div>
             <VerdictScreen

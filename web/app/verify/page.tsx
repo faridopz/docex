@@ -27,7 +27,7 @@ import { purposeLabel } from "@/types";
  * Bank Verify is one of DOCex's three primitives (alongside Extraction and
  * Compliance Check). It's both a standalone tool — anyone can drop a list
  * of accounts in and verify them — AND a step inside larger agents
- * (Attendance Payment Agent, Sub-award Agent, etc).
+ * (Attendance Payment Co-Pilot, Sub-award Co-Pilot, etc).
  *
  * This page is the front door: see every batch you've run, recognise them
  * by source schedule + purpose, jump back into any of them, or kick off a
@@ -97,7 +97,7 @@ export default function VerifyListPage() {
             <Link
               href="/agents/attendance-payment"
               className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance Payment Agent"
+              title="Attendance Payment Co-Pilot"
             >
               Attendance
             </Link>

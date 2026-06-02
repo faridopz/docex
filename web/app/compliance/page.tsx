@@ -8,6 +8,7 @@ import {
   FileCheck,
   FileSearch,
   FileText,
+  Inbox,
   Loader2,
   Plus,
   ShieldCheck,
@@ -107,6 +108,14 @@ export default function ComplianceListPage() {
 
           <div className="flex items-center gap-2">
             <Link
+              href="/compliance/pending"
+              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+              title="Open the pending inbox — checks awaiting your decision"
+            >
+              <Inbox className="h-3.5 w-3.5" />
+              Inbox
+            </Link>
+            <Link
               href="/compliance/checks"
               className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
               title="View saved checks + approved PVs archive"
@@ -117,7 +126,7 @@ export default function ComplianceListPage() {
             <Link
               href="/agents/attendance-payment"
               className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance Payment Agent"
+              title="Attendance Payment Co-Pilot"
             >
               Attendance
             </Link>

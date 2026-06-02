@@ -170,10 +170,80 @@ export interface ComplianceCheckResult {
   created_at?: string | null;
   approved?: boolean;
   approved_at?: string | null;
+  // Requisition metadata — Day 14. Optional context an officer captures
+  // when uploading a check that mirrors the paper requisition form TA
+  // Connect (and friends) currently route through email.
+  requisition_date?: string | null;
+  billing_donor?: string | null;
+  payment_purpose?: string | null;
+  items_requested?: string | null;
+  requested_by?: string | null;
+  approved_by?: string | null;
+  // Approval-chain state — Day 14. pending_with is whoever the check is
+  // sitting with right now (free-text, name or email). pending_question
+  // is the outstanding clarification (if any). Both clear on responder
+  // action.
+  pending_with?: string | null;
+  pending_question?: string | null;
   // Snapshot of the active rules at check time. Frozen on first save so
   // later rulebook edits never alter historical audit trails.
   rulebook_snapshot_rules?: PolicyRule[] | null;
+  // Append-only human decision log. Every officer action on this check
+  // lands here with a timestamp + (eventually) actor + reason. This is the
+  // audit-trail surface an auditor actually asks for: "what did your team
+  // do about this flag, and when, and why?"
+  decision_log?: DecisionEvent[];
 }
+
+export type DecisionEventType =
+  | "check_run"
+  | "note_added"
+  | "rule_dismissed"
+  | "rule_escalated"
+  | "clarification_requested"
+  | "clarification_received"
+  | "escalated"
+  | "approved"
+  | "unapproved";
+
+export interface DecisionEvent {
+  type: DecisionEventType;
+  timestamp: string;
+  actor: string | null;
+  note: string | null;
+  rule_id: string | null;
+  rule_description: string | null;
+  // Signature — Day 15. Optional drawn signature + typed name. Approve,
+  // escalate, and final clarification responses are the typical signed
+  // events. Notes / dismissals usually skip the pad.
+  signature_data_url?: string | null;
+  signed_name?: string | null;
+}
+
+// Human-friendly labels + colour tokens for the timeline UI.
+export const decisionEventLabel: Record<DecisionEventType, string> = {
+  check_run: "Check ran",
+  note_added: "Note added",
+  rule_dismissed: "Flag dismissed",
+  rule_escalated: "Rule escalated",
+  clarification_requested: "Clarification requested",
+  clarification_received: "Clarification received",
+  escalated: "Escalated",
+  approved: "Approved",
+  unapproved: "Approval revoked",
+};
+
+export const decisionEventColor: Record<DecisionEventType, string> = {
+  check_run: "bg-gray-100 text-gray-700 ring-1 ring-gray-200",
+  note_added: "bg-sky-50 text-sky-700 ring-1 ring-sky-200",
+  rule_dismissed: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
+  rule_escalated: "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
+  clarification_requested: "bg-blue-50 text-blue-700 ring-1 ring-blue-200",
+  clarification_received: "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200",
+  escalated: "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
+  approved: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
+  unapproved: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
+};
 
 export interface CheckSummary {
   payment_id: string;
@@ -187,6 +257,8 @@ export interface CheckSummary {
   approved?: boolean;
   approved_at?: string | null;
   error?: string | null;
+  pending_with?: string | null;
+  pending_question?: string | null;
 }
 
 export interface CheckListResponse {
@@ -292,7 +364,7 @@ export const categoryColor: Record<RuleCategory, string> = {
 //
 // Bank Verify is a standalone tool (anyone can drop accounts in and verify
 // them, no agent context required) AND a composable step inside larger
-// agents (Attendance Payment Agent, Sub-award Agent, Procurement Agent).
+// agents (Attendance Payment Co-Pilot, Sub-award Co-Pilot, Procurement Agent).
 // The 'purpose' field captures WHY the verification ran so the audit trail
 // stays meaningful and notifications route to the right person.
 
@@ -410,7 +482,7 @@ export const purposeDescription: Record<StandardPurpose, string> = {
   other: "Anything else — describe the purpose in your own words",
 };
 
-// ── Attendance Payment Agent ─────────────────────────────────────────────
+// ── Attendance Payment Co-Pilot ─────────────────────────────────────────────
 //
 // DOCex's first *composite* agent — chains parse-attendance, parse-payment-
 // info, fuzzy-match, calculate-amounts, hand-off-to-bank-verify. Targets
