@@ -217,46 +217,33 @@ def copilot_card(eyebrow, title, body, proof, accent=BRAND):
     return t
 
 
-def pricing_table():
-    """The Free / Pro / Enterprise pricing grid."""
-    header = ["", "Free", "Pro", "Enterprise"]
+def included_table():
+    """A 'what every account gets' table — no pricing, just capabilities."""
     rows = [
-        ["Monthly price", "$0", "$99", "$299"],
-        ["Sessions / mo", "3", "Unlimited", "Unlimited"],
-        ["Bank verifications", "25", "500", "Unlimited"],
-        ["Compliance checks", "10", "500", "Unlimited"],
-        ["Document extractions", "25", "1,000", "Unlimited"],
-        ["Excel + PDF export", "✓", "✓", "✓"],
-        ["Decision log + audit trail", "✓", "✓", "✓"],
-        ["Knowledge Hub library", "—", "✓", "✓"],
-        ["User seats", "1", "5", "Custom"],
-        ["White-label / SSO", "—", "—", "✓"],
-        ["Email support", "Community", "Priority", "Dedicated"],
+        ["DOCex Assistant brief on every result", "✓"],
+        ["Append-only decision log + signatures", "✓"],
+        ["Frozen rulebook snapshot per check", "✓"],
+        ["Excel and PDF export of any result", "✓"],
+        ["Citations on every claim, policy and document side", "✓"],
+        ["Knowledge Hub library + library-wide chat", "✓"],
+        ["Bank account verification (recipient match)", "✓"],
+        ["All three Co-Pilots: Sub-award · Programs · Compliance", "✓"],
+        ["Sample-data preview before bringing your own files", "✓"],
+        ["Audit-ready archive — every check has a stable URL", "✓"],
     ]
-    data = [header] + rows
-    t = Table(data, colWidths=[5.4 * cm, 3.2 * cm, 3.2 * cm, 3.2 * cm])
+    t = Table(rows, colWidths=[13.5 * cm, 2.5 * cm])
     t.setStyle(TableStyle([
-        # Header
-        ("BACKGROUND", (0, 0), (-1, 0), INK),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 10),
-        ("ALIGN", (1, 0), (-1, 0), "CENTER"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-        ("TOPPADDING", (0, 0), (-1, 0), 8),
-        # Body
-        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 10),
-        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
-        ("ALIGN", (0, 1), (0, -1), "LEFT"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 1), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 1), (-1, -1), 7),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, WARM]),
+        ("TEXTCOLOR", (1, 0), (1, -1), EMERALD),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, WARM]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, LINE),
-        # Highlight Pro
-        ("BACKGROUND", (2, 0), (2, 0), BRAND),
-        ("FONTNAME", (2, 1), (2, -1), "Helvetica-Bold"),
     ]))
     return t
 
@@ -448,21 +435,22 @@ def build():
         "approved?\", you don't dig through inboxes. You send them a URL.",
         s["body"]))
 
-    # ── Pricing ──
+    # ── What's included ──
     story.append(PageBreak())
-    story.append(Paragraph("PRICING", s["eyebrow"]))
-    story.append(Paragraph("Pick a tier. Switch any time.", s["h1"]))
+    story.append(Paragraph("WHAT YOU GET", s["eyebrow"]))
+    story.append(Paragraph("Every account, all the capabilities.", s["h1"]))
     story.append(Paragraph(
-        "Pilot pricing for the first ten customers. Pro tier locks at "
-        "$99/mo for the lifetime of the account once you sign during "
-        "pilot.",
+        "No \"premium\" features hidden behind tier walls. Every DOCex "
+        "account ships with the full Co-Pilot suite, the full audit "
+        "trail, and every export your auditor will ever ask for. We "
+        "scope volume per organisation as part of the pilot conversation.",
         s["body"]))
     story.append(Spacer(1, 0.3 * cm))
-    story.append(pricing_table())
+    story.append(included_table())
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(
-        "All tiers include the full audit trail, Excel and PDF export, "
-        "and the DOCex Assistant (Claude-written brief on every result).",
+        "Volume, seats, and integration support are scoped together "
+        "during the pilot — sized to your team and your document load.",
         s["small"]))
 
     # ── Pilot path ──

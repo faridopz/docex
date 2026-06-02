@@ -122,9 +122,12 @@ SOUL.md         — Project soul and values
 - [ ] Deploy to Vercel + Railway
 
 ## Business Model
-Free: 3 sessions/month — for pilots like TA Connect
-Pro: $99/month — unlimited sessions, Excel/PDF export, 5 users
-Enterprise: $299/month — white label, API access, team seats
+Pricing happens per-pilot in conversation — NOT on the landing, NOT
+in the PDF, NOT in the product UI. Internal quota tiers exist in
+code (free / pilot / scale) for rate-limiting but their dollar
+amounts and tier names are never surfaced publicly. When a free
+user hits cap, the message is "contact founder@docex.app to scale"
+— never an upgrade-with-price prompt.
 
 ## Primary Pilot Client
 TA Connect — public health NGO, Abuja Nigeria

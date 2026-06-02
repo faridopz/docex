@@ -123,20 +123,23 @@ populated state looks like.
 
 ## 4. Marketing pages
 
-The landing is the only marketing page right now. After auth:
+The landing is the only marketing page right now. Future additions:
 
 - `/` — landing (rewritten this session)
-- `/pricing` — three tiers (Free / Pro / Enterprise) with switch toggle
-  (per-month vs per-year)
 - `/customers` — case studies (once we have one)
 - `/security` — SOC-2 talk (when we get there)
 - `/docs` — API docs once anyone asks
+
+**No public pricing page.** Pricing happens in conversation with each
+prospect during the pilot scope. The landing closes with "Try DOCex
+free" and a free-tier sign-up; volume + seats are scoped manually.
 
 Hero pattern (already mostly there): eyebrow chip → BIG type headline →
 warm subtitle → two CTAs (primary + secondary text-link).
 
 Avoid: illustrated heroes, stock photos, fake browser screenshots,
-"Trusted by [logo soup]" before we have real logos.
+"Trusted by [logo soup]" before we have real logos, and any "from
+$X/mo" copy.
 
 ---
 

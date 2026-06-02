@@ -10,7 +10,7 @@ Paste this entire document as your first message to ChatGPT. It's deliberately b
 - **DOCex** is an AI back-office for African NGOs. It replaces the document-heavy parts of finance, programs, and sub-award work with named agents tuned to specific roles.
 - **Today's reality**: pre-revenue. Three warm leads (TA Connect, Sydani Group contact, Neem). Goal is 3 paying pilots by July 31, 2026 (we're in June 2026 now — running tight).
 - **My capacity**: ~1-2 hours per day on a normal day, much more on focused build nights.
-- **Pricing intent**: Free (3 sessions/month), Pro $99/mo, Enterprise $299/mo. First pilot is ₦6.5M/year (~$4k) with a 3-month free trial.
+- **Pricing intent**: internal — never surfaced on landing, in the PDF, or in product UI. Volume scoped per-pilot in conversation. Founder retains tier amounts in private notes.
 
 ## 2. The thesis in one paragraph
 

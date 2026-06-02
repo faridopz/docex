@@ -11,7 +11,7 @@ Paste this entire document as the first message to DeepSeek (or any other LLM). 
 - ~1-2 hours/day baseline, much more on sprint nights.
 - **Goal**: 3 paying pilots by July 31, 2026.
 - **Today's status**: pre-revenue, but three warm leads in play (see Customer Pipeline below).
-- **Pricing model**: Free (3 sessions/month), Pro $99/mo, Enterprise $299/mo. First pilot proposal is ₦6.5M/year, 3-month free trial.
+- **Pricing model**: internal — never surfaced on landing, in the PDF, or in product UI. Volume scoped per-pilot in conversation. Founder retains tier amounts in private notes.
 
 ## 2. Customer pipeline (three warm leads)
 

@@ -176,7 +176,11 @@ already answered them.
 ## 9. Open decisions (Farid to resolve)
 
 - [ ] Auth provider: Supabase Auth vs Clerk vs WorkOS? (default: Supabase)
-- [ ] Pricing tier change? Current: Free 3 sessions / Pro $99 / Ent $299
 - [ ] Self-learning agent — opt-in or default-on? (default suggestion: opt-in)
 - [ ] Demo artifact deletion — auto after N days vs manual button?
 - [ ] Sales agent outbound channel — email only or LinkedIn too?
+
+Pricing is INTERNAL — never shown on landing, PDF, prompts, or product
+UI. Volumes and seats get scoped per-pilot in conversation. Quota
+caps still exist in code (we need rate limits) but the dollar amounts
+attached to each tier are not surfaced publicly.

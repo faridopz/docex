@@ -15,9 +15,10 @@ any code, read these in order:
 ## What this stream delivers
 
 A working sign-in flow that gates the app, plus per-tier usage caps
-that map to the pricing on the landing page. After this, a stranger
-hitting the landing can: sign up → land in `/onboarding` (handled by
-A3) → run something → hit a soft cap → see the upgrade prompt.
+(internal — quotas exist in code but the tier names + dollar amounts
+are NEVER shown publicly). After this, a stranger hitting the landing
+can: sign up → land in `/onboarding` (handled by A3) → run something
+→ hit a soft cap → see a "contact us to scale" prompt (no prices).
 
 ## What already exists
 
@@ -26,9 +27,21 @@ A3) → run something → hit a soft cap → see the upgrade prompt.
 - File-based JSON persistence at `verifications/`, `attendance_runs/`,
   `rate_cards/`, `decks/`, `diagnostics/`, `checks/`
 - Self-Check Agent admin-gated via `ADMIN_SECRET` env var
-- The landing page (`/web/app/page.tsx`) shows three tiers via the
-  closing CTA — Free, Pro $99, Enterprise $299. No pricing page yet.
-- Pricing: 3 sessions/month free, unlimited pro
+- Landing has no pricing surface — soft sign-up CTA only.
+
+## Pricing policy (read carefully)
+
+Tiers EXIST IN CODE (we need quotas to prevent abuse) but their
+**dollar amounts and tier names** are not shown anywhere customer-
+facing. Volume gets scoped per-pilot in conversation. Internal-only:
+
+- `tier_free` → low usage cap (set in code)
+- `tier_pilot` → unlimited for the duration of a paid pilot
+- `tier_scale` → contract-scoped
+
+When a free user hits cap, the friendly error is "You've reached
+your monthly limit. Reply to founder@docex.app to scale your account."
+NOT "Upgrade to Pro for $99/month."
 
 ## What to build
 
@@ -45,20 +58,20 @@ A3) → run something → hit a soft cap → see the upgrade prompt.
    - Every existing endpoint gets `user: User = Depends(current_user)`
      unless explicitly public (the diagnostic stays admin-gated)
 
-2. **Usage caps.**
+2. **Usage caps (internal).**
    - Add a `usage` table: `user_id`, `month_yyyymm` (varchar 7),
      `sessions_used` (int default 0), `bank_verifications_used`,
      `compliance_checks_used`, `extractions_used`
    - Cap helper `check_quota(user, primitive) -> bool` in
      `/api/quota.py` — returns true if within cap, false if over
-   - Tier caps:
+   - Internal caps (NOT shown publicly):
      | Tier        | Sessions | Bank verifications | Compliance checks | Extractions |
      | ----------- | -------- | ------------------ | ----------------- | ----------- |
-     | Free        | 3        | 25                 | 10                | 25          |
-     | Pro         | ∞        | 500                | 500               | 1000        |
-     | Enterprise  | ∞        | ∞                  | ∞                 | ∞           |
+     | free        | 3        | 25                 | 10                | 25          |
+     | pilot       | ∞        | 500                | 500               | 1000        |
+     | scale       | ∞        | ∞                  | ∞                 | ∞           |
    - Every primitive route bumps the relevant counter on success
-   - Soft-cap: return 402 PAYMENT REQUIRED with `{ "upgrade_url": "/billing", "reason": ... }`
+   - Soft-cap: return 402 with `{ "contact": "founder@docex.app", "reason": ... }` — NO dollar amounts in the payload, NO tier names exposed
 
 3. **Persistence migration.**
    - All file-based JSON gets a `user_id` prefix in the path:
@@ -71,22 +84,25 @@ A3) → run something → hit a soft cap → see the upgrade prompt.
 1. **Auth UI.**
    - `/login` — email + magic-link via Supabase
    - `/signup` — same + org name field
-   - `/account` — view current tier, monthly usage, upgrade button
+   - `/account` — view monthly usage. NO tier label, NO prices. Just
+     "12 of 25 checks this month" type display.
    - `useUser()` hook in `web/lib/auth.ts` wrapping Supabase client
    - Middleware in `web/middleware.ts` redirects unauth users from
      `/app`, `/compliance`, `/agents/*`, `/verify`, `/knowledge` to
      `/login`. Landing `/` stays public.
 
 2. **Quota indicators.**
-   - Header chip on every gated page: "12 / unlimited" or "8 / 25"
-   - When over cap, every "Run" button is disabled with a tooltip:
-     "Monthly limit reached — upgrade to keep going"
-   - `/billing` page with the three tiers and a Stripe payment link
-     (Stripe Payment Link, not full Checkout — fastest to ship)
+   - Header chip on every gated page: "12 / 25" — usage only, no
+     tier labels
+   - When over cap, the "Run" button is disabled with a tooltip:
+     "Monthly limit reached — contact founder@docex.app to scale your
+     account"
+   - NO `/billing` or `/pricing` page in this stream
 
 3. **Friendly errors.**
    - Existing `web/lib/errors.ts` already has `friendlyError()` — add a
-     402 case that auto-redirects to `/billing` after 2s with a toast
+     402 case that shows a "Contact us to scale" toast (no upgrade
+     link, no prices)
 
 ## Out of scope (do not do)
 
@@ -99,11 +115,13 @@ A3) → run something → hit a soft cap → see the upgrade prompt.
 
 - [ ] A new visitor can sign up, get a magic link, land in `/onboarding`
 - [ ] Free user can run 3 bank verifications, gets blocked on the 4th
-      with the upgrade prompt
-- [ ] Pro user (set manually in Supabase) has no caps
+      with a "contact founder@docex.app to scale" message (no prices)
+- [ ] Pilot user (set manually in Supabase) has no caps
 - [ ] All existing data is namespaced under user dirs, no leaks
 - [ ] Diagnostic still admin-gated and returns 404 to unauth
 - [ ] No regression on existing flows — Self-Check passes 22/22
+- [ ] NO pricing surface anywhere — no `/pricing` route, no `$` in any
+      UI string, no "Pro/Enterprise" labels in the product
 
 ## Testing checklist
 

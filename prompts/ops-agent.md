@@ -31,7 +31,7 @@ When a prospect moves to "Pilot scoping" in the Sales CRM:
 
 When a pilot is signed and starts:
 
-- Read pricing tier from CRM
+- Read the per-pilot scoped amount from the CRM "Pilot Amount" field
 - Generate monthly invoice PDF using template + logo
 - Save to Google Drive > DOCex > Customer Deliverables > {Org} > Invoices
 - Email to the contact (DRAFT in Gmail, founder approves)
