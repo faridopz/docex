@@ -6,6 +6,7 @@ import {
   ChevronRight,
   HelpCircle,
   Loader2,
+  Mail,
   MessageSquarePlus,
   Reply,
   Send,
@@ -149,6 +150,12 @@ function TimelineEvent({ event }: { event: DecisionEvent }) {
           title={event.rule_description}
         >
           <span className="font-medium">Rule:</span> {event.rule_description}
+        </p>
+      )}
+      {event.notified_email && (
+        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600">
+          <Mail className="h-3 w-3" />
+          Emailed {event.notified_email}
         </p>
       )}
       {(event.signature_data_url || event.signed_name) && (
@@ -522,6 +529,7 @@ function EscalateForm({
         placeholder="e.g. Finance Director, abosede@taconnect.org"
         required
       />
+      <NotifyHint value={pendingWith} />
       <LabelledTextarea
         label="Why are you escalating? (optional)"
         value={reason}
@@ -607,6 +615,7 @@ function ClarifyForm({
         placeholder="e.g. tunde@vendor.com, Finance officer"
         required
       />
+      <NotifyHint value={pendingWith} />
       {rules.length > 0 && (
         <label className="block">
           <span className="text-[11px] font-medium uppercase tracking-wide text-gray-600">
@@ -823,6 +832,30 @@ function LabelledTextarea({
         className="mt-1 w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
       />
     </label>
+  );
+}
+
+// Mirrors notifications.looks_like_email on the backend — decides whether
+// DOCex will email the recipient or just hand the check off in-app.
+function looksLikeEmail(value: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim());
+}
+
+/** Live hint under the recipient field: tells the officer whether an email
+ *  will go out, so there's no surprise about who gets notified. */
+function NotifyHint({ value }: { value: string }) {
+  const v = value.trim();
+  if (!v) return null;
+  return looksLikeEmail(v) ? (
+    <p className="flex items-center gap-1 text-[11px] text-emerald-600">
+      <Mail className="h-3 w-3" />
+      DOCex will email {v} a link straight to this check.
+    </p>
+  ) : (
+    <p className="text-[11px] text-gray-400">
+      No email address — this is an in-app handoff. Add an email to notify
+      them automatically.
+    </p>
   );
 }
 

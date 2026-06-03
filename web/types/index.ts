@@ -218,6 +218,9 @@ export interface DecisionEvent {
   // events. Notes / dismissals usually skip the pad.
   signature_data_url?: string | null;
   signed_name?: string | null;
+  // Sprint 2 — when an escalation/clarification was emailed to the
+  // responsible party, the address it went to. Null if no email was sent.
+  notified_email?: string | null;
 }
 
 // Human-friendly labels + colour tokens for the timeline UI.

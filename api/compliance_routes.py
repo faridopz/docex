@@ -44,7 +44,11 @@ from models import (  # noqa: E402
     PolicyRulebook,
 )
 from pydantic import BaseModel  # noqa: E402
-from notifications import send_check_notification  # noqa: E402
+from notifications import (  # noqa: E402
+    send_check_notification,
+    send_clarification_email,
+    send_escalation_email,
+)
 from .schemas import (  # noqa: E402
     CheckListResponse,
     CheckSummary,
@@ -809,6 +813,16 @@ async def escalate_check(
     # responsibility to a new person, not a question waiting for an answer.
     check.pending_question = None
     sig_name = body.signed_name.strip() if body.signed_name else None
+
+    # Notify the reviewer by email if we have an address. Best-effort: a
+    # mail failure must never block the escalation itself.
+    notified: Optional[str] = None
+    try:
+        if send_escalation_email(check, target, body.reason):
+            notified = target
+    except Exception as exc:  # noqa: BLE001 — log-and-continue by design
+        print(f"[DOCex] escalation email to {target} failed: {exc}")
+
     _append_decision_event(
         check,
         DecisionEvent(
@@ -817,6 +831,7 @@ async def escalate_check(
             note=(body.reason or f"Escalated to {target}.").strip(),
             signature_data_url=body.signature_data_url,
             signed_name=sig_name,
+            notified_email=notified,
         ),
     )
     return check
@@ -874,6 +889,16 @@ async def request_clarification(
         if match:
             rule_desc = match.rule_description
     sig_name = body.signed_name.strip() if body.signed_name else None
+
+    # Email the question to the responsible party if we have an address.
+    # Best-effort: a mail failure must never block the request.
+    notified: Optional[str] = None
+    try:
+        if send_clarification_email(check, target, q):
+            notified = target
+    except Exception as exc:  # noqa: BLE001 — log-and-continue by design
+        print(f"[DOCex] clarification email to {target} failed: {exc}")
+
     _append_decision_event(
         check,
         DecisionEvent(
@@ -884,6 +909,7 @@ async def request_clarification(
             rule_description=rule_desc,
             signature_data_url=body.signature_data_url,
             signed_name=sig_name,
+            notified_email=notified,
         ),
     )
     return check

@@ -23,6 +23,7 @@ notifications are silently skipped — opt-in per rulebook.
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
@@ -30,6 +31,16 @@ from email.mime.text import MIMEText
 from typing import Optional
 
 from models import ComplianceCheckResult, PolicyRulebook, RuleResult
+
+
+# Loose email detection — good enough to decide "is pending_with an address
+# we can email, or just a person's name?" Not RFC-complete on purpose.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def looks_like_email(value: Optional[str]) -> bool:
+    """True if `value` is something we can send an email to."""
+    return bool(value and _EMAIL_RE.match(value.strip()))
 
 
 # ─── Pure helpers (subject + body) ──────────────────────────────────────────
@@ -137,6 +148,131 @@ def _is_smtp_configured() -> bool:
     return bool(os.environ.get("SMTP_HOST"))
 
 
+def _check_url(check: ComplianceCheckResult) -> Optional[str]:
+    """Deep link back to the check, if APP_URL is configured."""
+    app_url = os.environ.get("APP_URL", "").rstrip("/")
+    return f"{app_url}/compliance/checks/{check.payment_id}" if app_url else None
+
+
+def _send_raw_email(to_address: str, subject: str, body: str) -> bool:
+    """Low-level send used by every notification type.
+
+    Provider-agnostic: works with any SMTP host — Outlook/Office 365
+    (smtp.office365.com), Gmail (smtp.gmail.com), Resend, etc. Returns True
+    if a message was handed to the SMTP server, False if SMTP isn't
+    configured. Raises only on real transport errors so callers can decide
+    whether to swallow them (notifications must never break the action they
+    accompany).
+    """
+    if not _is_smtp_configured():
+        return False
+
+    smtp_host = os.environ["SMTP_HOST"]
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USERNAME", "")
+    smtp_pass = os.environ.get("SMTP_PASSWORD", "")
+    from_address = os.environ.get(
+        "SMTP_FROM_ADDRESS",
+        smtp_user or "notifications@docex.app",
+    )
+    from_name = os.environ.get("SMTP_FROM_NAME", "DOCex")
+
+    msg = MIMEMultipart()
+    msg["From"] = f"{from_name} <{from_address}>"
+    msg["To"] = to_address
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    # SSL on 465, STARTTLS on 587 (and everywhere else)
+    if smtp_port == 465:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as server:
+            if smtp_user:
+                server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls(context=ssl.create_default_context())
+            if smtp_user:
+                server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+    return True
+
+
+# ─── Escalation + clarification emails (Sprint 2) ───────────────────────────
+#
+# These replace the Outlook back-and-forth: when an officer escalates a check
+# or asks a question, the responsible party gets an email with the context and
+# a one-click link straight to the check — no copy-pasting, no lost threads.
+
+
+def send_escalation_email(
+    check: ComplianceCheckResult,
+    to_address: str,
+    reason: Optional[str],
+) -> bool:
+    """Email the person a check has been escalated to. Returns True if sent."""
+    if not looks_like_email(to_address):
+        return False
+    url = _check_url(check)
+    subject = f"[DOCex] Escalated to you: {check.payment_label}"
+    lines = [
+        "A compliance check has been escalated to you for review.",
+        "",
+        f"Payment:  {check.payment_label}",
+        f"Rulebook: {check.rulebook_name}",
+        f"Verdict:  {check.overall_verdict.upper()}",
+    ]
+    if reason:
+        lines += ["", f"Note from the officer:", f"  {reason}"]
+    if url:
+        lines += ["", "Review and act on it here:", url]
+    lines += [
+        "",
+        "---",
+        "Automated handoff from DOCex. Everything you decide is captured on "
+        "the check's audit trail.",
+    ]
+    return _send_raw_email(to_address, subject, "\n".join(lines))
+
+
+def send_clarification_email(
+    check: ComplianceCheckResult,
+    to_address: str,
+    question: str,
+) -> bool:
+    """Email a clarification question to the responsible party. Returns True
+    if sent."""
+    if not looks_like_email(to_address):
+        return False
+    url = _check_url(check)
+    subject = f"[DOCex] Question on {check.payment_label}"
+    lines = [
+        "A DOCex compliance reviewer has a question before this payment can "
+        "proceed.",
+        "",
+        f"Payment:  {check.payment_label}",
+        f"Rulebook: {check.rulebook_name}",
+        "",
+        "Question:",
+        f"  {question}",
+    ]
+    if url:
+        lines += [
+            "",
+            "Answer directly on the check (keeps everything in one thread):",
+            url,
+        ]
+    lines += [
+        "",
+        "---",
+        "Automated request from DOCex. Replying on the check keeps the "
+        "question, your answer, and the audit trail together.",
+    ]
+    return _send_raw_email(to_address, subject, "\n".join(lines))
+
+
 def _should_send(verdict: str, trigger: Optional[str]) -> bool:
     if not trigger:
         return False
@@ -169,40 +305,9 @@ def send_check_notification(
     if not _should_send(check.overall_verdict, rulebook.notification_trigger):
         return False
 
-    smtp_host = os.environ["SMTP_HOST"]
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USERNAME", "")
-    smtp_pass = os.environ.get("SMTP_PASSWORD", "")
-    from_address = os.environ.get(
-        "SMTP_FROM_ADDRESS",
-        smtp_user or "notifications@docex.app",
+    audit_url = _check_url(check)
+    return _send_raw_email(
+        rulebook.notification_email,
+        _build_subject(check),
+        _build_body(check, rulebook, audit_url),
     )
-    from_name = os.environ.get("SMTP_FROM_NAME", "DOCex")
-
-    # Build the audit URL if APP_URL is configured
-    app_url = os.environ.get("APP_URL", "").rstrip("/")
-    audit_url = (
-        f"{app_url}/compliance/checks/{check.payment_id}" if app_url else None
-    )
-
-    msg = MIMEMultipart()
-    msg["From"] = f"{from_name} <{from_address}>"
-    msg["To"] = rulebook.notification_email
-    msg["Subject"] = _build_subject(check)
-    msg.attach(MIMEText(_build_body(check, rulebook, audit_url), "plain"))
-
-    # SSL on 465, STARTTLS on 587 (and everywhere else)
-    if smtp_port == 465:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as server:
-            if smtp_user:
-                server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-    else:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls(context=ssl.create_default_context())
-            if smtp_user:
-                server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-
-    return True

@@ -241,6 +241,13 @@ class DecisionEvent(BaseModel):
     # clarification response are the typical signed actions.
     signature_data_url: Optional[str] = None  # data:image/png;base64,...
     signed_name: Optional[str] = None         # typed name accompanying signature
+    # ─── Outbound notification (Sprint 2) ───────────────────────────────
+    # When an escalation or clarification is emailed to the responsible
+    # party, the address it was sent to is recorded here. This closes the
+    # audit loop ("we told tunde@vendor.com on 03/06") and lets the UI show
+    # a delivery confirmation. Null when no email was sent (recipient was a
+    # name not an address, or SMTP isn't configured).
+    notified_email: Optional[str] = None
 
 
 class ComplianceCheckBatchResult(BaseModel):
