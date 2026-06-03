@@ -170,6 +170,7 @@ export function AppNav({
           {NAV_GROUPS.map((group) => {
             const open = openGroup === group.label;
             const groupActive = isGroupActive(group);
+            const activeItem = group.items.find(isItemActive);
             return (
               <div key={group.label} className="relative">
                 <button
@@ -186,6 +187,16 @@ export function AppNav({
                   )}
                 >
                   {group.label}
+                  {/* Current location: when this group holds the active page,
+                      name the item inline so the user always knows where
+                      they are without opening the menu. */}
+                  {activeItem && (
+                    <span className="inline-flex items-center gap-1 text-brand-700">
+                      <span className="text-gray-300">·</span>
+                      <activeItem.icon className="h-3.5 w-3.5" />
+                      {activeItem.label}
+                    </span>
+                  )}
                   <ChevronDown
                     className={cn(
                       "h-3.5 w-3.5 transition-transform",

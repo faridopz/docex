@@ -283,28 +283,19 @@ function EmptyState() {
         No rulebooks yet
       </h2>
       <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-gray-600">
-        Upload your own procurement, travel, or expense policy — or start
-        with our pre-built sample so you can see the full flow in 60 seconds.
+        Upload your procurement, travel, or donor policy — one document or
+        several — and DOCex turns it into a reusable policy set you can check
+        every payment against.
       </p>
-      <div className="mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
-        <Link
-          href="/compliance/rulebooks/sample-ngo-procurement"
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-brand-100 transition hover:bg-brand-700"
-        >
-          <Sparkles className="h-4 w-4" />
-          Try the sample rulebook
-        </Link>
+      <div className="mt-6 flex justify-center">
         <Link
           href="/compliance/new"
-          className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:border-brand-300 hover:text-brand-700"
+          className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-brand-100 transition hover:bg-brand-700"
         >
           <FileText className="h-4 w-4" />
-          Upload your own policy
+          Upload your first policy
         </Link>
       </div>
-      <p className="mt-4 text-xs text-gray-400">
-        Sample: Standard NGO Procurement Policy · 10 rules · pre-loaded for demo
-      </p>
     </div>
   );
 }
