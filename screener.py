@@ -20,6 +20,7 @@ import traceback
 from typing import Optional
 
 import anthropic
+from ai_config import EXTRACTION_MODEL
 from models import ApplicantExtraction, ExtractionAnswer, Question
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ source_document. Quote verbatim."""
     # Each answer can be 300–600 tokens; with 20 questions we need headroom
     # well past the previous 8096 cap, which silently truncated big runs.
     response = _client.messages.parse(
-        model="claude-sonnet-4-6",
+        model=EXTRACTION_MODEL,
         max_tokens=16384,
         system=[
             {

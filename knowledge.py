@@ -33,6 +33,7 @@ from typing import Optional
 
 import anthropic
 
+from ai_config import KNOWLEDGE_MODEL
 from models import KnowledgeAnswer, SlideCitation, SlideDeck
 from slides import chunk_label_for, deck_to_context
 
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 # can run up to ~30s on a full 100-document library; 180s gives generous
 # margin while preventing hangs on Anthropic side effects.
 _client = anthropic.Anthropic(timeout=180.0)
-_MODEL = "claude-sonnet-4-6"
+_MODEL = KNOWLEDGE_MODEL
 _MAX_TOKENS = 1500
 
 

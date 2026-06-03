@@ -29,6 +29,7 @@ import uuid
 from typing import Optional
 
 import anthropic
+from ai_config import COMPLIANCE_MODEL
 from models import (
     ComplianceCheckBatchResult,
     ComplianceCheckResult,
@@ -287,7 +288,7 @@ kebab-case id for each rule. Cite source_quote verbatim from the policy.
 Note any ambiguous clauses in interpretation_notes."""
 
     response = _client.messages.parse(
-        model="claude-sonnet-4-6",
+        model=COMPLIANCE_MODEL,
         max_tokens=16384,
         system=[
             {
@@ -388,7 +389,7 @@ For all other rules, return one RuleResult per rule. Cite policy and
 payment text verbatim."""
 
     response = _client.messages.parse(
-        model="claude-sonnet-4-6",
+        model=COMPLIANCE_MODEL,
         max_tokens=16384,
         system=[
             {

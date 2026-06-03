@@ -28,6 +28,7 @@ from typing import Any
 
 import anthropic
 
+from ai_config import ASSISTANT_MODEL
 from models import AssistantBrief, SuggestedAction
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 # resolves in under 30s in practice) while preventing pathological hangs.
 _client = anthropic.Anthropic(timeout=120.0)
 
-_MODEL = "claude-sonnet-4-6"
+_MODEL = ASSISTANT_MODEL
 _MAX_TOKENS = 800
 
 
