@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
+  CalendarCheck,
   CalendarDays,
   ChevronRight,
   CircleDollarSign,
@@ -62,11 +63,18 @@ export default function AttendanceAgentLandingPage() {
           Rate cards
         </Link>
         <Link
+          href="/agents/attendance-payment/collect/new"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+        >
+          <CalendarCheck className="h-3.5 w-3.5" />
+          Collect attendance
+        </Link>
+        <Link
           href="/agents/attendance-payment/new"
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
         >
           <Plus className="h-3.5 w-3.5" />
-          New run
+          Import run
         </Link>
       </AppNav>
 

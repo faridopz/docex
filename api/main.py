@@ -77,6 +77,7 @@ from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402
 from .assistant_routes import router as assistant_router  # noqa: E402
 from .attendance_agent_routes import router as attendance_router  # noqa: E402
+from .attendance_collection_routes import router as attendance_collection_router  # noqa: E402
 from .bank_verify_routes import router as bank_verify_router  # noqa: E402
 from .compliance_routes import router as compliance_router  # noqa: E402
 from .knowledge_routes import router as knowledge_router  # noqa: E402
@@ -145,6 +146,11 @@ app.include_router(bank_verify_router)
 # then hands the resulting schedule off to Bank Verify for verification.
 # See api/attendance_agent_routes.py.
 app.include_router(attendance_router)
+
+# Attendance Collections — native intake grid + public self-check-in links.
+# Converts collected attendees into a normal run. See
+# api/attendance_collection_routes.py.
+app.include_router(attendance_collection_router)
 
 # Rate cards — reusable per-diem schedules consumed by the Attendance
 # Payment Agent and (later) any other agent that needs to compute payment

@@ -529,8 +529,8 @@ export interface AttendancePaymentRun {
   rate_card_name: string | null;
   rate_card_snapshot: RateCard | null;
   accuracy_flags: string[];
-  attendance_source: "xlsx" | "google_sheets";
-  payment_info_source: "xlsx" | "google_sheets";
+  attendance_source: "xlsx" | "google_sheets" | "collection";
+  payment_info_source: "xlsx" | "google_sheets" | "collection";
 }
 
 export interface AttendancePaymentRunSummary {
@@ -546,6 +546,47 @@ export interface AttendancePaymentRunSummary {
   attendance_filename: string | null;
   payment_info_filename: string | null;
   bank_verify_batch_id: string | null;
+}
+
+// ─── Attendance Collections (native intake + self-check-in) ─────────────────
+
+export interface CollectedAttendee {
+  id: string;
+  name: string;
+  organisation?: string | null;
+  account_number: string;
+  bank_code: string;
+  bank_name?: string | null;
+  role?: string | null;
+  present_days: string[];
+  source: "organizer" | "self";
+}
+
+export interface AttendanceCollection {
+  id: string;
+  event_name: string;
+  day_labels: string[];
+  rate_per_day: number;
+  rate_card_id?: string | null;
+  share_token: string;
+  created_at?: string | null;
+  attendees: CollectedAttendee[];
+  run_id?: string | null;
+}
+
+export interface AttendanceCollectionSummary {
+  id: string;
+  event_name: string;
+  attendee_count: number;
+  day_count: number;
+  created_at?: string | null;
+  run_id?: string | null;
+}
+
+export interface PublicCollectionInfo {
+  event_name: string;
+  day_labels: string[];
+  already_submitted: number;
 }
 
 export const attendeeStatusLabel: Record<AttendeeStatus, string> = {

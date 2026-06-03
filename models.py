@@ -725,3 +725,61 @@ class AttendancePaymentRun(BaseModel):
     # per format. Default to xlsx for backward compat.
     attendance_source: str = "xlsx"
     payment_info_source: str = "xlsx"
+
+
+# ─── Attendance Collections (native intake + self-check-in) ─────────────────
+#
+# An alternative to importing an attendance log + payment form: collect the
+# data natively. The organiser creates a Collection (event + day labels +
+# rate), then either fills the grid themselves OR shares a public check-in
+# link where attendees self-enter their name + bank details. When ready, the
+# Collection is built into a normal AttendancePaymentRun via match_and_build_run
+# — so everything downstream (Bank Verify, schedule export) is unchanged.
+
+
+class CollectedAttendee(BaseModel):
+    """One attendee inside a Collection (entered manually or self-served)."""
+    id: str
+    name: str
+    organisation: Optional[str] = None
+    account_number: str = ""
+    bank_code: str = ""
+    bank_name: Optional[str] = None
+    role: Optional[str] = None
+    # Which day labels this person was present for (subset of the
+    # collection's day_labels). Length = days attended.
+    present_days: list[str] = []
+    # "organizer" (added in the grid) or "self" (via the public link).
+    source: Literal["organizer", "self"] = "organizer"
+
+
+class AttendanceCollection(BaseModel):
+    """A native attendance-collection session."""
+    id: str
+    event_name: str
+    day_labels: list[str] = []
+    rate_per_day: float = 0.0
+    rate_card_id: Optional[str] = None
+    # Opaque token used in the public self-check-in URL. Distinct from id so
+    # the share link never exposes the internal id.
+    share_token: str
+    created_at: Optional[str] = None
+    attendees: list[CollectedAttendee] = []
+    # Set once the collection has been built into a payment run.
+    run_id: Optional[str] = None
+
+
+class AttendanceCollectionSummary(BaseModel):
+    id: str
+    event_name: str
+    attendee_count: int
+    day_count: int
+    created_at: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class PublicCollectionInfo(BaseModel):
+    """The minimal, non-sensitive view returned to the public check-in page."""
+    event_name: str
+    day_labels: list[str]
+    already_submitted: int  # how many have checked in so far (social proof)

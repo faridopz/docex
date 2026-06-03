@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   Building2,
+  CalendarCheck,
   CalendarDays,
   CheckCircle2,
   CircleDollarSign,
@@ -562,24 +563,33 @@ function SourceBadge({
   source,
   label,
 }: {
-  source: "xlsx" | "google_sheets";
+  source: "xlsx" | "google_sheets" | "collection";
   label: string;
 }) {
   const isSheets = source === "google_sheets";
+  const isCollection = source === "collection";
+  const highlight = isSheets || isCollection;
+  const title = isCollection
+    ? `${label}: collected natively (grid or self-check-in)`
+    : isSheets
+      ? `${label}: pulled live from a Google Sheet`
+      : `${label}: uploaded as an .xlsx file`;
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-        isSheets
+        highlight
           ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
           : "bg-gray-50 text-gray-600 ring-1 ring-gray-200"
       }`}
-      title={
-        isSheets
-          ? `${label}: pulled live from a Google Sheet`
-          : `${label}: uploaded as an .xlsx file`
-      }
+      title={title}
     >
-      {isSheets ? <Link2 className="h-2.5 w-2.5" /> : <FileSpreadsheet className="h-2.5 w-2.5" />}
+      {isCollection ? (
+        <CalendarCheck className="h-2.5 w-2.5" />
+      ) : isSheets ? (
+        <Link2 className="h-2.5 w-2.5" />
+      ) : (
+        <FileSpreadsheet className="h-2.5 w-2.5" />
+      )}
       {label}
     </span>
   );

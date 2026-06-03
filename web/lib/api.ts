@@ -2,6 +2,10 @@ import type {
   ApplicantExtraction,
   ApplicantInput,
   AssistantBrief,
+  AttendanceCollection,
+  AttendanceCollectionSummary,
+  CollectedAttendee,
+  PublicCollectionInfo,
   BankVerifyBatchResult,
   BatchExtractionResponse,
   BatchVerifyListResponse,
@@ -1166,4 +1170,93 @@ export async function listPendingChecks(): Promise<CheckSummary[]> {
   if (!res.ok) await throwFriendly(res);
   const json = (await res.json()) as { checks: CheckSummary[] };
   return json.checks;
+}
+
+// ─── Attendance Collections (native intake + self-check-in) ─────────────────
+
+const COLL_BASE = `${BASE}/agents/attendance-payment/collections`;
+
+export async function createCollection(input: {
+  event_name: string;
+  day_labels: string[];
+  rate_per_day: number;
+  rate_card_id?: string | null;
+}): Promise<AttendanceCollection> {
+  const res = await fetch(COLL_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<AttendanceCollection>;
+}
+
+export async function listCollections(): Promise<AttendanceCollectionSummary[]> {
+  const res = await fetch(COLL_BASE);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<AttendanceCollectionSummary[]>;
+}
+
+export async function getCollection(id: string): Promise<AttendanceCollection> {
+  const res = await fetch(`${COLL_BASE}/${id}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<AttendanceCollection>;
+}
+
+export async function updateCollection(
+  id: string,
+  patch: Partial<{
+    event_name: string;
+    day_labels: string[];
+    rate_per_day: number;
+    rate_card_id: string | null;
+    attendees: CollectedAttendee[];
+  }>,
+): Promise<AttendanceCollection> {
+  const res = await fetch(`${COLL_BASE}/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<AttendanceCollection>;
+}
+
+export async function deleteCollection(id: string): Promise<void> {
+  const res = await fetch(`${COLL_BASE}/${id}`, { method: "DELETE" });
+  if (!res.ok) await throwFriendly(res);
+}
+
+export async function buildCollectionRun(id: string): Promise<{ run_id: string }> {
+  const res = await fetch(`${COLL_BASE}/${id}/run`, { method: "POST" });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<{ run_id: string }>;
+}
+
+export async function getPublicCollection(
+  token: string,
+): Promise<PublicCollectionInfo> {
+  const res = await fetch(`${COLL_BASE}/public/${token}`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<PublicCollectionInfo>;
+}
+
+export async function selfCheckIn(
+  token: string,
+  input: {
+    name: string;
+    organisation?: string;
+    account_number?: string;
+    bank_code?: string;
+    bank_name?: string;
+    role?: string;
+    present_days?: string[];
+  },
+): Promise<void> {
+  const res = await fetch(`${COLL_BASE}/public/${token}/attendees`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) await throwFriendly(res);
 }
