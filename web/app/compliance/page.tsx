@@ -11,6 +11,7 @@ import {
   Landmark,
   Loader2,
   Plus,
+  ShieldCheck,
   Sparkles,
   Stamp,
 } from "lucide-react";
@@ -110,10 +111,17 @@ export default function ComplianceListPage() {
         </Link>
         <Link
           href="/compliance/new"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
         >
           <Plus className="h-3.5 w-3.5" />
-          New rulebook
+          New policy set
+        </Link>
+        <Link
+          href="/compliance/check"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Check a payment
         </Link>
       </AppNav>
 
@@ -137,11 +145,11 @@ export default function ComplianceListPage() {
             </div>
             {rulebooks && rulebooks.length > 0 && (
               <Link
-                href="/compliance/new"
+                href="/compliance/check"
                 className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-brand-700"
               >
-                <Plus className="h-4 w-4" />
-                New rulebook
+                <ShieldCheck className="h-4 w-4" />
+                Check a payment
               </Link>
             )}
           </div>
