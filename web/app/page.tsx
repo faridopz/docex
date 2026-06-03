@@ -113,10 +113,10 @@ export default function LandingPage() {
           </Link>
           <div className="flex items-center gap-3">
             <Link
-              href="/agents/sub-award"
+              href="/tour"
               className="hidden text-sm font-medium text-gray-600 transition hover:text-gray-900 sm:inline"
             >
-              Co-Pilots
+              Tour
             </Link>
             <Link
               href="/compliance"
@@ -364,10 +364,10 @@ export default function LandingPage() {
                 </Button>
               </Link>
               <Link
-                href="/agents/sub-award"
+                href="/tour"
                 className="text-sm font-medium text-gray-600 underline-offset-4 transition hover:text-gray-900 hover:underline"
               >
-                Tour the Co-Pilots →
+                Take the 3-minute tour →
               </Link>
             </div>
           </div>

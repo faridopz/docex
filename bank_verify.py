@@ -608,8 +608,8 @@ if __name__ == "__main__":
     if not PAYSTACK_SECRET_KEY:
         print(f"{_RED}ERROR{_RESET}: PAYSTACK_SECRET_KEY is missing from .env")
         print()
-        print("Add this line to /Users/faridabdurrahman/Desktop/docex/.env:")
-        print("  PAYSTACK_SECRET_KEY=sk_test_cec096497f78c0bf2d1a218cc300656b5b62ef73")
+        print("Add this line to your .env (use your own key from the Paystack dashboard):")
+        print("  PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         print()
         sys.exit(1)
 
