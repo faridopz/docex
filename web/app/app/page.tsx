@@ -1,9 +1,9 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
-import { ArrowLeft, CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AppNav } from "@/components/AppNav";
 import { QuestionBuilder } from "@/components/QuestionBuilder";
 import { ApplicantUpload } from "@/components/ApplicantUpload";
 import { ExtractionTable } from "@/components/ExtractionTable";
@@ -164,50 +164,17 @@ export default function AppPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-50 bg-white border-b border-gray-100 shadow-sm">
-        <div className="mx-auto max-w-4xl px-6 h-16 flex items-center justify-between gap-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 hover:text-gray-700 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="font-bold text-brand-600 text-lg">DOCex</span>
-          </Link>
+      <AppNav active="extract" />
 
-          <div className="flex-1 max-w-md">
+      {/* Wizard progress — a slim secondary bar under the global nav so the
+          three steps stay visible without a second full-height header. */}
+      <div className="sticky top-16 z-40 border-b border-gray-100 bg-white/90 backdrop-blur-md">
+        <div className="mx-auto flex h-12 max-w-4xl items-center px-6">
+          <div className="w-full max-w-md">
             <StepBar current={step} step2Label={workflowLabels.step2Label} />
           </div>
-
-          <div className="flex items-center justify-end gap-2">
-            {/* Cross-mode links — keeps all three primitives discoverable from
-                each other without forcing a chooser between landing and app.
-                Order: Compliance, Bank Verify (newest, called out last so the
-                eye lands on it). */}
-            <Link
-              href="/compliance"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Switch to Compliance Check"
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              Compliance
-            </Link>
-            <Link
-              href="/verify"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Switch to Bank Verify"
-            >
-              Bank Verify
-            </Link>
-            <Link
-              href="/agents/attendance-payment"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance & Payment Flow"
-            >
-              Attendance
-            </Link>
-          </div>
         </div>
-      </header>
+      </div>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         {/* Step 1 */}

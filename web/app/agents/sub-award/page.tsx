@@ -32,7 +32,7 @@ import { GuidanceCard } from "@/components/GuidanceCard";
 export default function SubAwardAgentPage() {
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="sub-award">
+      <AppNav active="extract">
         <Link
           href="/app?template=sub-award-screening"
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"

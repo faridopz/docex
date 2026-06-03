@@ -4,10 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BookOpen,
+  FileSearch,
   Landmark,
   Layers,
   ShieldCheck,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
  */
 
 export type NavSection =
-  | "sub-award"
+  | "extract"
   | "attendance"
   | "compliance"
   | "knowledge"
@@ -47,11 +47,13 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   {
-    section: "sub-award",
-    label: "Sub-award",
-    href: "/agents/sub-award",
-    icon: Users,
-    match: ["/agents/sub-award", "/app"],
+    section: "extract",
+    label: "Extract",
+    href: "/app",
+    icon: FileSearch,
+    // /app is the generic extraction flow; the sub-award lifecycle shell is
+    // one use-case built on it.
+    match: ["/app", "/agents/sub-award"],
   },
   {
     section: "attendance",
