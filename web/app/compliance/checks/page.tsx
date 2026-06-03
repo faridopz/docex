@@ -10,9 +10,9 @@ import {
   FileSearch,
   FileSpreadsheet,
   Loader2,
-  ShieldCheck,
   Stamp,
 } from "lucide-react";
+import { AppNav } from "@/components/AppNav";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import { exportChecksListToExcel, listChecks } from "@/lib/api";
 import {
@@ -47,7 +47,7 @@ const FILTERS: { id: Filter; label: string; hint: string }[] = [
   {
     id: "approved",
     label: "Approved",
-    hint: "ED-approved checks — the final, audit-ready archive",
+    hint: "Approved checks — the final, audit-ready archive",
   },
   {
     id: "needs-attention",
@@ -125,22 +125,14 @@ export default function SavedChecksPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/compliance"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <ShieldCheck className="h-4 w-4 text-brand-600" />
-            Saved checks
-          </span>
-          <div className="w-28" />
-        </div>
-      </header>
+      <AppNav active="compliance">
+        <Link
+          href="/compliance/pending"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+        >
+          Inbox
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-5xl px-6 py-10">
         <div className="space-y-8">
@@ -169,7 +161,7 @@ export default function SavedChecksPage() {
                 icon={<FileSearch className="h-4 w-4 text-brand-600" />}
               />
               <StatCard
-                label="ED-approved"
+                label="Approved"
                 value={counts.approved}
                 icon={<Stamp className="h-4 w-4 text-emerald-600" />}
                 accent="emerald"
@@ -248,7 +240,7 @@ export default function SavedChecksPage() {
 
               {filter === "approved" && counts.approved > 0 && (
                 <GuidanceCard title="Audit-ready archive">
-                  These checks have been marked ED-approved. Each has a stable
+                  These checks have been marked Approved. Each has a stable
                   URL you can paste into an audit response — auditors see
                   exactly what the officer saw, with the rulebook frozen as
                   it was at check time.

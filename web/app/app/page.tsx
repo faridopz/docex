@@ -192,7 +192,7 @@ export default function AppPage() {
             <Link
               href="/agents/attendance-payment"
               className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance Payment Co-Pilot"
+              title="Attendance & Payment Flow"
             >
               Attendance
             </Link>

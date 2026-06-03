@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
   ArrowUp,
   BookOpen,
   ChevronRight,
@@ -23,6 +22,7 @@ import {
   suggestFolder,
   updateDeck,
 } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type {
   KnowledgeAnswer,
@@ -193,28 +193,15 @@ export default function KnowledgeLibraryPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-[#fafaf7]/80 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-gray-900">DOCex</span>
-          </Link>
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <BookOpen className="h-4 w-4 text-brand-600" />
-            Library
-          </span>
-          <Link
-            href="/knowledge/new"
-            className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add document
-          </Link>
-        </div>
-      </header>
+      <AppNav active="knowledge">
+        <Link
+          href="/knowledge/new"
+          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add document
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-6xl px-6 py-10">
         <div className="space-y-8">

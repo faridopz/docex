@@ -46,10 +46,10 @@ const copilots = [
   },
   {
     icon: Landmark,
-    name: "Programs Co-Pilot",
+    name: "Attendance & Payment Flow",
     audience: "for events, training & programs teams",
     pitch:
-      "Drop in your attendance log and your payment list. The Co-Pilot matches names, applies per-diem rates, surfaces attendees who never made it onto the payment schedule, and verifies every bank account before the schedule hits finance.",
+      "Drop in your attendance log and your payment list. The flow matches names, applies per-diem rates, surfaces attendees who never made it onto the payment schedule, and verifies every bank account before the schedule hits finance. Save attendance lists to reuse repeat attendees next time.",
     proof: "Three hours of cross-checking becomes a three-minute review.",
     href: "/agents/attendance-payment",
   },
@@ -95,7 +95,7 @@ const trust = [
   {
     label: "Briefed in plain English, not just processed",
     detail:
-      "Every result comes with a Claude-written brief — what happened, what matters, what to do next. Tables and citations are there if you want them. Most days, you won't need to scroll.",
+      "Every result comes with a plain-English brief — what happened, what matters, what to do next. Tables and citations are there if you want them. Most days, you won't need to scroll.",
   },
 ];
 
@@ -246,14 +246,13 @@ export default function LandingPage() {
                   The Assistant
                 </p>
                 <h2 className="mt-3 text-4xl font-semibold leading-[1.1] tracking-tight text-gray-900 sm:text-5xl">
-                  Briefed by Claude. Not just processed.
+                  A brief, not just a result.
                 </h2>
                 <p className="mt-5 text-lg leading-relaxed text-gray-600">
-                  Every time a Co-Pilot finishes a run, Claude reads the
-                  full result and writes you a plain-English brief. What
-                  happened. What matters. What to do next. The verdict
-                  table is still there — but you don't have to read it
-                  first.
+                  Every time a Co-Pilot finishes a run, you get a
+                  plain-English brief. What happened. What matters. What to
+                  do next. The verdict table is still there — but you don't
+                  have to read it first.
                 </p>
                 <p className="mt-4 text-sm text-gray-500">
                   No dashboards to learn. No spreadsheets to interpret.
@@ -379,7 +378,7 @@ export default function LandingPage() {
       <footer className="border-t border-gray-100 bg-[#fafaf7] py-10">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 text-xs text-gray-400 sm:flex-row">
           <p>DOCex · The AI back-office for document-heavy operations</p>
-          <p>Built with Claude</p>
+          <p>© 2026 DOCex</p>
         </div>
       </footer>
     </div>

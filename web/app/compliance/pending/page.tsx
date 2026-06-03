@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
   ChevronRight,
   HelpCircle,
   Inbox,
@@ -12,6 +11,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { listPendingChecks } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
 import {
   overallVerdictColor,
   overallVerdictDot,
@@ -103,28 +103,15 @@ export default function PendingInboxPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/compliance"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <Inbox className="h-4 w-4 text-brand-600" />
-            Pending inbox
-          </span>
-          <Link
-            href="/compliance/checks"
-            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-          >
-            <ShieldCheck className="h-3.5 w-3.5" />
-            All checks
-          </Link>
-        </div>
-      </header>
+      <AppNav active="compliance">
+        <Link
+          href="/compliance/checks"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          All checks
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-5xl space-y-8 px-6 py-10">
         <div>

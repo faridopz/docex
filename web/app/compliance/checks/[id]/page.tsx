@@ -88,7 +88,7 @@ export default function SavedCheckPage({
   const bannerText = check?.created_at
     ? `Saved check · ran ${formatDate(check.created_at)}${
         check.approved && check.approved_at
-          ? ` · ED-approved ${formatDate(check.approved_at)}`
+          ? ` · Approved ${formatDate(check.approved_at)}`
           : ""
       }`
     : undefined;

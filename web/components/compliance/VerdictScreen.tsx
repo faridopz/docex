@@ -150,7 +150,7 @@ export function VerdictScreen({
               {approved && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-xs font-semibold text-white">
                   <Stamp className="h-3 w-3" />
-                  ED-approved
+                  Approved
                 </span>
               )}
             </div>
@@ -206,8 +206,8 @@ export function VerdictScreen({
               }`}
               title={
                 approved
-                  ? "This check has been marked as ED-approved. Click to undo."
-                  : "Mark this check as ED-approved — it'll appear in the Approved PVs archive."
+                  ? "This check has been marked as Approved. Click to undo."
+                  : "Mark this check as Approved — it'll appear in the Approved PVs archive."
               }
             >
               {approvalLoading ? (

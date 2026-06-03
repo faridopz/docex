@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft,
   CircleDollarSign,
   Loader2,
   Pencil,
@@ -13,6 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { AppNav } from "@/components/AppNav";
 import {
   createRateCard,
   deleteRateCard,
@@ -30,7 +30,7 @@ import type { RateCard, RateLine } from "@/types";
  *   - A default per-diem rate (applied when role lookup misses)
  *   - Zero or more per-role rates (Facilitator vs Participant vs M&E)
  *
- * Cards are consumed by the Attendance Payment Co-Pilot — when you run an
+ * Cards are consumed by the Attendance & Payment Flow — when you run an
  * event you pick the card, and the agent applies the right rate to each
  * person based on their role column in the payment info form.
  *
@@ -64,27 +64,12 @@ export default function RateCardsPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <CircleDollarSign className="h-4 w-4 text-brand-600" />
-            Rate cards
-          </span>
-          <Link
-            href="/agents/attendance-payment"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-          >
-            Attendance Agent
-          </Link>
-        </div>
-      </header>
+      <AppNav active="attendance">
+        <span className="hidden items-center gap-1.5 text-xs font-medium text-gray-400 sm:inline-flex">
+          <CircleDollarSign className="h-3.5 w-3.5" />
+          Rate cards
+        </span>
+      </AppNav>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
@@ -116,7 +101,7 @@ export default function RateCardsPage() {
           </div>
 
           <GuidanceCard title="How rate cards drive payments">
-            When you run the Attendance Payment Co-Pilot, pick a card. The agent
+            When you run the Attendance & Payment Flow, pick a card. The agent
             looks up each payee's <span className="font-medium">Role</span>{" "}
             column in their payment info form, finds the matching rate, and
             multiplies by days attended. If a role isn't listed on the card,

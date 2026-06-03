@@ -212,8 +212,7 @@ export async function throwFriendly(res: Response): Promise<never> {
   }
   const fe = friendlyError(res.status, raw);
   const err = new Error(fe.message);
-  // @ts-expect-error — `cause` is supported by all modern runtimes; older TS
-  // type defs don't include it on Error.
+  // `cause` is supported by all modern runtimes and current TS lib defs.
   err.cause = { reason: fe.reason, status: fe.status, raw: fe.raw };
   throw err;
 }

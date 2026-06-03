@@ -3,19 +3,19 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft,
   ChevronRight,
   FileCheck,
   FileSearch,
   FileText,
   Inbox,
+  Landmark,
   Loader2,
   Plus,
-  ShieldCheck,
   Sparkles,
   Stamp,
 } from "lucide-react";
 import { listChecks, listRulebooks } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { CheckSummary, RulebookSummary } from "@/types";
 
@@ -91,62 +91,31 @@ export default function ComplianceListPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <ShieldCheck className="h-4 w-4 text-brand-600" />
-            Compliance Check
-          </span>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/compliance/pending"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Open the pending inbox — checks awaiting your decision"
-            >
-              <Inbox className="h-3.5 w-3.5" />
-              Inbox
-            </Link>
-            <Link
-              href="/compliance/checks"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="View saved checks + approved PVs archive"
-            >
-              <FileSearch className="h-3.5 w-3.5" />
-              Saved checks
-            </Link>
-            <Link
-              href="/agents/attendance-payment"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance Payment Co-Pilot"
-            >
-              Attendance
-            </Link>
-            <Link
-              href="/verify"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Switch to bank account verification"
-            >
-              Bank Verify
-            </Link>
-            <Link
-              href="/app"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-              title="Switch to extraction mode"
-            >
-              Extraction
-            </Link>
-          </div>
-        </div>
-      </header>
+      <AppNav active="compliance">
+        <Link
+          href="/compliance/pending"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+          title="Open the pending inbox — checks awaiting your decision"
+        >
+          <Inbox className="h-3.5 w-3.5" />
+          Inbox
+        </Link>
+        <Link
+          href="/compliance/checks"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+          title="View saved checks + approved PVs archive"
+        >
+          <FileSearch className="h-3.5 w-3.5" />
+          Saved checks
+        </Link>
+        <Link
+          href="/compliance/new"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New rulebook
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
@@ -203,7 +172,7 @@ export default function ComplianceListPage() {
               >
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-emerald-700">
                   <Stamp className="h-4 w-4" />
-                  ED-approved
+                  Approved
                 </div>
                 <p className="mt-2 text-3xl font-bold tabular-nums text-gray-900">
                   {stats.approved}
@@ -226,6 +195,27 @@ export default function ComplianceListPage() {
               </div>
             </div>
           )}
+
+          {/* Standalone compliance utility — a one-off bank account check
+              that lives under Compliance but doesn't need a rulebook. */}
+          <Link
+            href="/verify/new"
+            className="group flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-4 transition hover:border-brand-300 hover:shadow-card-hover"
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-600">
+              <Landmark className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-gray-900 group-hover:text-brand-700">
+                Bank account check
+              </p>
+              <p className="mt-0.5 text-xs text-gray-500">
+                One-off verification — confirm a recipient&apos;s name matches
+                the bank-of-record holder before money moves. No rulebook needed.
+              </p>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600" />
+          </Link>
 
           {/* Always-visible guidance for first-time users */}
           {rulebooks && rulebooks.length > 0 && (

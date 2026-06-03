@@ -205,7 +205,7 @@ export default function AttendanceAgentNewPage() {
         <div className="space-y-8">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-              Run the Attendance Payment Co-Pilot
+              Run the Attendance & Payment Flow
             </h1>
             <p className="mt-2 max-w-xl text-base text-gray-600">
               Three steps. Tag the event, pick how people get paid, then drop

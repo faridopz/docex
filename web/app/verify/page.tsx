@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft,
   CheckCircle2,
   ChevronRight,
   CircleHelp,
@@ -17,6 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { listVerifyBatches } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { BatchVerifySummary, StandardPurpose } from "@/types";
 import { purposeLabel } from "@/types";
@@ -27,7 +27,7 @@ import { purposeLabel } from "@/types";
  * Bank Verify is one of DOCex's three primitives (alongside Extraction and
  * Compliance Check). It's both a standalone tool — anyone can drop a list
  * of accounts in and verify them — AND a step inside larger agents
- * (Attendance Payment Co-Pilot, Sub-award Co-Pilot, etc).
+ * (Attendance & Payment Flow, Sub-award Co-Pilot, etc).
  *
  * This page is the front door: see every batch you've run, recognise them
  * by source schedule + purpose, jump back into any of them, or kick off a
@@ -78,53 +78,18 @@ export default function VerifyListPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <Landmark className="h-4 w-4 text-brand-600" />
-            Bank Verify
-          </span>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/agents/attendance-payment"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Attendance Payment Co-Pilot"
-            >
-              Attendance
-            </Link>
-            <Link
-              href="/knowledge"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Knowledge Hub"
-            >
-              Knowledge
-            </Link>
-            <Link
-              href="/compliance"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-              title="Switch to compliance checks"
-            >
-              Compliance
-            </Link>
-            <Link
-              href="/app"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-              title="Switch to extraction mode"
-            >
-              Extraction
-            </Link>
-          </div>
-        </div>
-      </header>
+      <AppNav active="compliance">
+        <span className="hidden items-center gap-1.5 text-xs font-medium text-gray-400 sm:inline-flex">
+          <Landmark className="h-3.5 w-3.5" />
+          Bank Verify
+        </span>
+        <Link
+          href="/verify/new"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+        >
+          New verification
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">

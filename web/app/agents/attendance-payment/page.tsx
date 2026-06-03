@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft,
   CalendarDays,
   ChevronRight,
   CircleDollarSign,
@@ -13,11 +12,12 @@ import {
   Users,
 } from "lucide-react";
 import { listAttendanceRuns } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { AttendancePaymentRunSummary } from "@/types";
 
 /**
- * Attendance Payment Co-Pilot — landing page.
+ * Attendance & Payment Flow — landing page.
  *
  * Shows every past run, jump back into any of them, or start a new one.
  * Mirrors the /verify and /compliance landings so the user's eye doesn't
@@ -54,55 +54,21 @@ export default function AttendanceAgentLandingPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <header className="sticky top-0 z-50 border-b border-gray-100 bg-white shadow-sm">
-        <div className="mx-auto flex h-16 max-w-4xl items-center justify-between gap-6 px-6">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-400 transition-colors hover:text-gray-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="text-lg font-bold text-brand-600">DOCex</span>
-          </Link>
-
-          <span className="hidden items-center gap-1.5 text-sm font-medium text-gray-500 sm:inline-flex">
-            <Sparkles className="h-4 w-4 text-brand-600" />
-            Attendance Payment Co-Pilot
-          </span>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/agents/sub-award"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-            >
-              Sub-award
-            </Link>
-            <Link
-              href="/rate-cards"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-            >
-              Rate cards
-            </Link>
-            <Link
-              href="/verify"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-            >
-              Bank Verify
-            </Link>
-            <Link
-              href="/compliance"
-              className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-            >
-              Compliance
-            </Link>
-            <Link
-              href="/app"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-            >
-              Extraction
-            </Link>
-          </div>
-        </div>
-      </header>
+      <AppNav active="attendance">
+        <Link
+          href="/rate-cards"
+          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+        >
+          Rate cards
+        </Link>
+        <Link
+          href="/agents/attendance-payment/new"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New run
+        </Link>
+      </AppNav>
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
