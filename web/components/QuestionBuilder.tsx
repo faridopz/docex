@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Lightbulb,
   Plus,
@@ -8,22 +9,29 @@ import {
   X,
   Check,
   ClipboardList,
-  LineChart,
-  PenLine,
   GitCompare,
+  Layers,
+  PenLine,
   Receipt,
+  ScanSearch,
+  Settings2,
 } from "lucide-react";
 import type { Question } from "@/types";
-import { QUESTION_TEMPLATES } from "@/lib/templates";
+import type { QuestionTemplate, TemplateCategory } from "@/lib/templates";
+import { listStarterTemplates, listAllTemplates, isStarter } from "@/lib/template-store";
 
-// Per-template visual treatment for the chooser cards. Keyed by template id
-// so the icon stays the same wherever a template is referenced.
-const TEMPLATE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  "subaward-application-review": ClipboardList,
-  "quarterly-report-review": LineChart,
-  "financial-service-reconciliation": GitCompare,
-  "invoice-receipt-extraction": Receipt,
+// Visual treatment for chooser cards, keyed by purpose category so both
+// starters and user-created templates get a sensible icon.
+const CATEGORY_ICON: Record<TemplateCategory, React.ComponentType<{ className?: string }>> = {
+  screen: ScanSearch,
+  reconcile: GitCompare,
+  extract: Receipt,
+  compare: Layers,
 };
+
+function iconForTemplate(t: QuestionTemplate): React.ComponentType<{ className?: string }> {
+  return t.category ? CATEGORY_ICON[t.category] : ClipboardList;
+}
 
 /**
  * QuestionBuilder
@@ -71,6 +79,9 @@ interface QuestionBuilderProps {
   onContextChange?: (context: string) => void;
   // Optional. Called when user selects or switches a question template.
   onTemplateChange?: (templateId: string | null) => void;
+  // Optional. A template id to preselect on first mount (e.g. from a
+  // /app?template=… link or a "Use" button in the template library).
+  initialTemplateId?: string | null;
 }
 
 function newId(): string {
@@ -86,9 +97,15 @@ export function QuestionBuilder({
   context,
   onContextChange,
   onTemplateChange,
+  initialTemplateId,
 }: QuestionBuilderProps) {
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+  // Starters render on the server; user templates (localStorage) merge in
+  // after mount to avoid a hydration mismatch.
+  const [templates, setTemplates] = useState<QuestionTemplate[]>(() =>
+    listStarterTemplates(),
+  );
   // When set, the next render shows a subtle "Auto-filled from X" hint on
   // the context section so users understand why the textarea suddenly has
   // text. Cleared once the user starts typing or switches templates.
@@ -136,7 +153,7 @@ export function QuestionBuilder({
   const contextIsUntouched = () => {
     const current = (context ?? "").trim();
     if (current.length === 0) return true;
-    return QUESTION_TEMPLATES.some(
+    return listAllTemplates().some(
       (t) =>
         t.defaultContext && t.defaultContext.trim() === current,
     );
@@ -145,8 +162,9 @@ export function QuestionBuilder({
   const swapTemplate = (templateId: string) => {
     if (templateId === activeTemplateId) return; // already active
 
-    const previous = QUESTION_TEMPLATES.find((t) => t.id === activeTemplateId);
-    const next = QUESTION_TEMPLATES.find((t) => t.id === templateId);
+    const all = listAllTemplates();
+    const previous = all.find((t) => t.id === activeTemplateId);
+    const next = all.find((t) => t.id === templateId);
     if (!next) return;
 
     // Build set of previous template question texts to remove
@@ -192,7 +210,7 @@ export function QuestionBuilder({
 
   const clearTemplate = () => {
     if (activeTemplateId === null) return;
-    const previous = QUESTION_TEMPLATES.find((t) => t.id === activeTemplateId);
+    const previous = listAllTemplates().find((t) => t.id === activeTemplateId);
     if (!previous) {
       setActiveTemplateId(null);
       setContextAutoFilledFrom(null);
@@ -223,11 +241,30 @@ export function QuestionBuilder({
     setTimeout(() => setTemplateMessage(null), 5000);
   };
 
+  // On mount: merge in the user's saved templates, then apply any
+  // preselected template (from /app?template=… or a library "Use" click).
+  const appliedInitial = useRef(false);
+  useEffect(() => {
+    const all = listAllTemplates();
+    setTemplates(all);
+    if (
+      !appliedInitial.current &&
+      initialTemplateId &&
+      all.some((t) => t.id === initialTemplateId)
+    ) {
+      appliedInitial.current = true;
+      // Defer so swapTemplate sees the merged template list.
+      setTimeout(() => swapTemplate(initialTemplateId), 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTemplateId]);
+
   return (
     <section className="space-y-10">
       {/* Workflow chooser — promoted to the top so it frames everything
           downstream (context, questions, upload, results). */}
       <TemplateChooser
+        templates={templates}
         activeTemplateId={activeTemplateId}
         onSelect={swapTemplate}
         onSelectCustom={clearTemplate}
@@ -361,53 +398,114 @@ export function QuestionBuilder({
  * the rest of the wizard ("applicant" → "report" → etc.).
  */
 function TemplateChooser({
+  templates,
   activeTemplateId,
   onSelect,
   onSelectCustom,
   message,
 }: {
+  templates: QuestionTemplate[];
   activeTemplateId: string | null;
   onSelect: (templateId: string) => void;
   onSelectCustom: () => void;
   message: string | null;
 }) {
   const isCustomActive = activeTemplateId === null;
+  const starters = templates.filter((t) => isStarter(t.id));
+  const userTemplates = templates.filter((t) => !isStarter(t.id));
 
   return (
     <div className="space-y-5">
       {/* Section header */}
-      <div className="space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
-            1
-          </span>
-          <h2 className="text-xl font-semibold text-gray-900">
-            Pick a workflow
-          </h2>
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+              1
+            </span>
+            <h2 className="text-xl font-semibold text-gray-900">
+              Pick a workflow
+            </h2>
+          </div>
+          <p className="text-sm text-gray-600">
+            Templates pre-load standard questions and adapt the language across
+            the app. You can edit anything afterwards.
+          </p>
         </div>
-        <p className="text-sm text-gray-600">
-          Templates pre-load standard questions and adapt the language across
-          the app. You can edit anything afterwards.
-        </p>
+        <Link
+          href="/templates"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+        >
+          <Settings2 className="h-3.5 w-3.5" />
+          Manage templates
+        </Link>
       </div>
 
-      {/* 2x2 grid of templates — balanced layout for 4 cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {QUESTION_TEMPLATES.map((t) => {
-          const isActive = t.id === activeTemplateId;
-          const Icon = TEMPLATE_ICONS[t.id] ?? ClipboardList;
-          return (
-            <TemplateCard
-              key={t.id}
-              active={isActive}
-              onClick={() => (isActive ? null : onSelect(t.id))}
-              icon={<Icon className="h-5 w-5" />}
-              title={t.name}
-              description={t.description}
-              footer={`${t.questions.length} questions`}
-            />
-          );
-        })}
+      {/* Your templates (only when present) */}
+      {userTemplates.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            Your templates
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {userTemplates.map((t) => {
+              const isActive = t.id === activeTemplateId;
+              const Icon = iconForTemplate(t);
+              return (
+                <TemplateCard
+                  key={t.id}
+                  active={isActive}
+                  onClick={() => (isActive ? null : onSelect(t.id))}
+                  icon={<Icon className="h-5 w-5" />}
+                  title={t.name}
+                  description={t.description}
+                  footer={`${t.questions.length} questions`}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Starter templates */}
+      <div className="space-y-2">
+        {userTemplates.length > 0 && (
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            Starters
+          </p>
+        )}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {starters.map((t) => {
+            const isActive = t.id === activeTemplateId;
+            const Icon = iconForTemplate(t);
+            return (
+              <TemplateCard
+                key={t.id}
+                active={isActive}
+                onClick={() => (isActive ? null : onSelect(t.id))}
+                icon={<Icon className="h-5 w-5" />}
+                title={t.name}
+                description={t.description}
+                footer={`${t.questions.length} questions`}
+              />
+            );
+          })}
+          {/* Create-new affordance lives right in the grid */}
+          <Link
+            href="/templates"
+            className="group flex h-full min-h-[7rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white p-4 text-center transition hover:border-brand-300 hover:bg-brand-50/30"
+          >
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+              <Plus className="h-4 w-4" />
+            </span>
+            <span className="text-sm font-semibold text-gray-900">
+              Create a template
+            </span>
+            <span className="text-xs text-gray-500">
+              Your own questions, reusable on every batch
+            </span>
+          </Link>
+        </div>
       </div>
 
       {/* Custom — semantically the "no template" option, visually distinct */}

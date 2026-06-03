@@ -85,6 +85,15 @@ export default function AppPage() {
   const [applicants, setApplicants] = React.useState<ApplicantInput[]>([]);
   const [templateId, setTemplateId] = React.useState<string | null>(null);
 
+  // Preselected template from a /app?template=… link (library "Use" button,
+  // sub-award screening link). Read from the URL on mount — avoids needing a
+  // Suspense boundary that useSearchParams would require.
+  const [initialTemplateId, setInitialTemplateId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("template");
+    if (t) setInitialTemplateId(t);
+  }, []);
+
   const [isScreening, setIsScreening] = React.useState(false);
   const [result, setResult] = React.useState<
     SingleExtractionResponse | BatchExtractionResponse | null
@@ -209,6 +218,7 @@ export default function AppPage() {
             context={context}
             onContextChange={setContext}
             onTemplateChange={setTemplateId}
+            initialTemplateId={initialTemplateId}
           />
         )}
 

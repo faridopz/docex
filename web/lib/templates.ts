@@ -1,10 +1,26 @@
 import type { Question } from "@/types";
 
+/** Purpose category — drives grouping + iconography in the library. */
+export type TemplateCategory =
+  | "screen"
+  | "reconcile"
+  | "extract"
+  | "compare";
+
+export interface TemplateQuestion {
+  text: string;
+  // Optional hint that helps DOCex find the answer ("the budget total is
+  // usually on the cover page or a summary table"). Per Google/Azure
+  // Document AI research, per-field descriptions materially improve
+  // extraction accuracy — this is a key edge over a one-off LLM prompt.
+  hint?: string;
+}
+
 export interface QuestionTemplate {
   id: string;
   name: string;
   description: string;
-  questions: { text: string }[];   // ids generated at load time
+  questions: TemplateQuestion[];   // ids generated at load time
   // Optional context paragraph shipped with the template. When the user
   // selects a template, this is offered as a starter for the context field
   // — telling DOCex how to interpret the documents (section structure,
@@ -12,12 +28,24 @@ export interface QuestionTemplate {
   // any single question. Never auto-overwrites context the user has
   // already typed.
   defaultContext?: string;
+  // Purpose category — optional on legacy/user templates.
+  category?: TemplateCategory;
+  // True for the built-in starters (locked, clonable). User-created
+  // templates omit this. Set by the store, not authored here.
+  starter?: boolean;
 }
 
-export const QUESTION_TEMPLATES: QuestionTemplate[] = [
+/**
+ * STARTER_TEMPLATES — the curated, built-in templates every org begins
+ * with. Users can duplicate any of these into an editable copy, or create
+ * their own from scratch. The store (lib/template-store.ts) merges these
+ * with the user's saved templates.
+ */
+export const STARTER_TEMPLATES: QuestionTemplate[] = [
   {
     id: "subaward-application-review",
     name: "Sub-award Application Review",
+    category: "screen",
     description:
       "For reviewing applicant bundles (cost proposal, technical proposal, budget, workplan, M&E plan).",
     questions: [
@@ -43,6 +71,7 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
   {
     id: "financial-service-reconciliation",
     name: "Financial ↔ Service Reconciliation",
+    category: "reconcile",
     description:
       "Cross-checks a partner's financial report against their service / programmatic report — flags activities without cost trace, costs without activity, and quantity or period mismatches.",
     // Why this template exists (Ed's recommendation from the demo):
@@ -69,6 +98,7 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
   {
     id: "invoice-receipt-extraction",
     name: "Invoice & Receipt Extraction",
+    category: "extract",
     description:
       "Pull structured data from invoices and receipts — vendor, amount, dates, line items — into one row per document. Built for finance teams reconciling stacks of receipts at month-end.",
     // Finance teams typically need the same metadata fields off every
@@ -100,6 +130,7 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
   {
     id: "quarterly-report-review",
     name: "Quarterly Report Review",
+    category: "screen",
     description:
       "For reviewing partner quarterly progress reports against targets and commitments.",
     // Section structure goes in the context, not in the questions themselves
@@ -126,4 +157,11 @@ export const QUESTION_TEMPLATES: QuestionTemplate[] = [
       { text: "Who signed the report and on what date? Include name and title where given." },
     ],
   },
-];
+].map((t) => ({ ...t, starter: true }) as QuestionTemplate);
+
+/**
+ * Backwards-compatible alias. Older imports reference QUESTION_TEMPLATES;
+ * new code should prefer the store (lib/template-store.ts) which merges
+ * starters with the user's saved templates.
+ */
+export const QUESTION_TEMPLATES = STARTER_TEMPLATES;

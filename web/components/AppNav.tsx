@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BookOpen,
   Landmark,
+  Layers,
   ShieldCheck,
   Users,
   type LucideIcon,
@@ -32,7 +33,8 @@ export type NavSection =
   | "sub-award"
   | "attendance"
   | "compliance"
-  | "knowledge";
+  | "knowledge"
+  | "templates";
 
 type NavItem = {
   section: NavSection;
@@ -72,6 +74,13 @@ const NAV_ITEMS: NavItem[] = [
     href: "/knowledge",
     icon: BookOpen,
     match: ["/knowledge"],
+  },
+  {
+    section: "templates",
+    label: "Templates",
+    href: "/templates",
+    icon: Layers,
+    match: ["/templates"],
   },
 ];
 
