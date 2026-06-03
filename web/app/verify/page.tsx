@@ -78,7 +78,7 @@ export default function VerifyListPage() {
 
   return (
     <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="compliance">
+      <AppNav active="verify">
         <span className="hidden items-center gap-1.5 text-xs font-medium text-gray-400 sm:inline-flex">
           <Landmark className="h-3.5 w-3.5" />
           Bank Verify
