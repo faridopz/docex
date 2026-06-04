@@ -35,14 +35,30 @@ import anthropic
 
 from ai_config import KNOWLEDGE_MODEL
 from models import KnowledgeAnswer, SlideCitation, SlideDeck
+from retrieval import build_passages, retrieve
 from slides import chunk_label_for, deck_to_context
+
+# How many chunks to retrieve across the whole library per question. ~24
+# chunks keeps the answer grounded and the context small (and cheap) even
+# when the library holds thousands of documents.
+_LIBRARY_RETRIEVAL_K = 24
 
 logger = logging.getLogger(__name__)
 
 # Explicit timeout — see assistant.py for the rationale. Library-wide chat
 # can run up to ~30s on a full 100-document library; 180s gives generous
 # margin while preventing hangs on Anthropic side effects.
-_client = anthropic.Anthropic(timeout=180.0)
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Lazily construct the Anthropic client (see screener.py rationale)."""
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(timeout=180.0)
+    return _client
+
+
 _MODEL = KNOWLEDGE_MODEL
 _MAX_TOKENS = 1500
 
@@ -184,41 +200,59 @@ def library_ask(question: str, decks: list[SlideDeck]) -> KnowledgeAnswer:
             created_at=_now_iso(),
         )
 
-    # Build one big context blob, document by document. Each document gets
-    # its existing deck_to_context() treatment, prefixed by a clear name
-    # header so Claude knows what to cite as.
-    parts: list[str] = []
-    total_chars = 0
-    truncated_decks: list[str] = []
-    char_budget = 180_000  # leave ~20K margin for prompt + question
-    for d in decks:
-        block = deck_to_context(d, max_chars=char_budget - total_chars - 1000)
-        if not block:
-            continue
-        if total_chars + len(block) > char_budget:
-            # We've hit the budget. Skip any remaining docs and tell the
-            # user — better to be transparent than silently lose context.
-            truncated_decks.append(d.name)
-            continue
-        parts.append(block)
-        total_chars += len(block)
-
-    library_context = "\n\n---\n\n".join(parts)
-    if truncated_decks:
-        library_context += (
-            f"\n\n[Note: {len(truncated_decks)} document(s) skipped due to "
-            f"context limit: {', '.join(truncated_decks[:3])}"
-            + (f" +{len(truncated_decks) - 3} more" if len(truncated_decks) > 3 else "")
-            + "]"
+    # Retrieval-backed (RAG): instead of stuffing every document into context
+    # — which caps out around 80-100 docs — we score every chunk across the
+    # whole library with BM25 and feed the model only the most relevant
+    # excerpts. This scales to ERP-sized corpora (thousands of documents) and
+    # is faster and cheaper per query. (A semantic/embeddings backend can
+    # slot in behind retrieve() later without changing this code.)
+    passages = build_passages(decks)
+    if not passages:
+        return KnowledgeAnswer(
+            question=question,
+            answer="Your documents don't have any readable text yet. Re-upload them and try again.",
+            citations=[],
+            deck_id="library",
+            deck_name="Library",
+            error="no readable content",
+            created_at=_now_iso(),
         )
 
+    hits = retrieve(question.strip(), passages, k=_LIBRARY_RETRIEVAL_K)
+    relevant = [(p, s) for p, s in hits if s > 0] or hits  # fall back to top-k
+
+    # Group retrieved chunks by document (documents ordered by their best
+    # hit; chunks within a document by number) so the model sees a coherent
+    # view and cites [Doc → Label N] exactly as before.
+    by_deck: dict[str, dict] = {}
+    order: list[str] = []
+    for p, s in relevant:
+        g = by_deck.get(p.deck_id)
+        if g is None:
+            g = {"name": p.deck_name, "best": s, "chunks": {}}
+            by_deck[p.deck_id] = g
+            order.append(p.deck_id)
+        g["best"] = max(g["best"], s)
+        g["chunks"][p.number] = p.context
+    order.sort(key=lambda did: by_deck[did]["best"], reverse=True)
+
+    parts = [
+        f"# DOCUMENT: {by_deck[did]['name']}\n\n"
+        + "\n\n".join(by_deck[did]["chunks"][n] for n in sorted(by_deck[did]["chunks"]))
+        for did in order
+    ]
+    library_context = "\n\n---\n\n".join(parts)
+    truncated_decks: list[str] = []
+
     user_msg = (
-        f"Here is the library — {len(parts)} documents. Answer the question "
-        f"that follows.\n\n```\n{library_context}\n```\n\nQUESTION: {question.strip()}"
+        f"Here are the most relevant excerpts retrieved from the library "
+        f"({len(order)} of {len(decks)} documents matched the query). Answer "
+        f"the question using these excerpts and cite each claim.\n\n```\n"
+        f"{library_context}\n```\n\nQUESTION: {question.strip()}"
     )
 
     try:
-        response = _client.messages.create(
+        response = _get_client().messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=_LIBRARY_SYSTEM_PROMPT,
@@ -358,7 +392,7 @@ def ask(deck: SlideDeck, question: str) -> KnowledgeAnswer:
     )
 
     try:
-        response = _client.messages.create(
+        response = _get_client().messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=system_prompt,
