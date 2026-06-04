@@ -7,11 +7,12 @@ import {
   ArrowRight,
   CheckCircle2,
   FileText,
+  Layers,
   Loader2,
   Plus,
   ShieldCheck,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { DropZone } from "@/components/DropZone";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import { checkPaymentSingle, listRulebooks } from "@/lib/api";
@@ -133,17 +134,27 @@ export default function PaymentCheckPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="compliance">
-        <Link
-          href="/compliance/new"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New policy set
-        </Link>
-      </AppNav>
-
+    <AppShell
+      active="compliance"
+      actions={
+        <>
+          <Link
+            href="/compliance/check/bulk"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+          >
+            <Layers className="h-3.5 w-3.5" />
+            Bulk check
+          </Link>
+          <Link
+            href="/compliance/new"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New policy set
+          </Link>
+        </>
+      }
+    >
       <main className="mx-auto max-w-3xl px-6 py-10">
         {phase === "checking" ? (
           <Checking progress={progress} />
@@ -300,7 +311,7 @@ export default function PaymentCheckPage() {
           </div>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }
 

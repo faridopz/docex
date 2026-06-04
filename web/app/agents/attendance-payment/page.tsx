@@ -13,7 +13,7 @@ import {
   Users,
 } from "lucide-react";
 import { listAttendanceRuns } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { AttendancePaymentRunSummary } from "@/types";
 
@@ -54,29 +54,33 @@ export default function AttendanceAgentLandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="attendance">
-        <Link
-          href="/rate-cards"
-          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-        >
-          Rate cards
-        </Link>
-        <Link
-          href="/agents/attendance-payment/collect/new"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-        >
-          <CalendarCheck className="h-3.5 w-3.5" />
-          Collect attendance
-        </Link>
-        <Link
-          href="/agents/attendance-payment/new"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Import run
-        </Link>
-      </AppNav>
+    <AppShell
+      active="attendance"
+      actions={
+        <>
+          <Link
+            href="/rate-cards"
+            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+          >
+            Rate cards
+          </Link>
+          <Link
+            href="/agents/attendance-payment/collect/new"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+          >
+            <CalendarCheck className="h-3.5 w-3.5" />
+            Collect attendance
+          </Link>
+          <Link
+            href="/agents/attendance-payment/new"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Import run
+          </Link>
+        </>
+      }
+    >
 
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
@@ -142,7 +146,7 @@ export default function AttendanceAgentLandingPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

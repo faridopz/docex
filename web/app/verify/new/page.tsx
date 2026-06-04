@@ -74,36 +74,6 @@ export default function VerifyNewPage() {
     setFile(xlsx);
   }
 
-  // Sample data lives in /public so anyone can download it without auth.
-  // Click → fetches into memory → pre-fills the file picker as if the user
-  // dropped it themselves. Removes the "but I don't have a payment
-  // schedule handy" friction for first-time demos.
-  async function loadSampleSchedule() {
-    setError(null);
-    try {
-      const res = await fetch("/sample_schedule.xlsx");
-      if (!res.ok) {
-        setError(
-          "Sample file isn't available on this deployment. Upload your own .xlsx to try Bank Verify.",
-        );
-        return;
-      }
-      const blob = await res.blob();
-      setFile(
-        new File([blob], "sample_schedule.xlsx", {
-          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        }),
-      );
-      // Sensible defaults for the demo flow
-      if (!purpose) setPurpose("event_payment");
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not load the sample schedule.",
-      );
-    }
-  }
 
   async function submit() {
     if (!file || !purpose) return;
@@ -163,26 +133,15 @@ export default function VerifyNewPage() {
 
       <main className="mx-auto max-w-3xl px-6 py-12">
         <div className="space-y-8">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-                Verify a payment schedule
-              </h1>
-              <p className="mt-2 max-w-xl text-base text-gray-600">
-                Two steps. Tag what the verification is for, then drop in your
-                schedule. DOCex calls each bank and returns a verdict per row
-                in under a minute for most files.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={loadSampleSchedule}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-              title="Pre-fills the schedule with DOCex's sample data — useful for a quick demo"
-            >
-              <Sparkles className="h-3.5 w-3.5 text-brand-600" />
-              Try with sample data
-            </button>
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+              Verify a payment schedule
+            </h1>
+            <p className="mt-2 max-w-xl text-base text-gray-600">
+              Two steps. Tag what the verification is for, then drop in your
+              schedule. DOCex calls each bank and returns a verdict per row
+              in under a minute for most files.
+            </p>
           </div>
 
           {/* Step 1 — Purpose */}

@@ -8,7 +8,7 @@ import {
   Mail,
   ScrollText,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 
 /**
@@ -31,16 +31,17 @@ import { GuidanceCard } from "@/components/GuidanceCard";
 
 export default function SubAwardAgentPage() {
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="extract">
+    <AppShell
+      active="extract"
+      actions={
         <Link
           href="/app?template=sub-award-screening"
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
         >
           Open screening
         </Link>
-      </AppNav>
-
+      }
+    >
       <main className="mx-auto max-w-5xl px-6 py-12">
         <div className="space-y-8">
           {/* Hero */}
@@ -114,7 +115,7 @@ export default function SubAwardAgentPage() {
           </div>
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

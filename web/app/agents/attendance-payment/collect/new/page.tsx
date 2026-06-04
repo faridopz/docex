@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarCheck, Loader2 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import { createCollection } from "@/lib/api";
 
@@ -42,8 +42,7 @@ export default function NewCollectionPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="attendance" />
+    <AppShell active="attendance">
       <main className="mx-auto max-w-2xl px-6 py-12">
         <div className="space-y-8">
           <div>
@@ -140,6 +139,6 @@ export default function NewCollectionPage() {
           </div>
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }

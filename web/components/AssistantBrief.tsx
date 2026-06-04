@@ -7,24 +7,22 @@ import type { AssistantBrief as Brief } from "@/types";
 import { urgencyColor, urgencyDot } from "@/types";
 
 /**
- * <AssistantBrief>
+ * <AssistantBrief> — "Your DOCex assistant"
  *
- * The agentic narrator that sits at the top of every result page. Calls
- * /assistant/summarize with the result payload, renders Claude's plain-
- * English briefing + ranked next-action buttons.
+ * The plain-English narrator at the top of a result page. Calls
+ * /assistant/summarize with the result payload and renders a short
+ * briefing + ranked next-action chips.
  *
  * Why this exists: the verdict table is the WHAT — accurate but cold.
- * The Assistant gives the WHY/SO-WHAT — synthesised, actionable, human.
- * That's the single biggest agentic-feel upgrade in DOCex.
+ * The assistant gives the WHY / SO-WHAT — synthesised and actionable.
  *
- * Behaviour:
- *   - Skeleton loader while Claude is thinking (~2-4s).
- *   - Subtle fade-in transition when the brief lands.
- *   - On API failure, surfaces a soft inline error — the result table
- *     below still works without the brief.
- *   - Optional onAction prop lets the parent page wire suggested actions
- *     to real handlers (e.g. "Block this payment" → trigger the existing
- *     block flow). When omitted, action labels render as inert chips.
+ * Reliability principle: the assistant only appears when it can say
+ * something useful. While it's working it shows a skeleton; if the call
+ * fails it renders NOTHING (returns null) rather than a broken or
+ * apologetic card — the full result/table below always stands on its own.
+ *
+ *   - Optional onAction prop lets the parent wire suggested actions to real
+ *     handlers. When omitted, action labels render as inert chips.
  */
 
 export function AssistantBrief({
@@ -75,19 +73,9 @@ export function AssistantBrief({
     return <Skeleton />;
   }
 
-  if (error) {
-    return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-          <Sparkles className="h-3.5 w-3.5" />
-          DOCex Assistant
-        </div>
-        <p className="mt-2 text-sm text-gray-500">{error}</p>
-      </div>
-    );
-  }
-
-  if (!brief) return null;
+  // Reliability: if the briefing can't be produced, show nothing rather
+  // than an apologetic or broken card. The result/table below stands alone.
+  if (error || !brief) return null;
 
   return (
     <div
@@ -104,12 +92,8 @@ export function AssistantBrief({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-              DOCex Assistant
+              Your DOCex assistant
             </p>
-            <span className="text-[11px] text-gray-400">·</span>
-            <span className="text-[11px] italic text-gray-400">
-              briefed by Claude
-            </span>
           </div>
 
           {brief.headline && (
@@ -186,10 +170,10 @@ function Skeleton() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-              DOCex Assistant
+              Your DOCex assistant
             </p>
             <span className="text-[11px] italic text-gray-400">
-              briefing you on this run…
+              reading this for you…
             </span>
           </div>
           <div className="mt-2 space-y-2">

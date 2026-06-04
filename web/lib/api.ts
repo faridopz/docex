@@ -537,6 +537,110 @@ export async function exportCheckToExcel(
   XLSX.writeFile(wb, fn);
 }
 
+// Full auditor-style export of ONE check: the summary, the rule findings,
+// AND the complete decision history (who did what, when — escalations,
+// clarifications, notes, approvals, emails sent). This is the record an
+// auditor asks for: the verdict plus the human trail behind it.
+export async function exportCheckAuditHistory(
+  check: ComplianceCheckResult,
+  rulesForLookup: PolicyRule[],
+  filename?: string,
+): Promise<void> {
+  const XLSX = await import("xlsx");
+
+  const EVENT_LABEL: Record<string, string> = {
+    check_run: "Check ran",
+    note_added: "Note added",
+    rule_dismissed: "Flag dismissed",
+    rule_escalated: "Rule escalated",
+    clarification_requested: "Clarification requested",
+    clarification_received: "Clarification received",
+    escalated: "Escalated",
+    approved: "Approved",
+    unapproved: "Approval revoked",
+  };
+
+  // Sheet 1 — Summary
+  const counts = { pass: 0, flag: 0, block: 0, not_applicable: 0, insufficient_evidence: 0 };
+  for (const r of check.results) counts[r.verdict]++;
+  const summaryRows: (string | number)[][] = [
+    ["Payment label", check.payment_label],
+    ["Payment ID", check.payment_id],
+    ["Verdict", check.overall_verdict],
+    ["Summary", check.overall_summary],
+    ["Rulebook (policy set)", check.rulebook_name],
+    ["Check date", check.created_at ?? ""],
+    ["Approved", check.approved ? "Yes" : "No"],
+    ["Approved date", check.approved_at ?? ""],
+    ["Documents", check.documents.join(", ")],
+    ["Rules evaluated", check.results.length],
+    ["Pass", counts.pass],
+    ["Flag", counts.flag],
+    ["Block", counts.block],
+    ["Need info", counts.insufficient_evidence],
+    ["N/A", counts.not_applicable],
+  ];
+  const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+  summarySheet["!cols"] = [{ wch: 22 }, { wch: 90 }];
+
+  // Sheet 2 — Rule findings
+  const findingsHeader = [
+    "#", "Rule ID", "Clause", "Category", "Rule", "Applied to",
+    "Verdict", "Confidence", "Reasoning", "Policy citation", "Payment evidence",
+  ];
+  const findingsRows = check.results.map((r, i) => {
+    const rule = rulesForLookup.find((rr) => rr.id === r.rule_id);
+    return [
+      i + 1, r.rule_id, rule?.clause_reference ?? "", rule?.category ?? "",
+      r.rule_description, r.applied_to_document ?? "(payment-level)",
+      r.verdict, r.confidence, r.reasoning,
+      r.policy_citation ?? "", r.payment_evidence ?? "",
+    ];
+  });
+  const findingsSheet = XLSX.utils.aoa_to_sheet([findingsHeader, ...findingsRows]);
+  findingsSheet["!cols"] = findingsHeader.map((h, i) => ({
+    wch: Math.min(
+      Math.max(h.length, ...findingsRows.map((r) => String(r[i] ?? "").length)) + 2,
+      60,
+    ),
+  }));
+  findingsSheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+
+  // Sheet 3 — Audit history (the decision log, chronological)
+  const historyHeader = [
+    "#", "When", "Event", "By", "Detail", "Related rule", "Signed by", "Emailed to",
+  ];
+  const log = check.decision_log ?? [];
+  const historyRows = log.map((e, i) => [
+    i + 1,
+    e.timestamp ?? "",
+    EVENT_LABEL[e.type] ?? e.type,
+    e.actor ?? "",
+    e.note ?? "",
+    e.rule_description ?? "",
+    e.signed_name ?? "",
+    e.notified_email ?? "",
+  ]);
+  const historySheet = XLSX.utils.aoa_to_sheet(
+    historyRows.length ? [historyHeader, ...historyRows] : [historyHeader, ["—", "No recorded actions yet", "", "", "", "", "", ""]],
+  );
+  historySheet["!cols"] = [
+    { wch: 4 }, { wch: 22 }, { wch: 22 }, { wch: 20 },
+    { wch: 60 }, { wch: 40 }, { wch: 20 }, { wch: 28 },
+  ];
+  historySheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
+  XLSX.utils.book_append_sheet(wb, findingsSheet, "Rule findings");
+  XLSX.utils.book_append_sheet(wb, historySheet, "Audit history");
+
+  const fn =
+    filename ??
+    `audit-${(check.payment_label || check.payment_id).replace(/[^a-zA-Z0-9-_.]+/g, "_")}.xlsx`;
+  XLSX.writeFile(wb, fn);
+}
+
 export async function exportChecksListToExcel(
   checks: CheckSummary[],
   filename = "compliance-checks.xlsx",

@@ -12,7 +12,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import {
   buildCollectionRun,
   getCollection,
@@ -137,28 +137,31 @@ export default function CollectionGridPage({
   const withBank = attendees.filter((a) => a.account_number.trim()).length;
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="attendance">
-        <button
-          type="button"
-          onClick={() => void load()}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-          title="Pull in any new self-check-ins"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
-        </button>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={saving}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 disabled:opacity-50"
-        >
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-          Save
-        </button>
-      </AppNav>
-
+    <AppShell
+      active="attendance"
+      actions={
+        <>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+            title="Pull in any new self-check-ins"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            Save
+          </button>
+        </>
+      }
+    >
       <main className="mx-auto max-w-5xl px-6 py-10">
         {loadError ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-700">
@@ -349,6 +352,6 @@ export default function CollectionGridPage({
           </div>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }

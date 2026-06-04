@@ -12,7 +12,7 @@ import {
   Loader2,
   Stamp,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import { exportChecksListToExcel, listChecks } from "@/lib/api";
 import {
@@ -124,16 +124,17 @@ export default function SavedChecksPage() {
   }, [checks, filter]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppNav active="compliance">
+    <AppShell
+      active="compliance"
+      actions={
         <Link
           href="/compliance/pending"
           className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
         >
           Inbox
         </Link>
-      </AppNav>
-
+      }
+    >
       <main className="mx-auto max-w-5xl px-6 py-10">
         <div className="space-y-8">
           {/* Header */}
@@ -262,7 +263,7 @@ export default function SavedChecksPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

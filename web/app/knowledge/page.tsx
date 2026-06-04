@@ -22,7 +22,7 @@ import {
   suggestFolder,
   updateDeck,
 } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type {
   KnowledgeAnswer,
@@ -192,8 +192,9 @@ export default function KnowledgeLibraryPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="knowledge">
+    <AppShell
+      active="knowledge"
+      actions={
         <Link
           href="/knowledge/new"
           className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
@@ -201,8 +202,8 @@ export default function KnowledgeLibraryPage() {
           <Plus className="h-3.5 w-3.5" />
           Add document
         </Link>
-      </AppNav>
-
+      }
+    >
       <main className="mx-auto max-w-6xl px-6 py-10">
         <div className="space-y-8">
           {/* Hero */}
@@ -409,7 +410,7 @@ export default function KnowledgeLibraryPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

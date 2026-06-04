@@ -16,7 +16,7 @@ import {
   Stamp,
 } from "lucide-react";
 import { listChecks, listRulebooks } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { CheckSummary, RulebookSummary } from "@/types";
 
@@ -91,40 +91,43 @@ export default function ComplianceListPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="compliance">
-        <Link
-          href="/compliance/pending"
-          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-          title="Open the pending inbox — checks awaiting your decision"
-        >
-          <Inbox className="h-3.5 w-3.5" />
-          Inbox
-        </Link>
-        <Link
-          href="/compliance/checks"
-          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-          title="View saved checks + approved PVs archive"
-        >
-          <FileSearch className="h-3.5 w-3.5" />
-          Saved checks
-        </Link>
-        <Link
-          href="/compliance/new"
-          className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New policy set
-        </Link>
-        <Link
-          href="/compliance/check"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
-        >
-          <ShieldCheck className="h-3.5 w-3.5" />
-          Check a payment
-        </Link>
-      </AppNav>
-
+    <AppShell
+      active="compliance"
+      actions={
+        <>
+          <Link
+            href="/compliance/pending"
+            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+            title="Open the pending inbox — checks awaiting your decision"
+          >
+            <Inbox className="h-3.5 w-3.5" />
+            Inbox
+          </Link>
+          <Link
+            href="/compliance/checks"
+            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+            title="View saved checks + approved PVs archive"
+          >
+            <FileSearch className="h-3.5 w-3.5" />
+            Saved checks
+          </Link>
+          <Link
+            href="/compliance/new"
+            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New policy set
+          </Link>
+          <Link
+            href="/compliance/check"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Check a payment
+          </Link>
+        </>
+      }
+    >
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
           {/* Page header */}
@@ -267,7 +270,7 @@ export default function ComplianceListPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

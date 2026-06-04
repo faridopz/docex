@@ -45,7 +45,7 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
         reason: "auth",
         raw,
         message:
-          "DOCex couldn't reach Claude. The Anthropic API key looks invalid or expired — check it in the backend's .env file.",
+          "DOCex couldn't reach its AI service. The API key looks invalid or expired — check it in the backend's .env file.",
       };
     }
     if (lower.includes("paystack")) {
@@ -135,7 +135,7 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
       reason: "upstream",
       raw,
       message:
-        "DOCex couldn't reach an upstream service (likely Claude or Paystack). It's usually transient — try again in a moment.",
+        "DOCex couldn't reach an upstream service (its AI service or the bank API). It's usually transient — try again in a moment.",
     };
   }
 

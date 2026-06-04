@@ -16,7 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { listVerifyBatches } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type { BatchVerifySummary, StandardPurpose } from "@/types";
 import { purposeLabel } from "@/types";
@@ -77,20 +77,17 @@ export default function VerifyListPage() {
     : null;
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="verify">
-        <span className="hidden items-center gap-1.5 text-xs font-medium text-gray-400 sm:inline-flex">
-          <Landmark className="h-3.5 w-3.5" />
-          Bank Verify
-        </span>
+    <AppShell
+      active="verify"
+      actions={
         <Link
           href="/verify/new"
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700"
         >
           New verification
         </Link>
-      </AppNav>
-
+      }
+    >
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
           {/* Page header */}
@@ -201,7 +198,7 @@ export default function VerifyListPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

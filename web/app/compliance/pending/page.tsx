@@ -11,7 +11,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { listPendingChecks } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import {
   overallVerdictColor,
   overallVerdictDot,
@@ -102,8 +102,9 @@ export default function PendingInboxPage() {
   }, [checks, tab]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppNav active="compliance">
+    <AppShell
+      active="compliance"
+      actions={
         <Link
           href="/compliance/checks"
           className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
@@ -111,8 +112,8 @@ export default function PendingInboxPage() {
           <ShieldCheck className="h-3.5 w-3.5" />
           All checks
         </Link>
-      </AppNav>
-
+      }
+    >
       <main className="mx-auto max-w-5xl space-y-8 px-6 py-10">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">
@@ -178,7 +179,7 @@ export default function PendingInboxPage() {
           </>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }
 

@@ -12,7 +12,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import {
   createRateCard,
   deleteRateCard,
@@ -63,14 +63,7 @@ export default function RateCardsPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav active="attendance">
-        <span className="hidden items-center gap-1.5 text-xs font-medium text-gray-400 sm:inline-flex">
-          <CircleDollarSign className="h-3.5 w-3.5" />
-          Rate cards
-        </span>
-      </AppNav>
-
+    <AppShell active="attendance">
       <main className="mx-auto max-w-4xl px-6 py-12">
         <div className="space-y-8">
           <div className="flex items-start justify-between gap-6">
@@ -174,7 +167,7 @@ export default function RateCardsPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }
 

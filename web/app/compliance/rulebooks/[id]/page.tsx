@@ -315,7 +315,7 @@ export default function RulebookEditorPage({
           <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
             <div className="flex-1 space-y-1 text-sm text-amber-900">
-              <p className="font-medium">Claude flagged some clauses for your review</p>
+              <p className="font-medium">DOCex flagged some clauses for your review</p>
               <p className="whitespace-pre-wrap leading-relaxed text-amber-800">
                 {draft.interpretation_notes}
               </p>
@@ -333,7 +333,7 @@ export default function RulebookEditorPage({
 
         <GuidanceCard title="Review and edit before running checks">
           DOCex extracted every rule it found. Toggle off any rule you don't
-          want checked, edit a description if Claude misread it, or delete
+          want checked, edit a description if it was misread, or delete
           a rule entirely. The source quote on each card is the exact policy
           text the rule came from.
         </GuidanceCard>

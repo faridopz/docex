@@ -3,7 +3,7 @@
 import React from "react";
 import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import { QuestionBuilder } from "@/components/QuestionBuilder";
 import { ApplicantUpload } from "@/components/ApplicantUpload";
 import { ExtractionTable } from "@/components/ExtractionTable";
@@ -163,12 +163,10 @@ export default function AppPage() {
   const showBack = step > 1 && !isScreening;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppNav active="extract" />
-
-      {/* Wizard progress — a slim secondary bar under the global nav so the
-          three steps stay visible without a second full-height header. */}
-      <div className="sticky top-16 z-40 border-b border-gray-100 bg-white/90 backdrop-blur-md">
+    <AppShell active="extract">
+      {/* Wizard progress — a slim bar at the top of the content so the
+          three steps stay visible. */}
+      <div className="border-b border-gray-100 bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex h-12 max-w-4xl items-center px-6">
           <div className="w-full max-w-md">
             <StepBar current={step} step2Label={workflowLabels.step2Label} />
@@ -282,6 +280,6 @@ export default function AppPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }

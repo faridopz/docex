@@ -15,7 +15,7 @@ import {
   Trash2,
   type LucideIcon,
 } from "lucide-react";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppShell";
 import {
   TEMPLATE_CATEGORIES,
   createTemplate,
@@ -80,9 +80,10 @@ export default function TemplatesPage() {
       : null;
 
   return (
-    <div className="min-h-screen bg-[#fafaf7]">
-      <AppNav>
-        {view.mode === "list" && (
+    <AppShell
+      active="templates"
+      actions={
+        view.mode === "list" ? (
           <button
             type="button"
             onClick={() => setView({ mode: "create" })}
@@ -91,9 +92,9 @@ export default function TemplatesPage() {
             <Plus className="h-3.5 w-3.5" />
             New template
           </button>
-        )}
-      </AppNav>
-
+        ) : undefined
+      }
+    >
       <main className="mx-auto max-w-5xl px-6 py-10">
         {view.mode === "list" ? (
           <ListView
@@ -116,7 +117,7 @@ export default function TemplatesPage() {
           />
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }
 

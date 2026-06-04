@@ -4,15 +4,19 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
-  Copy,
-  Check,
+  Download,
   Loader2,
   ShieldCheck,
 } from "lucide-react";
 import { AssistantBrief } from "@/components/AssistantBrief";
 import { DecisionTimeline } from "@/components/compliance/DecisionTimeline";
 import { VerdictScreen } from "@/components/compliance/VerdictScreen";
-import { approveCheck, getCheck, unapproveCheck } from "@/lib/api";
+import {
+  approveCheck,
+  exportCheckAuditHistory,
+  getCheck,
+  unapproveCheck,
+} from "@/lib/api";
 import type { ComplianceCheckResult } from "@/types";
 
 /**
@@ -39,7 +43,7 @@ export default function SavedCheckPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [approvalLoading, setApprovalLoading] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
-  const [urlCopied, setUrlCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,11 +81,17 @@ export default function SavedCheckPage({
     }
   }
 
-  async function handleCopyUrl() {
-    if (typeof window === "undefined") return;
-    await navigator.clipboard.writeText(window.location.href);
-    setUrlCopied(true);
-    setTimeout(() => setUrlCopied(false), 2000);
+  async function handleExportAudit() {
+    if (!check) return;
+    setExporting(true);
+    try {
+      await exportCheckAuditHistory(
+        check,
+        check.rulebook_snapshot_rules ?? [],
+      );
+    } finally {
+      setExporting(false);
+    }
   }
 
   // Banner explaining this is a saved/historical check
@@ -110,21 +120,17 @@ export default function SavedCheckPage({
           </div>
           <button
             type="button"
-            onClick={handleCopyUrl}
-            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 sm:inline-flex"
-            title="Copy this URL — share with auditors"
+            onClick={handleExportAudit}
+            disabled={!check || exporting}
+            className="hidden items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700 disabled:opacity-50 sm:inline-flex"
+            title="Download the full audit trail — summary, findings, and decision history — as an Excel workbook"
           >
-            {urlCopied ? (
-              <>
-                <Check className="h-3.5 w-3.5 text-emerald-600" />
-                Copied
-              </>
+            {exporting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <>
-                <Copy className="h-3.5 w-3.5" />
-                Copy audit URL
-              </>
+              <Download className="h-3.5 w-3.5" />
             )}
+            Export audit trail
           </button>
         </div>
       </header>
