@@ -23,6 +23,7 @@ import {
   updateDeck,
 } from "@/lib/api";
 import { AppShell } from "@/components/AppShell";
+import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import type {
   KnowledgeAnswer,
@@ -218,6 +219,9 @@ export default function KnowledgeLibraryPage() {
               into folders, and let DOCex do the rest.
             </p>
           </div>
+
+          {/* External systems — pull ERPs / drives into the searchable library */}
+          <IntegrationsPanel onSynced={reload} />
 
           {/* Library chat surface — the headline new feature */}
           <section className="overflow-hidden rounded-2xl border border-brand-100 bg-white shadow-card">

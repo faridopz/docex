@@ -438,6 +438,11 @@ class SlideDeck(BaseModel):
     #   (c) renders as a tree by client-side splitting on "/"
     # This makes folders feel like a filesystem without the overhead of one.
     folder: Optional[str] = None
+    # Provenance for documents pulled from an external system (e.g. an
+    # ERPNext knowledge base). Format "<source>:<external-id>", e.g.
+    # "erpnext:<File.name>". Used to dedupe on re-sync so the same document
+    # isn't ingested twice. Null for manually uploaded documents.
+    source_ref: Optional[str] = None
     # Persistence + audit metadata
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

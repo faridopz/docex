@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from knowledge import ask, library_ask  # noqa: E402
 from models import KnowledgeAnswer, SlideDeck  # noqa: E402
 from slides import parse_document  # noqa: E402
+import connectors  # noqa: E402
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -407,3 +408,108 @@ def suggest_folder(body: SuggestFolderRequest) -> dict:
             "suggested_folder": fallback,
             "reasoning": f"Auto-suggestion unavailable ({type(exc).__name__}); fell back to tag-based folder.",
         }
+
+
+# ─── External integrations (pluggable connectors) ───────────────────────────
+#
+# Pull documents from external systems (ERPNext today; other ERPs / drives
+# next) into the Hub so they become retrieval-searchable. We index a copy and
+# re-sync — the source is never queried live on a search. Provider-agnostic:
+# every connector in connectors.REGISTRY is exposed here automatically.
+
+
+class IntegrationInfo(BaseModel):
+    id: str
+    label: str
+    configured: bool
+    detail: str          # host / status hint (non-sensitive)
+    synced: int          # documents in the Hub sourced from this provider
+
+
+class IntegrationSyncResult(BaseModel):
+    provider: str
+    found: int           # supported documents seen in the source
+    ingested: int        # newly pulled into the Hub
+    skipped: int         # already synced (deduped by source_ref)
+    failed: int
+    errors: list[str]
+
+
+@router.get("/integrations", response_model=list[IntegrationInfo])
+async def list_integrations() -> list[IntegrationInfo]:
+    decks = _list_decks()
+    out: list[IntegrationInfo] = []
+    for c in connectors.list_connectors():
+        synced = sum(
+            1 for d in decks if (d.source_ref or "").startswith(f"{c.id}:")
+        )
+        out.append(
+            IntegrationInfo(
+                id=c.id,
+                label=c.label,
+                configured=c.is_configured(),
+                detail=c.status_detail(),
+                synced=synced,
+            )
+        )
+    return out
+
+
+@router.post(
+    "/integrations/{provider}/sync", response_model=IntegrationSyncResult
+)
+async def sync_integration(provider: str) -> IntegrationSyncResult:
+    """Pull new documents from an external provider into the Knowledge Hub.
+
+    Lists the source's documents, skips any already ingested (deduped on
+    source_ref), downloads + parses the rest, and saves them as searchable
+    documents tagged with their source context. Idempotent — safe to re-run
+    and to schedule.
+    """
+    conn = connectors.get_connector(provider)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"Unknown provider '{provider}'.")
+    if not conn.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{conn.label} isn't configured. Add its credentials to the backend .env.",
+        )
+    try:
+        docs = conn.list_documents()
+    except connectors.ConnectorError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    existing = {d.source_ref for d in _list_decks() if d.source_ref}
+    ingested = skipped = failed = 0
+    errors: list[str] = []
+
+    for ref in docs:
+        source_ref = f"{conn.id}:{ref.id}"
+        if source_ref in existing:
+            skipped += 1
+            continue
+        try:
+            data = conn.download(ref)
+            deck = parse_document(
+                io.BytesIO(data),
+                name=ref.name,
+                source_filename=ref.name,
+                tags=ref.tags,
+                deck_id=uuid.uuid4().hex,
+            )
+            deck.source_ref = source_ref
+            deck.folder = conn.label
+            _save_deck(deck)
+            ingested += 1
+        except Exception as exc:  # noqa: BLE001 — one bad file shouldn't stop the sync
+            failed += 1
+            errors.append(f"{ref.name}: {exc}")
+
+    return IntegrationSyncResult(
+        provider=conn.id,
+        found=len(docs),
+        ingested=ingested,
+        skipped=skipped,
+        failed=failed,
+        errors=errors[:20],
+    )

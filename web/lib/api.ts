@@ -1364,3 +1364,39 @@ export async function selfCheckIn(
   });
   if (!res.ok) await throwFriendly(res);
 }
+
+// ─── External integrations (pluggable connectors) ───────────────────────────
+
+export interface IntegrationInfo {
+  id: string;
+  label: string;
+  configured: boolean;
+  detail: string;
+  synced: number;
+}
+
+export interface IntegrationSyncResult {
+  provider: string;
+  found: number;
+  ingested: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+}
+
+export async function listIntegrations(): Promise<IntegrationInfo[]> {
+  const res = await fetch(`${BASE}/knowledge/integrations`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<IntegrationInfo[]>;
+}
+
+export async function syncIntegration(
+  provider: string,
+): Promise<IntegrationSyncResult> {
+  const res = await fetch(
+    `${BASE}/knowledge/integrations/${encodeURIComponent(provider)}/sync`,
+    { method: "POST" },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<IntegrationSyncResult>;
+}
