@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 import erpnext_connector as _erpnext
+import odoo_connector as _odoo
 
 
 class ConnectorError(RuntimeError):
@@ -96,12 +97,48 @@ class ERPNextConnector(DocumentConnector):
             raise ConnectorError(str(exc)) from exc
 
 
+# ─── Odoo (XML-RPC, ir.attachment) ──────────────────────────────────────────
+
+
+class OdooConnector(DocumentConnector):
+    id = "odoo"
+    label = "Odoo"
+
+    def is_configured(self) -> bool:
+        return _odoo.is_configured()
+
+    def status_detail(self) -> str:
+        return _odoo.base_host()
+
+    def list_documents(self) -> list[DocumentRef]:
+        try:
+            recs = _odoo.list_files()
+        except _odoo.OdooError as exc:
+            raise ConnectorError(str(exc)) from exc
+        return [
+            DocumentRef(
+                id=_odoo.source_id(r),
+                name=r.get("name") or _odoo.source_id(r),
+                handle=_odoo.source_id(r),
+                tags=_odoo.tags_for(r),
+            )
+            for r in recs
+        ]
+
+    def download(self, ref: DocumentRef) -> bytes:
+        try:
+            return _odoo.download(ref.handle)
+        except _odoo.OdooError as exc:
+            raise ConnectorError(str(exc)) from exc
+
+
 # ─── Registry ───────────────────────────────────────────────────────────────
 #
 # Add new providers here. Order is the order they appear in the UI.
 
 REGISTRY: list[DocumentConnector] = [
     ERPNextConnector(),
+    OdooConnector(),
 ]
 
 
