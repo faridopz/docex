@@ -442,6 +442,52 @@ async def delete_rulebook_endpoint(rulebook_id: str) -> dict:
 
 # ─── Compliance checks ─────────────────────────────────────────────────────
 
+class RouteSuggestionOut(BaseModel):
+    rulebook_id: str
+    rulebook_name: str
+    score: float
+    confidence: str
+    matched_terms: list[str]
+
+
+@router.post("/route", response_model=list[RouteSuggestionOut])
+async def route_payment_endpoint(
+    payment_documents: Annotated[
+        list[UploadFile],
+        File(description="Payment bundle to auto-match against saved policy sets"),
+    ],
+) -> list[RouteSuggestionOut]:
+    """Auto-select the best-fitting policy set(s) for a payment.
+
+    Reads the uploaded documents and ranks every saved rulebook by how well
+    it fits — so the officer can apply the right policy without choosing it
+    manually. Returns suggestions newest-first by score with a confidence
+    flag and the terms that matched.
+    """
+    import compliance_router  # local import keeps module load light
+
+    rulebooks = _list_rulebooks()
+    if not rulebooks:
+        return []
+    text = "\n\n".join(filter(None, (_extract_text(f) for f in payment_documents)))
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="No readable text found in the uploaded documents.",
+        )
+    suggestions = compliance_router.rank_rulebooks(text, rulebooks)
+    return [
+        RouteSuggestionOut(
+            rulebook_id=s.rulebook_id,
+            rulebook_name=s.rulebook_name,
+            score=s.score,
+            confidence=s.confidence,
+            matched_terms=s.matched_terms,
+        )
+        for s in suggestions
+    ]
+
+
 @router.post("/check/single", response_model=ComplianceCheckResult)
 async def check_single_endpoint(
     payment_documents: Annotated[

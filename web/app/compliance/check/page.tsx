@@ -11,11 +11,12 @@ import {
   Loader2,
   Plus,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { DropZone } from "@/components/DropZone";
 import { GuidanceCard } from "@/components/GuidanceCard";
-import { checkPaymentSingle, listRulebooks } from "@/lib/api";
+import { checkPaymentSingle, listRulebooks, routePayment } from "@/lib/api";
 import {
   overallVerdictColor,
   overallVerdictDot,
@@ -60,6 +61,41 @@ export default function PaymentCheckPage() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [runResults, setRunResults] = useState<RunResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const [routing, setRouting] = useState(false);
+  const [routeMsg, setRouteMsg] = useState<string | null>(null);
+
+  async function autoDetect() {
+    if (files.length === 0) return;
+    setRouting(true);
+    setRouteMsg(null);
+    try {
+      const suggestions = await routePayment(files);
+      const strong = suggestions.filter(
+        (s) => s.confidence === "high" || s.confidence === "medium",
+      );
+      if (strong.length === 0) {
+        setRouteMsg(
+          "Couldn't confidently match a policy set from the documents — pick one below.",
+        );
+        return;
+      }
+      setSelected(new Set(strong.map((s) => s.rulebook_id)));
+      const top = strong[0];
+      setRouteMsg(
+        `Matched ${strong.map((s) => s.rulebook_name).join(", ")}` +
+          (top.matched_terms.length
+            ? ` (on: ${top.matched_terms.slice(0, 4).join(", ")})`
+            : ""),
+      );
+    } catch (err) {
+      setRouteMsg(
+        err instanceof Error ? err.message : "Auto-detect failed — pick a policy set below.",
+      );
+    } finally {
+      setRouting(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -195,11 +231,39 @@ export default function PaymentCheckPage() {
 
             {/* 2. Policy sets */}
             <section className="space-y-3">
-              <SectionHeading n={2} title="Apply policy set(s)" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <SectionHeading n={2} title="Apply policy set(s)" />
+                <button
+                  type="button"
+                  onClick={autoDetect}
+                  disabled={files.length === 0 || routing}
+                  title={
+                    files.length === 0
+                      ? "Add the payment documents first"
+                      : "Let DOCex pick the best-fitting policy set from the documents"
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 transition hover:border-brand-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {routing ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  Auto-detect policy
+                </button>
+              </div>
               <p className="text-sm text-gray-600">
-                Pick every policy this payment must comply with. Each is
-                checked independently and gets its own audit-stable record.
+                Pick every policy this payment must comply with — or let DOCex
+                auto-detect it from the documents. Each is checked
+                independently and gets its own audit-stable record.
               </p>
+
+              {routeMsg && (
+                <div className="flex items-start gap-2 rounded-lg border border-brand-100 bg-brand-50/60 px-3 py-2 text-xs text-brand-800">
+                  <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{routeMsg}</span>
+                </div>
+              )}
 
               {loadError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">

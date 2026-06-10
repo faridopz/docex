@@ -101,6 +101,17 @@ class PolicyRulebook(BaseModel):
     notification_trigger: Optional[
         Literal["always", "flagged_or_blocked", "blocked_only"]
     ] = None
+    # ─── Routing / scope (auto-policy-selection) ────────────────────────
+    # Optional hints describing WHEN this rulebook applies, used by the
+    # policy router to auto-pick the best-fitting rulebook for a payment
+    # (e.g. ["procurement", "vendor", "purchase order", "quotation"] for a
+    # procurement policy; ["travel", "per diem", "DSA", "flight"] for a
+    # travel policy). If empty, the router falls back to the rulebook's
+    # name + rule text. `org` namespaces a rulebook to an organisation
+    # (display/grouping today; the basis for tenant isolation once auth
+    # lands).
+    applies_to: list[str] = []
+    org: Optional[str] = None
 
 
 # pass                  — rule satisfied, evidence cited

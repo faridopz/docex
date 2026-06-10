@@ -318,6 +318,26 @@ export async function deleteRulebook(id: string): Promise<void> {
   }
 }
 
+export interface RouteSuggestion {
+  rulebook_id: string;
+  rulebook_name: string;
+  score: number;
+  confidence: "high" | "medium" | "low";
+  matched_terms: string[];
+}
+
+/** Auto-rank saved policy sets by fit to the uploaded payment documents. */
+export async function routePayment(files: File[]): Promise<RouteSuggestion[]> {
+  const body = new FormData();
+  for (const f of files) body.append("payment_documents", f);
+  const res = await fetch(`${BASE}/compliance/route`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<RouteSuggestion[]>;
+}
+
 export async function checkPaymentSingle(
   rulebookId: string,
   paymentLabel: string,
