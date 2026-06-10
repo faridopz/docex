@@ -30,7 +30,21 @@ logger = logging.getLogger(__name__)
 # may want this lowered or made adaptive.
 _BATCH_MAX_PARALLEL = 5
 
-_client = anthropic.Anthropic()
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Lazily construct the Anthropic client on first use.
+
+    Constructing at import time would crash the whole API on startup when
+    ANTHROPIC_API_KEY isn't set — taking down non-AI endpoints too. Lazy
+    init lets the backend boot regardless; only the actual AI call fails if
+    the key is missing.
+    """
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+    return _client
 
 _SYSTEM_PROMPT = """You are a document extraction specialist for NGO partner screening in Nigeria.
 
@@ -236,7 +250,7 @@ source_document. Quote verbatim."""
     # max_tokens sized for 20 structured answers with quotes + search_notes.
     # Each answer can be 300–600 tokens; with 20 questions we need headroom
     # well past the previous 8096 cap, which silently truncated big runs.
-    response = _client.messages.parse(
+    response = _get_client().messages.parse(
         model=EXTRACTION_MODEL,
         max_tokens=16384,
         system=[

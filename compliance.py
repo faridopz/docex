@@ -45,7 +45,15 @@ logger = logging.getLogger(__name__)
 # on big batches.
 _BATCH_MAX_PARALLEL = 5
 
-_client = anthropic.Anthropic()
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Lazily construct the Anthropic client (see screener.py rationale)."""
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic()
+    return _client
 
 
 # ─── System prompts ─────────────────────────────────────────────────────────
@@ -287,7 +295,7 @@ Read all documents carefully before emitting any rules. Generate a unique
 kebab-case id for each rule. Cite source_quote verbatim from the policy.
 Note any ambiguous clauses in interpretation_notes."""
 
-    response = _client.messages.parse(
+    response = _get_client().messages.parse(
         model=COMPLIANCE_MODEL,
         max_tokens=16384,
         system=[
@@ -388,7 +396,7 @@ in the bundle separately and return one RuleResult per (rule × receipt).
 For all other rules, return one RuleResult per rule. Cite policy and
 payment text verbatim."""
 
-    response = _client.messages.parse(
+    response = _get_client().messages.parse(
         model=COMPLIANCE_MODEL,
         max_tokens=16384,
         system=[

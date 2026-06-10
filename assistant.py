@@ -40,7 +40,16 @@ logger = logging.getLogger(__name__)
 # the load balancer kills the connection. 120s is comfortable for the
 # longest legitimate briefings (full diagnostic report ≈ 4-8K input tokens,
 # resolves in under 30s in practice) while preventing pathological hangs.
-_client = anthropic.Anthropic(timeout=120.0)
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    """Lazily construct the Anthropic client (see screener.py rationale)."""
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(timeout=120.0)
+    return _client
+
 
 _MODEL = ASSISTANT_MODEL
 _MAX_TOKENS = 800
@@ -168,7 +177,7 @@ def summarize(
     )
 
     try:
-        response = _client.messages.create(
+        response = _get_client().messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             system=system,
