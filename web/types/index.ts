@@ -119,6 +119,10 @@ export interface PolicyRulebook {
   // in the rulebook editor; requires backend SMTP env vars to actually fire.
   notification_email?: string | null;
   notification_trigger?: NotificationTrigger | null;
+  // Routing/scope + the configurable approval chain (ordered stage labels).
+  applies_to?: string[];
+  org?: string | null;
+  approval_workflow?: string[];
 }
 
 export interface RulebookSummary {

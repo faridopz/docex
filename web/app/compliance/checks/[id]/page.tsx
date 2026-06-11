@@ -15,9 +15,11 @@ import {
   approveCheck,
   exportCheckAuditHistory,
   getCheck,
+  getRulebook,
   unapproveCheck,
 } from "@/lib/api";
-import type { ComplianceCheckResult } from "@/types";
+import { ApprovalChain } from "@/components/compliance/ApprovalChain";
+import type { ComplianceCheckResult, PolicyRulebook } from "@/types";
 
 /**
  * Saved-check page — the stable URL for a compliance check.
@@ -40,6 +42,7 @@ export default function SavedCheckPage({
   const { id } = params;
 
   const [check, setCheck] = useState<ComplianceCheckResult | null>(null);
+  const [rulebook, setRulebook] = useState<PolicyRulebook | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [approvalLoading, setApprovalLoading] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
@@ -50,7 +53,16 @@ export default function SavedCheckPage({
     (async () => {
       try {
         const c = await getCheck(id);
-        if (!cancelled) setCheck(c);
+        if (cancelled) return;
+        setCheck(c);
+        // Load the rulebook too (for its configurable approval workflow).
+        // Best-effort: a missing rulebook just hides the approval chain.
+        try {
+          const rb = await getRulebook(c.rulebook_id);
+          if (!cancelled) setRulebook(rb);
+        } catch {
+          /* ignore — no approval chain shown */
+        }
       } catch (err) {
         if (!cancelled)
           setLoadError(
@@ -166,6 +178,15 @@ export default function SavedCheckPage({
                 payload={check}
               />
             </div>
+            {rulebook?.approval_workflow && rulebook.approval_workflow.length > 0 && (
+              <div className="mb-6">
+                <ApprovalChain
+                  check={check}
+                  workflow={rulebook.approval_workflow}
+                  onUpdate={(updated) => setCheck(updated)}
+                />
+              </div>
+            )}
             <div className="mb-6">
               <DecisionTimeline
                 check={check}

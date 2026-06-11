@@ -112,6 +112,14 @@ class PolicyRulebook(BaseModel):
     # lands).
     applies_to: list[str] = []
     org: Optional[str] = None
+    # ─── Approval workflow (configurable per org/policy) ────────────────
+    # The ordered sign-off chain a passed check must go through, as role
+    # labels — e.g. ["Compliance Officer", "Head of Finance", "Executive
+    # Director"] for TA Connect; another org might be ["Manager",
+    # "Director"] or a single approver. Empty = no staged chain (the simple
+    # approve toggle applies). This keeps WORKFLOWS as org-configurable as
+    # the rules themselves — nothing in the engine is hardcoded to one org.
+    approval_workflow: list[str] = []
 
 
 # pass                  — rule satisfied, evidence cited

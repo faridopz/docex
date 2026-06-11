@@ -30,3 +30,6 @@ rapidfuzz>=3.6,<4.0
 
 # Excel schedule parsing (Bank Verify reads payment schedules from .xlsx).
 openpyxl>=3.1,<4.0
+
+# HTTP client for external connectors (ERPNext / Frappe REST).
+requests>=2.31,<3.0
