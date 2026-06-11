@@ -207,23 +207,28 @@ export default function PaymentCheckPage() {
           <div className="space-y-8">
             <div>
               <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-                Check a payment
+                Check a payment voucher
               </h1>
               <p className="mt-2 max-w-xl text-base text-gray-600">
-                Upload the invoice or voucher, choose which policy set(s) it
-                has to satisfy, and DOCex checks it rule by rule — with
-                citations and an audit trail for each.
+                Upload the payment voucher with all its supporting documents,
+                choose which policy set(s) it has to satisfy, and DOCex checks
+                it rule by rule — with citations and an audit trail for each.
               </p>
             </div>
 
-            {/* 1. Payment */}
+            {/* 1. Payment voucher + supporting documents */}
             <section className="space-y-3">
-              <SectionHeading n={1} title="The payment" />
+              <SectionHeading n={1} title="The payment voucher" />
+              <p className="text-sm text-gray-600">
+                Add the voucher and everything attached to it — Goods Received
+                Note, invoice(s), purchase order, quotations / bid analysis,
+                and approvals. DOCex reads the whole package together.
+              </p>
               <input
                 type="text"
                 value={paymentLabel}
                 onChange={(e) => setPaymentLabel(e.target.value)}
-                placeholder="Label, e.g. 'Voucher #2026-0142 — Vendor X'"
+                placeholder="Label, e.g. 'PV #2026-0142 — Vendor X'"
                 className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
               />
               <DropZone files={files} onFilesChange={setFiles} />
@@ -347,7 +352,7 @@ export default function PaymentCheckPage() {
             </section>
 
             <GuidanceCard title="Why pick more than one?">
-              A single invoice often has to satisfy several policies at once —
+              A single payment voucher often has to satisfy several policies at once —
               procurement rules, travel limits, and a donor's specific terms.
               Selecting them all checks the payment against each and keeps a
               separate, defensible record per policy.

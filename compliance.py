@@ -152,6 +152,22 @@ First, silently identify what each document in the bundle is — payment
 voucher, invoice, individual receipt, quote, approval form, contract,
 etc. Then use that understanding when applying rules:
 
+The bundle is a PAYMENT VOUCHER package. Treat the payment voucher as the
+cover document that aggregates everything else (Goods Received Note, invoice(s),
+purchase order, quotations / competitive bid analysis, approvals). Beyond
+checking each rule, RECONCILE the documents against one another and flag any
+mismatch:
+  - The amount on the voucher should reconcile with the invoice total and the
+    Purchase Order amount; flag material discrepancies.
+  - The vendor/payee on the voucher should match the invoice and the PO/award.
+  - For goods, a Goods Received Note (and, where required, a delivery note)
+    should confirm the items and quantities on the invoice were actually
+    received before payment.
+  - Required approvals/signatures for the threshold should be present on the
+    voucher (e.g. reviewing officer, DFOA authorization, ED approval).
+A rule whose required supporting document is simply absent from the bundle is
+"insufficient_evidence" (list exactly what's missing), not "pass".
+
 - Payment-level rules (categories: procurement, approvals, vendor, advance,
   retirement, documentation, general) are evaluated against the bundle
   as a whole. Return one RuleResult per such rule with
