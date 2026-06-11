@@ -1,20 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { Check, CircleDashed, Loader2, Lock, PenLine } from "lucide-react";
-import { addCheckNote, approveCheck } from "@/lib/api";
+import { Check, CircleDashed, Copy, Loader2, Lock, Mail } from "lucide-react";
+import { requestSignoff } from "@/lib/api";
 import type { ComplianceCheckResult } from "@/types";
 
 /**
- * <ApprovalChain> — the configurable, multi-stage sign-off for a check.
+ * <ApprovalChain> — the configurable, multi-stage, VERIFIED sign-off.
  *
- * The stages come from the rulebook's `approval_workflow` (e.g. for TA
- * Connect: Compliance Officer → Head of Finance → Executive Director).
- * Another org's policy can define a completely different chain — nothing
- * here is hardcoded. Each stage is signed in order; the final sign-off
- * marks the check approved. Sign-offs are recorded on the append-only
- * decision log (reusing the existing note + approve endpoints), so the
- * audit trail captures who signed which stage and when.
+ * Stages come from the rulebook's `approval_workflow` (e.g. TA Connect:
+ * Compliance Officer → Head of Finance → Executive Director); another org
+ * defines its own — nothing here is hardcoded.
+ *
+ * Sign-off is not a button anyone can click. For the current stage, the
+ * officer sends a request to the approver's email; DOCex emails them a
+ * unique, expiring, single-use magic link. Only the mailbox owner can open
+ * it and approve (or return the voucher for changes), and the sign-off is
+ * recorded with their email + timestamp + IP. This panel orchestrates the
+ * chain and shows who we're waiting on; the actual approval happens on the
+ * verified /approve/<token> page.
  */
 
 const MARKER = "Stage sign-off —";
@@ -43,9 +47,11 @@ export function ApprovalChain({
   workflow: string[];
   onUpdate: (updated: ComplianceCheckResult) => void;
 }) {
-  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState<{ stage: string; emailed: boolean; link: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   if (!workflow || workflow.length === 0) return null;
 
@@ -53,26 +59,24 @@ export function ApprovalChain({
   const nextIndex = workflow.findIndex((s) => !signed.has(s));
   const allDone = nextIndex === -1;
 
-  async function signOff(stage: string, isLast: boolean) {
+  async function sendRequest(stage: string) {
+    if (!email.trim()) return;
     setBusy(stage);
     setError(null);
     try {
-      const who = name.trim();
-      let updated = await addCheckNote(
-        check.payment_id,
-        `${MARKER} ${stage}${who ? `: ${who}` : ""}`,
-      );
-      if (isLast) {
-        // Final stage approves the check (frozen audit snapshot).
-        updated = await approveCheck(check.payment_id);
-      }
-      onUpdate(updated);
-      setName("");
+      const res = await requestSignoff(check.payment_id, stage, email.trim());
+      setSent({ stage, emailed: res.emailed, link: res.link });
+      setEmail("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not record the sign-off.");
+      setError(err instanceof Error ? err.message : "Could not send the request.");
     } finally {
       setBusy(null);
     }
+  }
+
+  function absoluteLink(link: string): string {
+    if (typeof window === "undefined") return link;
+    return link.startsWith("http") ? link : `${window.location.origin}${link}`;
   }
 
   return (
@@ -95,7 +99,6 @@ export function ApprovalChain({
         {workflow.map((stage, i) => {
           const isSigned = signed.has(stage);
           const isNext = i === nextIndex;
-          const isLast = i === workflow.length - 1;
           return (
             <li
               key={stage}
@@ -131,33 +134,36 @@ export function ApprovalChain({
                 <p className="text-sm font-medium text-gray-900">{stage}</p>
                 <p className="text-[11px] text-gray-500">
                   {isSigned
-                    ? "Signed off"
+                    ? "Verified sign-off recorded"
                     : isNext
-                      ? "Awaiting sign-off"
+                      ? sent?.stage === stage
+                        ? `Awaiting verified sign-off from the approver`
+                        : "Send a verified sign-off request"
                       : "Waiting for the previous stage"}
                 </p>
               </div>
 
-              {isNext && (
+              {isNext && sent?.stage !== stage && (
                 <div className="flex items-center gap-2">
                   <input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Your name (optional)"
-                    className="w-40 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="approver@org.com"
+                    className="w-48 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
                   />
                   <button
                     type="button"
-                    onClick={() => signOff(stage, isLast)}
-                    disabled={busy === stage}
+                    onClick={() => sendRequest(stage)}
+                    disabled={busy === stage || !email.trim()}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:opacity-50"
                   >
                     {busy === stage ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <PenLine className="h-3.5 w-3.5" />
+                      <Mail className="h-3.5 w-3.5" />
                     )}
-                    {isLast ? "Sign off & approve" : "Sign off"}
+                    Send request
                   </button>
                 </div>
               )}
@@ -170,10 +176,46 @@ export function ApprovalChain({
         })}
       </ol>
 
+      {sent && (
+        <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-xs text-emerald-800">
+          <p className="flex items-center gap-1.5 font-medium">
+            <Mail className="h-3.5 w-3.5" />
+            {sent.emailed
+              ? "Secure sign-off link emailed to the approver."
+              : "Sign-off link created (email not configured — share it manually)."}
+          </p>
+          <p className="mt-1 text-emerald-700/80">
+            Only the approver, from their inbox, can open it and sign off. Hit
+            Refresh once they&apos;ve actioned it.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              readOnly
+              value={absoluteLink(sent.link)}
+              className="min-w-0 flex-1 rounded border border-emerald-200 bg-white px-2 py-1 text-[11px] text-gray-600"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(absoluteLink(sent.link));
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              className="inline-flex shrink-0 items-center gap-1 rounded border border-emerald-200 bg-white px-2 py-1 text-[11px] font-medium text-emerald-700"
+            >
+              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {error && <p className="mt-3 text-xs text-rose-600">{error}</p>}
       <p className="mt-3 text-[11px] text-gray-400">
-        Stages come from this policy set&apos;s approval workflow. Each sign-off
-        is recorded on the audit trail; the final stage approves the voucher.
+        Sign-off is verified by email — DOCex sends each approver a unique,
+        expiring link; only the mailbox owner can approve. Every sign-off is
+        recorded with their email, timestamp and IP. The final stage approves
+        the voucher.
       </p>
     </div>
   );

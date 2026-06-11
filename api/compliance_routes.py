@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -26,7 +27,7 @@ from typing import Annotated, Literal, Optional
 
 import pdfplumber
 from docx import Document as DocxDocument
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 # Same sys.path hack the rest of api/ uses to import root-level modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -45,10 +46,13 @@ from models import (  # noqa: E402
 )
 from pydantic import BaseModel  # noqa: E402
 from notifications import (  # noqa: E402
+    _send_raw_email,
+    looks_like_email,
     send_check_notification,
     send_clarification_email,
     send_escalation_email,
 )
+from approval_tokens import make_token, verify_token  # noqa: E402
 from .schemas import (  # noqa: E402
     CheckListResponse,
     CheckSummary,
@@ -1043,3 +1047,188 @@ async def delete_check_endpoint(check_id: str) -> dict:
         )
     path.unlink()
     return {"deleted": check_id}
+
+
+# ─── Verified approval sign-off (email magic-link) ──────────────────────────
+#
+# A name field is not verification. Instead, DOCex emails each stage's
+# approver a unique, expiring, HMAC-signed link. Opening it from their inbox
+# proves control of that mailbox; the sign-off records their email, the
+# timestamp, and their IP on the audit trail. Microsoft 365 SSO is the
+# eventual upgrade; this is the no-login, audit-grade version.
+
+_SIGNOFF_MARKER = "Stage sign-off —"
+
+
+def _signed_stages(check: ComplianceCheckResult) -> set[str]:
+    out: set[str] = set()
+    for e in check.decision_log or []:
+        note = e.note or ""
+        i = note.find(_SIGNOFF_MARKER)
+        if i != -1:
+            stage = note[i + len(_SIGNOFF_MARKER):].split(":")[0].strip()
+            if stage:
+                out.add(stage)
+    return out
+
+
+def _workflow_for(check: ComplianceCheckResult) -> list[str]:
+    try:
+        rb = _load_rulebook(check.rulebook_id)
+        return rb.approval_workflow or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+class RequestSignoffRequest(BaseModel):
+    stage: str
+    approver_email: str
+
+
+@router.post("/checks/{check_id}/request-signoff")
+async def request_signoff(check_id: str, body: RequestSignoffRequest) -> dict:
+    """Email a stage's approver a unique, verified sign-off link.
+
+    Returns whether the email was sent and the link itself (so it can be
+    shown/copied when SMTP isn't configured, e.g. in a demo).
+    """
+    check = _load_check(check_id)
+    stage = body.stage.strip()
+    email = body.approver_email.strip()
+    if not stage:
+        raise HTTPException(status_code=422, detail="A stage is required.")
+    if not looks_like_email(email):
+        raise HTTPException(status_code=422, detail="A valid approver email is required.")
+
+    token = make_token(check_id, stage, email)
+    app_url = os.environ.get("APP_URL", "").rstrip("/")
+    link = f"{app_url}/approve/{token}" if app_url else f"/approve/{token}"
+
+    emailed = False
+    try:
+        subject = f"[DOCex] Sign-off needed — {check.payment_label}"
+        text = "\n".join([
+            f"You're asked to sign off as {stage} on payment voucher:",
+            f"  {check.payment_label}",
+            "",
+            "Open your unique, secure link to review and approve (or return it "
+            "for changes). The link is tied to your email address:",
+            link,
+            "",
+            "---",
+            "Automated from DOCex. Only you can act on this link.",
+        ])
+        emailed = _send_raw_email(email, subject, text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[DOCex] sign-off email to {email} failed: {exc}")
+
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="note_added",
+            timestamp=_now_iso(),
+            note=f"Sign-off requested from {email} for stage '{stage}'.",
+            notified_email=email if emailed else None,
+        ),
+    )
+    check.pending_with = email
+    _check_path(check_id).write_text(check.model_dump_json(indent=2))
+    return {"ok": True, "emailed": emailed, "link": link}
+
+
+@router.get("/approve/verify/{token}")
+async def approve_verify(token: str) -> dict:
+    """Public: validate an approval link and return a minimal voucher summary."""
+    try:
+        payload = verify_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    check = _load_check(payload["cid"])
+    workflow = _workflow_for(check)
+    signed = _signed_stages(check)
+    stage = payload["stage"]
+    return {
+        "check_id": check.payment_id,
+        "payment_label": check.payment_label,
+        "rulebook_name": check.rulebook_name,
+        "overall_verdict": check.overall_verdict,
+        "overall_summary": check.overall_summary,
+        "stage": stage,
+        "approver_email": payload["email"],
+        "workflow": workflow,
+        "signed_stages": sorted(signed),
+        "already_signed": stage in signed,
+        "is_final_stage": bool(workflow) and stage == workflow[-1],
+    }
+
+
+class ApproveActRequest(BaseModel):
+    action: Literal["approve", "return"]
+    note: Optional[str] = None
+
+
+@router.post("/approve/{token}")
+async def approve_act(token: str, body: ApproveActRequest, request: Request) -> dict:
+    """Public: record a verified sign-off (or a return-for-changes) from the
+    approver's unique link. Captures email + timestamp + IP on the audit trail."""
+    try:
+        payload = verify_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    check = _load_check(payload["cid"])
+    stage = payload["stage"]
+    email = payload["email"]
+    ip = request.client.host if request.client else "unknown"
+    now = _now_iso()
+    workflow = _workflow_for(check)
+    signed = _signed_stages(check)
+
+    if body.action == "approve":
+        if stage in signed:
+            raise HTTPException(status_code=409, detail="This stage has already been signed off.")
+        _append_decision_event(
+            check,
+            DecisionEvent(
+                type="note_added",
+                timestamp=now,
+                actor=email,
+                note=f"{_SIGNOFF_MARKER} {stage}: {email} (verified via email link · IP {ip})",
+            ),
+        )
+        # Final stage approves the whole voucher (frozen snapshot).
+        approved = False
+        new_signed = signed | {stage}
+        if workflow and all(s in new_signed for s in workflow):
+            check.approved = True
+            check.approved_at = now
+            check.pending_with = None
+            check.pending_question = None
+            _append_decision_event(
+                check,
+                DecisionEvent(
+                    type="approved",
+                    timestamp=now,
+                    actor=email,
+                    note=f"Voucher approved — final sign-off by {email} ({stage}).",
+                ),
+            )
+            approved = True
+        _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
+        return {"ok": True, "approved": approved, "stage": stage}
+
+    # action == "return"
+    reason = (body.note or "Returned for changes.").strip()
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="clarification_requested",
+            timestamp=now,
+            actor=email,
+            note=f"Returned for changes by {email} ({stage} · IP {ip}): {reason}",
+        ),
+    )
+    check.pending_with = None  # back to the originating officer to action
+    check.pending_question = reason
+    _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
+    return {"ok": True, "returned": True}

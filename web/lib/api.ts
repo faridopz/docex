@@ -1296,6 +1296,69 @@ export async function listPendingChecks(): Promise<CheckSummary[]> {
   return json.checks;
 }
 
+// ─── Verified approval sign-off (email magic-link) ──────────────────────────
+
+/** Email a stage's approver a unique, verified sign-off link. */
+export async function requestSignoff(
+  checkId: string,
+  stage: string,
+  approverEmail: string,
+): Promise<{ ok: boolean; emailed: boolean; link: string }> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/request-signoff`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, approver_email: approverEmail }),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
+export interface ApprovalTokenInfo {
+  check_id: string;
+  payment_label: string;
+  rulebook_name: string;
+  overall_verdict: "approved" | "flagged" | "blocked";
+  overall_summary: string;
+  stage: string;
+  approver_email: string;
+  workflow: string[];
+  signed_stages: string[];
+  already_signed: boolean;
+  is_final_stage: boolean;
+}
+
+/** Public: validate an approval link → voucher summary for the approve page. */
+export async function verifyApprovalToken(
+  token: string,
+): Promise<ApprovalTokenInfo> {
+  const res = await fetch(
+    `${BASE}/compliance/approve/verify/${encodeURIComponent(token)}`,
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<ApprovalTokenInfo>;
+}
+
+/** Public: record a verified sign-off or return-for-changes. */
+export async function submitApproval(
+  token: string,
+  action: "approve" | "return",
+  note?: string,
+): Promise<{ ok: boolean; approved?: boolean; returned?: boolean }> {
+  const res = await fetch(
+    `${BASE}/compliance/approve/${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, note }),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json();
+}
+
 // ─── Attendance Collections (native intake + self-check-in) ─────────────────
 
 const COLL_BASE = `${BASE}/agents/attendance-payment/collections`;
