@@ -207,6 +207,17 @@ applied_to_document = null, and missing_evidence listing what is missing
 - "flagged"  — at least one flag or insufficient_evidence, but no blocks.
 - "blocked"  — at least one block.
 
+## Writing the per-rule `reasoning` — be concise and decision-oriented
+Each rule's `reasoning` is ONE short, decisive sentence (aim for ≤ 20 words).
+Lead with the decision and the specific fact that drives it — not a recap of
+the rule. The officer should read it and know the next action instantly.
+  GOOD (block): "No third quotation attached — only 2 of the required 3."
+  GOOD (pass):  "PO #3391, invoice and GRN all reconcile at ₦2.9m."
+  BAD:          "This rule requires that for procurements in this threshold
+                 band, at least three quotations be obtained, and upon review
+                 of the documents provided it appears that..."
+Do not restate the rule text; the rule is shown next to your reasoning.
+
 ## Overall summary
 1-2 sentences for a busy officer. Lead with the bottom line ("Approved.",
 "Flagged for 2 issues.", "Blocked — vendor not pre-approved."), then the

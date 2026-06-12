@@ -98,9 +98,28 @@ export function VerdictScreen({
     return c;
   }, [result.results]);
 
+  const [showPassed, setShowPassed] = useState(false);
+
   // Split into payment-level vs receipt-level findings
   const paymentLevel = result.results.filter((r) => !r.applied_to_document);
   const receiptLevel = result.results.filter((r) => r.applied_to_document);
+
+  // Agentic ordering: surface what needs a decision (blocks, then missing
+  // info, then flags) and tuck away what already passed. The officer should
+  // see only what stands between this voucher and approval.
+  const SEV: Record<RuleVerdict, number> = {
+    block: 0,
+    insufficient_evidence: 1,
+    flag: 2,
+    pass: 3,
+    not_applicable: 4,
+  };
+  const needsAttention = paymentLevel
+    .filter((r) => ["block", "flag", "insufficient_evidence"].includes(r.verdict))
+    .sort((a, b) => SEV[a.verdict] - SEV[b.verdict]);
+  const passedPaymentLevel = paymentLevel.filter((r) =>
+    ["pass", "not_applicable"].includes(r.verdict),
+  );
 
   // Group receipt-level by filename
   const receiptGroups = useMemo(() => {
@@ -259,27 +278,68 @@ export function VerdictScreen({
         )}
       </div>
 
-      {/* Payment-level findings */}
+      {/* Payment-level findings — lead with what needs a decision */}
       {paymentLevel.length > 0 && (
         <section className="space-y-3">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-xl font-semibold text-gray-900">
-              Payment-level findings
-            </h2>
-            <span className="text-sm text-gray-500">
-              {paymentLevel.length}{" "}
-              {paymentLevel.length === 1 ? "rule" : "rules"} evaluated against the payment
-            </span>
-          </div>
-          <div className="space-y-3">
-            {paymentLevel.map((r, i) => (
-              <RuleResultCard
-                key={`pl-${i}`}
-                result={r}
-                rulesForLookup={rulesForLookup}
-              />
-            ))}
-          </div>
+          {needsAttention.length > 0 ? (
+            <>
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  Needs your decision
+                </h2>
+                <span className="text-sm text-gray-500">
+                  {needsAttention.length} of {paymentLevel.length} rules
+                </span>
+              </div>
+              <div className="space-y-3">
+                {needsAttention.map((r, i) => (
+                  <RuleResultCard
+                    key={`na-${i}`}
+                    result={r}
+                    rulesForLookup={rulesForLookup}
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm font-medium text-emerald-800">
+              <CheckCircle2 className="h-4 w-4" />
+              All {paymentLevel.length} payment-level rules satisfied — nothing
+              blocking approval.
+            </div>
+          )}
+
+          {/* Passed / N/A rules — collapsed so they don't bury the decision */}
+          {passedPaymentLevel.length > 0 && (
+            <div className="rounded-xl border border-gray-200 bg-white">
+              <button
+                type="button"
+                onClick={() => setShowPassed((v) => !v)}
+                className="flex w-full items-center justify-between px-4 py-2.5 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  {passedPaymentLevel.length} more rule
+                  {passedPaymentLevel.length === 1 ? "" : "s"} passed or not
+                  applicable
+                </span>
+                <span className="text-xs text-gray-400">
+                  {showPassed ? "Hide" : "Show"}
+                </span>
+              </button>
+              {showPassed && (
+                <div className="space-y-3 border-t border-gray-100 p-3">
+                  {passedPaymentLevel.map((r, i) => (
+                    <RuleResultCard
+                      key={`pp-${i}`}
+                      result={r}
+                      rulesForLookup={rulesForLookup}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 

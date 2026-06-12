@@ -154,11 +154,11 @@ export default function BulkCheckPage() {
           <div className="space-y-8">
             <div>
               <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-                Bulk compliance check
+                Bulk payment-voucher check
               </h1>
               <p className="mt-2 max-w-xl text-base text-gray-600">
-                Check a whole stack of payments against one policy set in a
-                single run. Each payment is checked independently and saved
+                Check a whole stack of payment vouchers against one policy set
+                in a single run. Each voucher is checked independently and saved
                 with its own audit trail; results come back grouped by verdict.
               </p>
             </div>
@@ -203,10 +203,10 @@ export default function BulkCheckPage() {
 
             {/* Payments */}
             <section className="space-y-3">
-              <SectionHeading n={2} title="Payments" />
+              <SectionHeading n={2} title="Payment vouchers" />
               <p className="text-sm text-gray-600">
-                Add one block per payment — a label and its documents (voucher
-                + invoice + receipts).
+                Add one block per voucher — a label and all its supporting
+                documents (GRN, invoice, PO, quotations, approvals).
               </p>
               <div className="space-y-3">
                 {rows.map((r, i) => (
@@ -249,9 +249,9 @@ export default function BulkCheckPage() {
             </section>
 
             <GuidanceCard title="One policy set per run">
-              Bulk runs check every payment against a single policy set. To
+              Bulk runs check every voucher against a single policy set. To
               apply several policy sets, run the bulk check once per set, or use
-              the single-payment check to pick multiple sets for one voucher.
+              the single voucher check to pick multiple sets for one voucher.
             </GuidanceCard>
 
             {error && <p className="text-sm text-rose-600">{error}</p>}
