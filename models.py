@@ -267,6 +267,13 @@ class DecisionEvent(BaseModel):
     # a delivery confirmation. Null when no email was sent (recipient was a
     # name not an address, or SMTP isn't configured).
     notified_email: Optional[str] = None
+    # ─── Provenance (audit-grade: who/where) ────────────────────────────
+    # `source` records HOW the action was taken — "in-app", "email-verified"
+    # (a magic-link sign-off), or "system" (e.g. the check ran). `ip` records
+    # WHERE it came from for verified actions. Together with actor + timestamp
+    # they give the who / what / when / where an auditor expects.
+    source: Optional[str] = None
+    ip: Optional[str] = None
 
 
 class ComplianceCheckBatchResult(BaseModel):

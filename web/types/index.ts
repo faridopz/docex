@@ -225,6 +225,24 @@ export interface DecisionEvent {
   // Sprint 2 — when an escalation/clarification was emailed to the
   // responsible party, the address it went to. Null if no email was sent.
   notified_email?: string | null;
+  // Audit-grade provenance: how the action was taken + where from.
+  source?: string | null; // "in-app" | "email-verified" | "system"
+  ip?: string | null;
+}
+
+export interface AuditLogRow {
+  timestamp: string | null;
+  check_id: string;
+  payment_label: string;
+  rulebook_name: string;
+  event: string;
+  actor: string | null;
+  detail: string | null;
+  rule: string | null;
+  signed_name: string | null;
+  notified_email: string | null;
+  source: string | null;
+  ip: string | null;
 }
 
 // Human-friendly labels + colour tokens for the timeline UI.

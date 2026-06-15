@@ -10,11 +10,17 @@ import {
   FileSearch,
   FileSpreadsheet,
   Loader2,
+  ScrollText,
   Stamp,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
-import { exportChecksListToExcel, listChecks } from "@/lib/api";
+import {
+  exportAuditLogToExcel,
+  exportChecksListToExcel,
+  getAuditLog,
+  listChecks,
+} from "@/lib/api";
 import {
   overallVerdictColor,
   overallVerdictDot,
@@ -70,6 +76,28 @@ export default function SavedChecksPage() {
   const [checks, setChecks] = useState<CheckSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+
+  async function handleExportAuditLog() {
+    setAuditBusy(true);
+    setAuditError(null);
+    try {
+      const rows = await getAuditLog();
+      if (rows.length === 0) {
+        setAuditError("No activity recorded yet — run or act on a check first.");
+        return;
+      }
+      const stamp = new Date().toISOString().slice(0, 10);
+      await exportAuditLogToExcel(rows, `docex-audit-log-${stamp}.xlsx`);
+    } catch (err) {
+      setAuditError(
+        err instanceof Error ? err.message : "Could not export the audit log.",
+      );
+    } finally {
+      setAuditBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +178,27 @@ export default function SavedChecksPage() {
                   Mark approved ones to build your audit-ready archive.
                 </span>
               </p>
+            </div>
+            <div className="flex flex-col items-end gap-1.5">
+              <button
+                type="button"
+                onClick={handleExportAuditLog}
+                disabled={auditBusy}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:border-brand-300 hover:text-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+                title="Export the full audit trail — every action on every voucher, who did it, when, and from where — as Excel"
+              >
+                {auditBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ScrollText className="h-4 w-4" />
+                )}
+                Export audit log
+              </button>
+              {auditError && (
+                <p className="max-w-[16rem] text-right text-xs text-amber-700">
+                  {auditError}
+                </p>
+              )}
             </div>
           </div>
 

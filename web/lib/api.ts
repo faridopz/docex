@@ -4,6 +4,7 @@ import type {
   AssistantBrief,
   AttendanceCollection,
   AttendanceCollectionSummary,
+  AuditLogRow,
   CollectedAttendee,
   PublicCollectionInfo,
   BankVerifyBatchResult,
@@ -628,7 +629,8 @@ export async function exportCheckAuditHistory(
 
   // Sheet 3 — Audit history (the decision log, chronological)
   const historyHeader = [
-    "#", "When", "Event", "By", "Detail", "Related rule", "Signed by", "Emailed to",
+    "#", "When", "Event", "By", "Source", "IP", "Detail", "Related rule",
+    "Signed by", "Emailed to",
   ];
   const log = check.decision_log ?? [];
   const historyRows = log.map((e, i) => [
@@ -636,16 +638,20 @@ export async function exportCheckAuditHistory(
     e.timestamp ?? "",
     EVENT_LABEL[e.type] ?? e.type,
     e.actor ?? "",
+    e.source ?? "",
+    e.ip ?? "",
     e.note ?? "",
     e.rule_description ?? "",
     e.signed_name ?? "",
     e.notified_email ?? "",
   ]);
   const historySheet = XLSX.utils.aoa_to_sheet(
-    historyRows.length ? [historyHeader, ...historyRows] : [historyHeader, ["—", "No recorded actions yet", "", "", "", "", "", ""]],
+    historyRows.length
+      ? [historyHeader, ...historyRows]
+      : [historyHeader, ["—", "No recorded actions yet", "", "", "", "", "", "", "", ""]],
   );
   historySheet["!cols"] = [
-    { wch: 4 }, { wch: 22 }, { wch: 22 }, { wch: 20 },
+    { wch: 4 }, { wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 16 },
     { wch: 60 }, { wch: 40 }, { wch: 20 }, { wch: 28 },
   ];
   historySheet["!freeze"] = { xSplit: 0, ySplit: 1 };
@@ -1294,6 +1300,85 @@ export async function listPendingChecks(): Promise<CheckSummary[]> {
   if (!res.ok) await throwFriendly(res);
   const json = (await res.json()) as { checks: CheckSummary[] };
   return json.checks;
+}
+
+// ─── Org-wide audit log ─────────────────────────────────────────────────────
+
+/** Every action across every voucher, newest first — the audit register. */
+export async function getAuditLog(): Promise<AuditLogRow[]> {
+  const res = await fetch(`${BASE}/compliance/audit-log`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<AuditLogRow[]>;
+}
+
+const _EVENT_LABEL: Record<string, string> = {
+  check_run: "Check ran",
+  note_added: "Note / sign-off",
+  rule_dismissed: "Flag dismissed",
+  rule_escalated: "Rule escalated",
+  clarification_requested: "Clarification / returned",
+  clarification_received: "Clarification received",
+  escalated: "Escalated",
+  approved: "Approved",
+  unapproved: "Approval revoked",
+};
+
+/** Export the org-wide audit log as a clean, auditor-ready Excel workbook. */
+export async function exportAuditLogToExcel(
+  rows: AuditLogRow[],
+  filename = "docex-audit-log.xlsx",
+): Promise<void> {
+  const XLSX = await import("xlsx");
+
+  const header = [
+    "Date",
+    "Time",
+    "Voucher",
+    "Policy set",
+    "Action",
+    "By (actor)",
+    "Source",
+    "IP",
+    "Detail",
+    "Related rule",
+    "Signed by",
+    "Emailed to",
+    "Voucher ID",
+  ];
+
+  const body = rows.map((r) => {
+    const d = r.timestamp ? new Date(r.timestamp) : null;
+    const date = d ? d.toLocaleDateString() : "";
+    const time = d ? d.toLocaleTimeString() : "";
+    return [
+      date,
+      time,
+      r.payment_label,
+      r.rulebook_name,
+      _EVENT_LABEL[r.event] ?? r.event,
+      r.actor ?? "",
+      r.source ?? "",
+      r.ip ?? "",
+      r.detail ?? "",
+      r.rule ?? "",
+      r.signed_name ?? "",
+      r.notified_email ?? "",
+      r.check_id,
+    ];
+  });
+
+  const sheet = XLSX.utils.aoa_to_sheet([header, ...body]);
+  sheet["!cols"] = header.map((h, i) => ({
+    wch: Math.min(
+      Math.max(h.length, ...body.map((row) => String(row[i] ?? "").length)) + 2,
+      55,
+    ),
+  }));
+  sheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet, "Audit log");
+  XLSX.writeFile(wb, filename);
 }
 
 // ─── Verified approval sign-off (email magic-link) ──────────────────────────

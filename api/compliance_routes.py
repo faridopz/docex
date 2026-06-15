@@ -649,6 +649,51 @@ async def list_checks_endpoint() -> CheckListResponse:
     )
 
 
+class AuditLogRow(BaseModel):
+    """One line of the org-wide audit log — a single action on a voucher."""
+    timestamp: Optional[str] = None
+    check_id: str
+    payment_label: str
+    rulebook_name: str
+    event: str                       # raw event type
+    actor: Optional[str] = None      # who
+    detail: Optional[str] = None     # why / what (note)
+    rule: Optional[str] = None       # related rule, if any
+    signed_name: Optional[str] = None
+    notified_email: Optional[str] = None
+    source: Optional[str] = None     # in-app / email-verified / system
+    ip: Optional[str] = None         # where
+
+
+@router.get("/audit-log", response_model=list[AuditLogRow])
+async def audit_log_endpoint() -> list[AuditLogRow]:
+    """The org-wide audit log: every action across every voucher, newest
+    first. One clean, chronological register an internal auditor can read or
+    export — who did what, when, from where, on which voucher.
+    """
+    rows: list[AuditLogRow] = []
+    for c in _list_checks():
+        for e in c.decision_log or []:
+            rows.append(
+                AuditLogRow(
+                    timestamp=e.timestamp,
+                    check_id=c.payment_id,
+                    payment_label=c.payment_label,
+                    rulebook_name=c.rulebook_name,
+                    event=e.type,
+                    actor=e.actor,
+                    detail=e.note,
+                    rule=e.rule_description,
+                    signed_name=e.signed_name,
+                    notified_email=e.notified_email,
+                    source=e.source,
+                    ip=e.ip,
+                )
+            )
+    rows.sort(key=lambda r: r.timestamp or "", reverse=True)
+    return rows
+
+
 @router.get("/checks/{check_id}", response_model=ComplianceCheckResult)
 async def get_check_endpoint(check_id: str) -> ComplianceCheckResult:
     """Fetch a single check by ID — the stable URL for auditors."""
@@ -1193,7 +1238,9 @@ async def approve_act(token: str, body: ApproveActRequest, request: Request) -> 
                 type="note_added",
                 timestamp=now,
                 actor=email,
-                note=f"{_SIGNOFF_MARKER} {stage}: {email} (verified via email link · IP {ip})",
+                note=f"{_SIGNOFF_MARKER} {stage}: {email}",
+                source="email-verified",
+                ip=ip,
             ),
         )
         # Final stage approves the whole voucher (frozen snapshot).
@@ -1211,6 +1258,8 @@ async def approve_act(token: str, body: ApproveActRequest, request: Request) -> 
                     timestamp=now,
                     actor=email,
                     note=f"Voucher approved — final sign-off by {email} ({stage}).",
+                    source="email-verified",
+                    ip=ip,
                 ),
             )
             approved = True
@@ -1225,7 +1274,9 @@ async def approve_act(token: str, body: ApproveActRequest, request: Request) -> 
             type="clarification_requested",
             timestamp=now,
             actor=email,
-            note=f"Returned for changes by {email} ({stage} · IP {ip}): {reason}",
+            note=f"Returned for changes ({stage}): {reason}",
+            source="email-verified",
+            ip=ip,
         ),
     )
     check.pending_with = None  # back to the originating officer to action
