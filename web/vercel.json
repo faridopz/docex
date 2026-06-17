@@ -4,5 +4,13 @@
   "devCommand": "next dev --port 3000",
   "installCommand": "npm install",
   "framework": "nextjs",
-  "regions": ["fra1"]
+  "regions": ["fra1"],
+  "env": {
+    "NEXT_PUBLIC_API_URL": "https://docex-production-e070.up.railway.app"
+  },
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_API_URL": "https://docex-production-e070.up.railway.app"
+    }
+  }
 }
