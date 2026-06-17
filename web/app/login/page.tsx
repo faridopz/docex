@@ -1,0 +1,128 @@
+"use client";
+
+import { useEffect, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { Loader2, Lock, ShieldCheck } from "lucide-react";
+import { useAuth, DEMO_LOGIN_HINT } from "@/lib/auth";
+
+/**
+ * /login — the demo front door. Validates against the client-side demo
+ * accounts in lib/auth.tsx and redirects to /home on success. If a user is
+ * already signed in, bounce them straight to /home.
+ */
+export default function LoginPage() {
+  const router = useRouter();
+  const { signIn, user, ready } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (ready && user) router.replace("/home");
+  }, [ready, user, router]);
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    const res = signIn(email, password);
+    if (!res.ok) {
+      setError(res.error ?? "Sign in failed.");
+      setBusy(false);
+      return;
+    }
+    router.push("/home");
+  }
+
+  function fillDemo() {
+    setEmail(DEMO_LOGIN_HINT.email);
+    setPassword(DEMO_LOGIN_HINT.password);
+    setError(null);
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[#fafaf7] px-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          <span className="text-2xl font-bold tracking-tight text-brand-600">
+            DOCex
+          </span>
+          <p className="mt-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+            Audit-grade compliance
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex items-center gap-2">
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
+              <Lock className="h-4 w-4" />
+            </span>
+            <div>
+              <h1 className="text-base font-semibold text-gray-900">Sign in</h1>
+              <p className="text-xs text-gray-500">Enter your demo credentials</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Email
+              </label>
+              <input
+                type="email"
+                autoComplete="username"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@org.com"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Password
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                required
+              />
+            </div>
+
+            {error && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              Sign in
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={fillDemo}
+            className="mt-3 w-full rounded-lg border border-dashed border-gray-300 px-4 py-2 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
+          >
+            Use demo account
+          </button>
+        </div>
+
+        <p className="mt-4 text-center text-[11px] text-gray-400">
+          Demo environment · access is shared, not per-user
+        </p>
+      </div>
+    </div>
+  );
+}

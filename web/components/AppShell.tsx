@@ -1,18 +1,22 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
   CalendarCheck,
   FileSearch,
   Landmark,
   Layers,
+  Loader2,
+  LogOut,
   ScrollText,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth";
 
 /**
  * AppShell — the canonical in-product layout: a persistent left sidebar +
@@ -73,6 +77,25 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname() ?? "";
+  const router = useRouter();
+  const { ready, user, signOut } = useAuth();
+
+  // Demo gate: every page rendered inside AppShell requires a signed-in demo
+  // user. Public pages (landing, tour, /approve, /checkin) don't use AppShell,
+  // so they stay open. We wait for `ready` so we don't redirect on first paint
+  // before localStorage has been read.
+  useEffect(() => {
+    if (ready && !user) router.replace("/login");
+  }, [ready, user, router]);
+
+  if (!ready || !user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#fafaf7] text-sm text-gray-500">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        Loading…
+      </div>
+    );
+  }
 
   function isActive(item: NavItem): boolean {
     return active ? item.section === active : item.match.some((m) => pathname === m || pathname.startsWith(m + "/"));
@@ -130,6 +153,25 @@ export function AppShell({
             <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
             Audit log
           </Link>
+
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-lg px-2.5 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-gray-700">{user.name}</p>
+              <p className="truncate text-[11px] text-gray-400">{user.email}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                signOut();
+                router.replace("/login");
+              }}
+              title="Sign out"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition hover:bg-gray-50 hover:text-gray-900"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              Sign out
+            </button>
+          </div>
         </div>
       </aside>
 
