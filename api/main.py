@@ -383,7 +383,19 @@ async def extract_batch_endpoint(
 
 # ─── Follow-up note drafting ───────────────────────────────────────────────
 
-_followup_client = anthropic.Anthropic()
+# Lazily constructed so the backend boots even when ANTHROPIC_API_KEY is
+# missing/invalid. Constructing anthropic.Anthropic() at import time would
+# abort the whole app on startup (uvicorn never serves -> every feature shows
+# "Failed to fetch"). We only build the client the first time a follow-up note
+# is actually drafted, and surface any key error to that one endpoint instead.
+_followup_client: "anthropic.Anthropic | None" = None
+
+
+def _get_followup_client() -> "anthropic.Anthropic":
+    global _followup_client
+    if _followup_client is None:
+        _followup_client = anthropic.Anthropic()
+    return _followup_client
 
 
 def _build_followup_system(template_id: Optional[str]) -> str:
@@ -486,7 +498,7 @@ async def draft_followups(body: FollowupRequest) -> FollowupResponse:
         )
 
         try:
-            response = _followup_client.messages.create(
+            response = _get_followup_client().messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=400,
                 system=system_prompt,
