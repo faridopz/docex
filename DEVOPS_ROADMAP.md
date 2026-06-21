@@ -267,3 +267,8 @@ revisit. This becomes your study guide and interview prep.
   Decision: AWS will fully replace Vercel + Railway.
   TODO still in Module 1: shrink the 851MB web image via Next.js
   standalone output.
+- 2026-06-21 — MODULE 1 COMPLETE. Enabled Next.js standalone output +
+  rewrote runner stage → web image dropped from 851MB to a fraction.
+  /verify confirmed working from the container. Learned atomic commits
+  and cleared a stale git HEAD.lock along the way.
+- Next: Module 2 — CI/CD with GitHub Actions.

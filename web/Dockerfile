@@ -30,23 +30,25 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Tells Next.js and its dependencies to run in production mode (faster,
-# no dev-only checks).
+# Production mode: faster, skips dev-only checks.
 ENV NODE_ENV=production
+# The standalone server reads these. HOSTNAME=0.0.0.0 binds to all network
+# interfaces so the container is reachable from outside (not just localhost
+# inside the container).
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-# Copy ONLY what's needed to run, pulled FROM the builder stage:
-#   - node_modules : the installed dependencies
-#   - .next        : the compiled application
-#   - public       : static assets (images, etc.)
-#   - the config + manifest so `npm start` works
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/.next ./.next
+# Standalone output gives us a minimal self-contained server. We copy three
+# things FROM the builder:
+#   - .next/standalone : the trimmed server + only the deps it actually needs
+#   - .next/static     : compiled JS/CSS (standalone does NOT bundle these)
+#   - public           : static assets like images (also not auto-included)
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/next.config.mjs ./next.config.mjs
 
-# Document that this container listens on port 3000 (Next.js default).
 EXPOSE 3000
 
-# The command that runs when the container starts: serve the built app.
-CMD ["npm", "start"]
+# Standalone emits a plain Node entrypoint (server.js) — run it directly.
+# No npm, no next CLI needed in the final image.
+CMD ["node", "server.js"]
