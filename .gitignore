@@ -34,6 +34,9 @@ analytics/*
 # image so first-time users see something in their library on Day 1.
 !rulebooks/sample-ngo-procurement.json
 
+# Logs — runtime log files are noise, never source.
+*.log
+
 # OS
 .DS_Store
 Thumbs.db
