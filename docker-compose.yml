@@ -15,10 +15,15 @@ services:
       - .:/app
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Use Python (always present in this image) instead of curl (which is
+      # NOT installed). The check passes only if /health returns HTTP 200;
+      # urlopen raises on any error, which Docker reads as "unhealthy".
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
+      # Give the API time to boot before the first check counts against it.
+      start_period: 15s
 
   # ── Next.js frontend ────────────────────────────────────────────────────────
   web:

@@ -1,0 +1,13 @@
+# Files NOT to send into the Docker build.
+#
+# When you run `docker build`, Docker copies the whole folder (the "build
+# context") to the daemon. We exclude things that are huge, machine-specific,
+# or that the build regenerates anyway. This keeps builds fast and avoids
+# accidentally baking your local node_modules (built for macOS) into a Linux
+# image — a classic "works on my machine" bug.
+
+node_modules
+.next
+npm-debug.log
+.env.local
+.DS_Store
