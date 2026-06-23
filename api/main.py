@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -126,12 +128,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# GZip compression — shrinks JSON responses ~60-80% on payloads over 1KB.
-# Cost is a tiny CPU bump on the API; benefit is faster page loads everywhere
-# the frontend hits a list endpoint (Bank Verify batches, attendance runs,
-# rate cards, diagnostic reports). FastAPI's stock GZipMiddleware handles
-# the Accept-Encoding negotiation correctly.
+# GZip compression is registered LATER (just after the request-id middleware
+# below) — on purpose. Starlette applies the last-added middleware OUTERMOST,
+# and GZip must be outermost: Starlette's BaseHTTPMiddleware (created by
+# @app.middleware("http")) breaks when it wraps GZip's streamed/compressed
+# response, which was the cause of the 500 on /openapi.json. See below.
+
+# Request-ID tracing — give every request a stable ID and log a one-line
+# summary (method, path, status, duration). When a customer reports "it broke
+# at 2:14pm", the X-Request-ID in their browser's network tab maps straight to
+# a line in the Railway logs. Honours an inbound X-Request-ID if a proxy set
+# one; otherwise generates a short uuid. Pure observability — no behaviour
+# change to any endpoint.
+_access_log = logging.getLogger("docex.access")
+if not _access_log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    _access_log.addHandler(_h)
+    _access_log.setLevel(logging.INFO)
+
+
+@app.middleware("http")
+async def request_id_middleware(request, call_next):
+    rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = (time.perf_counter() - start) * 1000
+        _access_log.exception(
+            "rid=%s %s %s -> EXCEPTION (%.0fms)",
+            rid, request.method, request.url.path, elapsed,
+        )
+        raise
+    elapsed = (time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = rid
+    _access_log.info(
+        "rid=%s %s %s -> %s (%.0fms)",
+        rid, request.method, request.url.path, response.status_code, elapsed,
+    )
+    return response
+
+
+# GZip compression — registered HERE (after the tracing middleware above) so it
+# becomes the OUTERMOST middleware layer. BaseHTTPMiddleware must sit INSIDE
+# GZip, never outside it, or the compressed/streamed response 500s (this was
+# the /openapi.json bug). Shrinks JSON responses ~60-80% on payloads over 1KB.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.
