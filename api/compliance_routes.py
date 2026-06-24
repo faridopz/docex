@@ -53,6 +53,7 @@ from notifications import (  # noqa: E402
     send_escalation_email,
 )
 from approval_tokens import make_token, verify_token  # noqa: E402
+from approval_webhook import emit_approval_request, verify_callback_secret  # noqa: E402
 from .schemas import (  # noqa: E402
     CheckListResponse,
     CheckSummary,
@@ -1125,6 +1126,82 @@ def _workflow_for(check: ComplianceCheckResult) -> list[str]:
         return []
 
 
+def _apply_signoff(
+    check: ComplianceCheckResult,
+    *,
+    stage: str,
+    actor: str,
+    action: Literal["approve", "return"],
+    note: Optional[str],
+    source: str,
+    ip: str,
+) -> dict:
+    """Record a verified sign-off (or return-for-changes) and advance the
+    workflow. THE single place sign-offs are applied — shared by the email
+    magic-link and any external transport (Power Automate / webhook), so every
+    channel converges on one audit representation. Persists the check.
+    """
+    now = _now_iso()
+    workflow = _workflow_for(check)
+    signed = _signed_stages(check)
+
+    if action == "approve":
+        if stage in signed:
+            raise HTTPException(
+                status_code=409, detail="This stage has already been signed off."
+            )
+        _append_decision_event(
+            check,
+            DecisionEvent(
+                type="note_added",
+                timestamp=now,
+                actor=actor,
+                note=f"{_SIGNOFF_MARKER} {stage}: {actor}",
+                source=source,
+                ip=ip,
+            ),
+        )
+        approved = False
+        new_signed = signed | {stage}
+        if workflow and all(s in new_signed for s in workflow):
+            check.approved = True
+            check.approved_at = now
+            check.pending_with = None
+            check.pending_question = None
+            _append_decision_event(
+                check,
+                DecisionEvent(
+                    type="approved",
+                    timestamp=now,
+                    actor=actor,
+                    note=f"Voucher approved — final sign-off by {actor} ({stage}).",
+                    source=source,
+                    ip=ip,
+                ),
+            )
+            approved = True
+        _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
+        return {"ok": True, "approved": approved, "stage": stage}
+
+    # action == "return"
+    reason = (note or "Returned for changes.").strip()
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="clarification_requested",
+            timestamp=now,
+            actor=actor,
+            note=f"Returned for changes ({stage}): {reason}",
+            source=source,
+            ip=ip,
+        ),
+    )
+    check.pending_with = None  # back to the originating officer to action
+    check.pending_question = reason
+    _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
+    return {"ok": True, "returned": True}
+
+
 class RequestSignoffRequest(BaseModel):
     stage: str
     approver_email: str
@@ -1148,6 +1225,24 @@ async def request_signoff(check_id: str, body: RequestSignoffRequest) -> dict:
     token = make_token(check_id, stage, email)
     app_url = os.environ.get("APP_URL", "").rstrip("/")
     link = f"{app_url}/approve/{token}" if app_url else f"/approve/{token}"
+
+    # Org-agnostic transport: if an external workflow engine is wired up
+    # (APPROVAL_WEBHOOK_URL set), route this sign-off request to it too. The
+    # engine (Power Automate / Zapier / Teams flow) surfaces the approval to the
+    # approver and POSTs the outcome back to /approve/callback. Inert + harmless
+    # if unconfigured — the magic-link email below remains the fallback.
+    webhook_sent = emit_approval_request(
+        {
+            "check_id": check_id,
+            "stage": stage,
+            "approver_email": email,
+            "payment_label": check.payment_label,
+            "rulebook_name": check.rulebook_name,
+            "overall_verdict": check.overall_verdict,
+            "summary": check.overall_summary,
+            "deep_link": link,
+        }
+    )
 
     emailed = False
     try:
@@ -1178,7 +1273,7 @@ async def request_signoff(check_id: str, body: RequestSignoffRequest) -> dict:
     )
     check.pending_with = email
     _check_path(check_id).write_text(check.model_dump_json(indent=2))
-    return {"ok": True, "emailed": emailed, "link": link}
+    return {"ok": True, "emailed": emailed, "webhook": webhook_sent, "link": link}
 
 
 @router.get("/approve/verify/{token}")
@@ -1225,61 +1320,60 @@ async def approve_act(token: str, body: ApproveActRequest, request: Request) -> 
     stage = payload["stage"]
     email = payload["email"]
     ip = request.client.host if request.client else "unknown"
-    now = _now_iso()
-    workflow = _workflow_for(check)
-    signed = _signed_stages(check)
-
-    if body.action == "approve":
-        if stage in signed:
-            raise HTTPException(status_code=409, detail="This stage has already been signed off.")
-        _append_decision_event(
-            check,
-            DecisionEvent(
-                type="note_added",
-                timestamp=now,
-                actor=email,
-                note=f"{_SIGNOFF_MARKER} {stage}: {email}",
-                source="email-verified",
-                ip=ip,
-            ),
-        )
-        # Final stage approves the whole voucher (frozen snapshot).
-        approved = False
-        new_signed = signed | {stage}
-        if workflow and all(s in new_signed for s in workflow):
-            check.approved = True
-            check.approved_at = now
-            check.pending_with = None
-            check.pending_question = None
-            _append_decision_event(
-                check,
-                DecisionEvent(
-                    type="approved",
-                    timestamp=now,
-                    actor=email,
-                    note=f"Voucher approved — final sign-off by {email} ({stage}).",
-                    source="email-verified",
-                    ip=ip,
-                ),
-            )
-            approved = True
-        _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
-        return {"ok": True, "approved": approved, "stage": stage}
-
-    # action == "return"
-    reason = (body.note or "Returned for changes.").strip()
-    _append_decision_event(
+    return _apply_signoff(
         check,
-        DecisionEvent(
-            type="clarification_requested",
-            timestamp=now,
-            actor=email,
-            note=f"Returned for changes ({stage}): {reason}",
-            source="email-verified",
-            ip=ip,
-        ),
+        stage=stage,
+        actor=email,
+        action=body.action,
+        note=body.note,
+        source="email-verified",
+        ip=ip,
     )
-    check.pending_with = None  # back to the originating officer to action
-    check.pending_question = reason
-    _check_path(check.payment_id).write_text(check.model_dump_json(indent=2))
-    return {"ok": True, "returned": True}
+
+
+class ApprovalCallbackRequest(BaseModel):
+    """Normalized result posted back by an external workflow engine (Power
+    Automate, Zapier, n8n, a Teams/Slack flow…) after an approver acts."""
+    check_id: str
+    stage: str
+    outcome: Literal["approve", "approved", "reject", "rejected", "return", "returned"]
+    responder: Optional[str] = None
+    comments: Optional[str] = None
+    source: Optional[str] = None  # e.g. "power-automate", "slack"
+    secret: Optional[str] = None  # fallback if header can't be set
+
+
+@router.post("/approval-callback")
+async def approve_callback(body: ApprovalCallbackRequest, request: Request) -> dict:
+    """Public, secret-gated: accept a sign-off decision from an external
+    workflow engine and apply it through the same path as the magic-link.
+
+    Auth: shared secret via the ``X-DOCex-Secret`` header (preferred) or the
+    ``secret`` body field. Fail-closed — rejected unless APPROVAL_CALLBACK_SECRET
+    is configured and matches.
+    """
+    provided = request.headers.get("X-DOCex-Secret") or body.secret or ""
+    if not verify_callback_secret(provided):
+        raise HTTPException(status_code=401, detail="Invalid or missing approval callback secret.")
+
+    check = _load_check(body.check_id)
+    workflow = _workflow_for(check)
+    if workflow and body.stage not in workflow:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Stage '{body.stage}' is not in this voucher's approval workflow.",
+        )
+    ip = request.client.host if request.client else "webhook"
+    actor = (body.responder or "external approver").strip()
+    action: Literal["approve", "return"] = (
+        "approve" if body.outcome in ("approve", "approved") else "return"
+    )
+    return _apply_signoff(
+        check,
+        stage=body.stage,
+        actor=actor,
+        action=action,
+        note=body.comments,
+        source=(body.source or "power-automate").strip(),
+        ip=ip,
+    )
