@@ -32,7 +32,7 @@ import type {
 import { assignBucket } from "@/lib/buckets";
 import { throwFriendly } from "@/lib/errors";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const BASE = "https://docex-production-e070.up.railway.app";
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 
