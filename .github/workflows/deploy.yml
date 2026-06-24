@@ -1,0 +1,59 @@
+# DOCex Continuous Deployment.
+#
+# On every push to demo-release: build both images, push them to ECR, and roll
+# out the two ECS services — no human, no stored AWS keys (auth via OIDC).
+#
+# If a build fails, the job stops before deploying — broken code never ships.
+
+name: Deploy
+
+on:
+  push:
+    branches: [demo-release]
+
+# Required for OIDC: lets the job request a short-lived token to assume the role.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  REGISTRY: 656732270414.dkr.ecr.eu-west-1.amazonaws.com
+  # The API's public URL, baked into the frontend at build time.
+  API_URL: http://docex-alb-744821230.eu-west-1.elb.amazonaws.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Exchange GitHub's OIDC token for short-lived AWS credentials by
+      # assuming the deploy role. No secrets stored anywhere.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::656732270414:role/docexGithubDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push API image
+        run: |
+          docker build -f api/Dockerfile -t $REGISTRY/docex-api:latest .
+          docker push $REGISTRY/docex-api:latest
+
+      - name: Build & push web image
+        run: |
+          docker build -t $REGISTRY/docex-web:latest \
+            --build-arg NEXT_PUBLIC_API_URL=$API_URL ./web
+          docker push $REGISTRY/docex-web:latest
+
+      - name: Roll out ECS services
+        run: |
+          aws ecs update-service --cluster docex-cluster --service docex-api \
+            --force-new-deployment --region $AWS_REGION
+          aws ecs update-service --cluster docex-cluster --service docex-web \
+            --force-new-deployment --region $AWS_REGION

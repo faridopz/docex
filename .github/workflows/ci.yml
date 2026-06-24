@@ -12,10 +12,10 @@
 name: CI
 
 # WHEN this pipeline runs (the "triggers").
+# Pull requests only — verify the build before merge. Pushes to demo-release
+# are handled by deploy.yml (which builds, pushes to ECR, and rolls out ECS).
 on:
-  push:
-    branches: [demo-release, main]   # runs when you push to these branches
-  pull_request:                       # runs on every PR, before you merge
+  pull_request:
 
 # A workflow is made of one or more JOBS. Jobs run in parallel by default,
 # each on its own fresh virtual machine ("runner").
