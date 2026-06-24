@@ -1,0 +1,7 @@
+VPC_ID=vpc-03d9b61430e45d4d7
+SUBNETS_CSV=subnet-085ccfd99e2884bd6,subnet-06429b957657d0c5f,subnet-0c81ba31cb3d572a8
+ALB_SG=sg-09f643b04d530d2ed
+API_SG=sg-00aee2da4acb27a2c
+ALB_ARN=arn:aws:elasticloadbalancing:eu-west-1:656732270414:loadbalancer/app/docex-alb/89c3c38a06b4e257
+TG_ARN=arn:aws:elasticloadbalancing:eu-west-1:656732270414:targetgroup/docex-api-tg/1a530f773c049225
+ALB_DNS=docex-alb-744821230.eu-west-1.elb.amazonaws.com

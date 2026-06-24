@@ -271,4 +271,53 @@ revisit. This becomes your study guide and interview prep.
   rewrote runner stage → web image dropped from 851MB to a fraction.
   /verify confirmed working from the container. Learned atomic commits
   and cleared a stale git HEAD.lock along the way.
-- Next: Module 2 — CI/CD with GitHub Actions.
+- 2026-06-21 — Module 2 underway: wrote .github/workflows/ci.yml. On every
+  push to demo-release, GitHub builds BOTH images on clean runners.
+  First run (CI #1) went GREEN in 1m52s. Also: re-pointed origin remote
+  after repo rename, ignored *.log. CI (the "build & verify" half) is done.
+  The CD half (auto-deploy) + pushing images to a registry both need an
+  AWS home — so we pivot to Module 3 next.
+- Next: Module 3 — AWS account setup + fundamentals (CP cert).
+- 2026-06-22 — Module 3 hands-on DONE: AWS account on Free Plan; root MFA;
+  zero-spend budget; IAM admin user (farid-admin) in Admins group w/
+  AdministratorAccess + MFA; AWS CLI installed & configured (region
+  eu-west-1). Verified with `aws sts get-caller-identity`.
+  Real lessons hit & fixed: IAM deny-by-default (had to fix perms as root),
+  rotated an exposed access key, and a clock-skew SignatureDoesNotMatch.
+  Account ID: 656732270414. Still TODO in Mod 3: CP cert study.
+- Next: Module 4 — push images to ECR, then run on ECS Fargate.
+- 2026-06-23 — Module 4 progress: pushed both images to ECR; deployed the
+  API to ECS Fargate behind an ALB (security groups: ALB open on :80,
+  API only reachable from ALB on :8000), secret injected from Secrets
+  Manager via a least-privilege execution role. API is LIVE:
+  http://docex-alb-744821230.eu-west-1.elb.amazonaws.com/health -> 200.
+  Used `aws logs tail` to read production CloudWatch logs (real debugging).
+  KNOWN APP BUG (not infra): GET /openapi.json 500s due to a
+  BaseHTTPMiddleware + GZipMiddleware interaction in api/main.py. /docs
+  page loads but can't fetch its schema. Real endpoints work. Logged for
+  later; deployment itself is proven correct.
+- 2026-06-23 — Fixed the /openapi.json 500 properly. Root cause was NOT the
+  middleware (a first guess off a truncated traceback) but a missing
+  `Optional` import in api/knowledge_routes.py — invisible until schema-gen
+  because `from __future__ import annotations` defers type resolution.
+  Lesson: read the FULL traceback's bottom line before fixing; reverted the
+  bad guess to keep the diff surgical. Shipped via rebuild->push->ECS
+  force-new-deployment (zero-downtime rolling deploy). ALB /openapi.json now
+  200. THE API IS FULLY LIVE AND HEALTHY ON AWS.
+  Learned the core loop: change -> verify locally -> commit -> build -> push
+  to ECR -> roll out -> verify in prod.
+- 2026-06-23 — FRONTEND DEPLOYED. Added a NEXT_PUBLIC_API_URL build-arg to
+  web/Dockerfile (NEXT_PUBLIC_* is baked at build time), rebuilt + pushed the
+  web image with the API's ALB URL compiled in, deployed docex-web on Fargate
+  behind its own ALB (deploy/create-web-service.sh). Fixed CORS by setting
+  ALLOWED_ORIGINS on the API (task def rev 3) to the web ALB origin and
+  redeploying — taught that config changes are versioned + rolled out like
+  code.
+  *** DOCex IS FULLY LIVE ON AWS, FRONT TO BACK ***
+  Web:  http://docex-web-alb-926754058.eu-west-1.elb.amazonaws.com
+  API:  http://docex-alb-744821230.eu-west-1.elb.amazonaws.com
+- Module 4 core is DONE. Remaining polish: custom domain + HTTPS/TLS (ACM +
+  Route 53), and cost-awareness/teardown. Then Module 5 redoes ALL of this
+  as Terraform (IaC).
+- NOTE: 2 ALBs + 2 Fargate tasks now running = burning Free-Plan credits.
+  Fine for now; can tear down between sessions.

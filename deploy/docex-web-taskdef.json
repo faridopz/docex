@@ -1,0 +1,26 @@
+{
+  "family": "docex-web",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::656732270414:role/docexEcsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "docex-web",
+      "image": "656732270414.dkr.ecr.eu-west-1.amazonaws.com/docex-web:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 3000, "protocol": "tcp" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/docex-web",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "family": "docex-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::656732270414:role/docexEcsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "docex-api",
+      "image": "656732270414.dkr.ecr.eu-west-1.amazonaws.com/docex-api:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "PORT", "value": "8000" },
+        { "name": "ALLOWED_ORIGINS", "value": "http://docex-web-alb-926754058.eu-west-1.elb.amazonaws.com" }
+      ],
+      "secrets": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:656732270414:secret:docex/anthropic-api-key-5lKZ9n"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/docex-api",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

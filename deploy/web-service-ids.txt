@@ -1,0 +1,5 @@
+WEB_ALB_SG=sg-0b16d990fe20d6b06
+WEB_SG=sg-03aa165787191c72e
+WEB_ALB_ARN=arn:aws:elasticloadbalancing:eu-west-1:656732270414:loadbalancer/app/docex-web-alb/c9561b75a72a645e
+WEB_TG_ARN=arn:aws:elasticloadbalancing:eu-west-1:656732270414:targetgroup/docex-web-tg/301f4eb5059b3f7e
+WEB_ALB_DNS=docex-web-alb-926754058.eu-west-1.elb.amazonaws.com

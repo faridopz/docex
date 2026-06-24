@@ -23,6 +23,13 @@ RUN npm ci
 
 # Now copy the rest of the source and build it.
 COPY . .
+
+# NEXT_PUBLIC_* values are inlined into the compiled JS at BUILD time, not read
+# at runtime — so the API URL must be supplied here, when we build. Pass it with
+# --build-arg NEXT_PUBLIC_API_URL=<url>; defaults to localhost for local dev.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 RUN npm run build
 
 # ---- Stage 2: run the app -------------------------------------------------
