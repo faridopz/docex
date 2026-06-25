@@ -1,0 +1,16 @@
+# Terraform working files that must NEVER be committed.
+
+# Downloaded provider plugins (large, machine-specific).
+.terraform/
+.terraform.lock.hcl
+
+# State files — these map your config to real resources and can contain
+# sensitive values (passwords, keys). They are NOT source; treat as secret.
+# (Later we move state to a remote, shared backend instead of local files.)
+*.tfstate
+*.tfstate.*
+
+# Saved plan files and any local variable files with real values.
+*.tfplan
+*.auto.tfvars
+terraform.tfvars
