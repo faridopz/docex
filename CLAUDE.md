@@ -63,6 +63,34 @@ BatchExtractionResult: total, succeeded, failed, applicants[]
 - AI model: claude-sonnet-4-6
 - Excel export: SheetJS (xlsx) on frontend
 
+## Infrastructure & Deployment (CURRENT — read before any deploy/infra change)
+DOCex is LIVE on AWS (region eu-west-1), not Railway/Vercel. (A Vercel demo
+still exists, but AWS is the real deployment.)
+- **Runs on:** AWS ECS Fargate — two services, `docex-web` (Next.js) and
+  `docex-api` (FastAPI), each behind its own Application Load Balancer, inside
+  the default VPC. Images live in ECR; logs in CloudWatch.
+- **CI/CD:** GitHub Actions. A push to `demo-release` auto-builds both images,
+  pushes to ECR, and rolls out a zero-downtime deploy (auth via OIDC, no stored
+  keys). So: **APP changes ship by `git commit` + `git push`.** Nothing manual.
+- **Infrastructure as Code:** ALL AWS infra is defined in `/terraform`. **INFRA
+  changes go through Terraform** (edit `.tf` → `terraform plan` → `apply`).
+  NEVER change AWS via the console — it causes drift from the code.
+- **Secrets:** `ANTHROPIC_API_KEY` lives in AWS Secrets Manager and is injected
+  at runtime. Never hardcode secrets. New secrets → Secrets Manager + task def
+  + grant the execution role read access.
+- **Frontend env gotcha:** `NEXT_PUBLIC_*` vars are baked at BUILD time. The API
+  URL is passed as a Docker `--build-arg` in CI. If the API URL changes, the web
+  image must be rebuilt AND the API's `ALLOWED_ORIGINS` (CORS) must include the
+  web origin.
+- **⚠️ DATA IS EPHEMERAL:** container local disk (`decks/`, `checks/`,
+  `verifications/`, etc.) is WIPED on every redeploy. Do NOT rely on local-disk
+  persistence for anything that must survive. Durable storage (S3 for files + a
+  database for structured data) is the next foundational piece and is NOT built
+  yet — until then, treat persistence as unavailable.
+- **Key infra files:** `/terraform` (IaC), `/deploy` (task defs, IAM, scripts),
+  `/.github/workflows` (ci.yml, deploy.yml). See `DEVOPS_ROADMAP.md` for the full
+  infra history and the running decision log.
+
 ## Project Structure
 /ngo_screener   — Python extraction engine
   models.py     — Pydantic models: Question, ExtractionAnswer, etc.
