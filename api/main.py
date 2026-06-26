@@ -128,11 +128,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# GZip compression is registered LATER (just after the request-id middleware
-# below) — on purpose. Starlette applies the last-added middleware OUTERMOST,
-# and GZip must be outermost: Starlette's BaseHTTPMiddleware (created by
-# @app.middleware("http")) breaks when it wraps GZip's streamed/compressed
-# response, which was the cause of the 500 on /openapi.json. See below.
+# GZip compression — shrinks JSON responses ~60-80% on payloads over 1KB.
+# Cost is a tiny CPU bump on the API; benefit is faster page loads everywhere
+# the frontend hits a list endpoint (Bank Verify batches, attendance runs,
+# rate cards, diagnostic reports). FastAPI's stock GZipMiddleware handles
+# the Accept-Encoding negotiation correctly.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Request-ID tracing — give every request a stable ID and log a one-line
 # summary (method, path, status, duration). When a customer reports "it broke
@@ -168,14 +169,6 @@ async def request_id_middleware(request, call_next):
         rid, request.method, request.url.path, response.status_code, elapsed,
     )
     return response
-
-
-# GZip compression — registered HERE (after the tracing middleware above) so it
-# becomes the OUTERMOST middleware layer. BaseHTTPMiddleware must sit INSIDE
-# GZip, never outside it, or the compressed/streamed response 500s (this was
-# the /openapi.json bug). Shrinks JSON responses ~60-80% on payloads over 1KB.
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-
 
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.

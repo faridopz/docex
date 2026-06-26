@@ -267,6 +267,21 @@ function UploadForm({
           {activeCount === 1 ? "rule" : "rules"}) and returns a verdict for
           every rule with citations.
         </p>
+
+        {/* One-off ⇄ bulk toggle — same policy set, one voucher or a whole
+            stack. Bulk hands off to the batch flow, pre-scoped to this policy. */}
+        <div className="mt-4 inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-sm">
+          <span className="rounded-md bg-brand-600 px-3 py-1.5 font-medium text-white">
+            One-off
+          </span>
+          <Link
+            href={`/compliance/check/bulk?rulebook=${rulebook.id}`}
+            className="rounded-md px-3 py-1.5 font-medium text-gray-600 transition hover:text-brand-700"
+            title={`Check a whole stack of vouchers against ${rulebook.name}`}
+          >
+            Bulk
+          </Link>
+        </div>
       </div>
 
       <GuidanceCard title="What to upload">

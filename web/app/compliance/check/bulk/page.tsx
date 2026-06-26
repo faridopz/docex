@@ -67,7 +67,15 @@ export default function BulkCheckPage() {
         const rbs = await listRulebooks();
         if (cancelled) return;
         setRulebooks(rbs);
-        if (rbs.length === 1) setRulebookId(rbs[0].id);
+        // Pre-select a policy set if one was passed in (?rulebook=<id>) — e.g.
+        // when arriving from a specific policy's check page. Falls back to
+        // auto-selecting the only rulebook if there's just one.
+        const wanted =
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("rulebook")
+            : null;
+        if (wanted && rbs.some((r) => r.id === wanted)) setRulebookId(wanted);
+        else if (rbs.length === 1) setRulebookId(rbs[0].id);
       } catch (err) {
         if (!cancelled)
           setLoadError(

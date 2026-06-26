@@ -9,6 +9,12 @@ resource "aws_lb" "api" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.api_alb.id]
   subnets            = data.aws_subnets.default.ids
+
+  # Long AI calls (policy interpretation / compliance checks over big PDFs) can
+  # run past the ALB default of 60s. Without this the LB drops the connection
+  # mid-request and the browser shows "Failed to fetch". 300s covers a large
+  # multi-rule interpretation; the app/Anthropic client time out first.
+  idle_timeout = 300
 }
 
 resource "aws_lb_target_group" "api" {
@@ -43,6 +49,9 @@ resource "aws_lb" "web" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.web_alb.id]
   subnets            = data.aws_subnets.default.ids
+
+  # Match the API LB so any same-origin/proxied long requests aren't cut at 60s.
+  idle_timeout = 300
 }
 
 resource "aws_lb_target_group" "web" {

@@ -319,5 +319,55 @@ revisit. This becomes your study guide and interview prep.
 - Module 4 core is DONE. Remaining polish: custom domain + HTTPS/TLS (ACM +
   Route 53), and cost-awareness/teardown. Then Module 5 redoes ALL of this
   as Terraform (IaC).
+- 2026-06-24 — CD PIPELINE LIVE (completes Module 2's CD half). GitHub Actions
+  now auto-deploys on push to demo-release: OIDC role assume (NO stored keys)
+  -> ECR login -> build+push both images -> force-new-deployment on both ECS
+  services. Files: deploy/setup-github-oidc.sh, github-oidc-trust.json,
+  github-deploy-policy.json, .github/workflows/deploy.yml (ci.yml trimmed to
+  PR-only). First run green in 2m32s. Role: docexGithubDeployRole, scoped to
+  repo:faridopz/docex:*.
+  ==> "Improving the system" is now just: commit + push. It auto-deploys.
+- 2026-06-24 — Module 5 STARTED. Installed Terraform v1.15.6. Learned the
+  core loop on a throwaway ECR repo: wrote main.tf (provider + resource),
+  init -> plan -> apply -> state list -> destroy. Understood declarative vs
+  imperative, the plan/diff habit, and state (terraform/.tfstate gitignored).
+  Files: terraform/main.tf, terraform/.gitignore.
+  NEXT (the big one): codify the REAL DOCex stack. Two paths —
+    (a) greenfield cutover: destroy manual resources, terraform apply to
+        recreate (simple, but downtime + new ALB DNS), or
+    (b) brownfield IMPORT: adopt the existing live resources into Terraform
+        state with no downtime (better since DOCex is a live product).
+  Recommend (b) import, done as a focused session.
+- 2026-06-24 — Import IN PROGRESS (brownfield, zero downtime). Using Terraform
+  1.5 `import` blocks. Project: terraform/ (main.tf provider, ecr.tf,
+  cluster.tf, logs.tf, iam.tf, secrets.tf).
+  IMPORTED SO FAR (all 0-change): 2 ECR repos, ECS cluster (needed an
+  execute_command_configuration block to reconcile), 2 CloudWatch log groups,
+  IAM exec role + managed-policy attachment + inline secrets policy. Secret
+  referenced via a data source (not managed, keeps value out of state).
+  STILL TO IMPORT: 4 security groups, 2 ALBs + 2 target groups + 2 listeners,
+  2 task definitions, 2 services. (Task defs + services are the finicky ones.)
+  Recurring gotcha: Mac clock drift -> InvalidSignatureException; fix with
+  `sudo sntp -sS time.apple.com` before AWS calls.
+- 2026-06-24 — IAM stage applied (3 imported). Paused import here. RESUME with:
+  security groups -> ALBs/target groups/listeners -> task defs -> services,
+  then a full `terraform plan` showing "no changes" = whole stack is now IaC.
+- 2026-06-24 — *** MODULE 5 COMPLETE: ENTIRE STACK IS NOW TERRAFORM ***
+  Imported (zero downtime): 4 security groups; 2 ALBs + 2 target groups +
+  2 listeners (reconciled health-check thresholds 5/2 and az_rebalancing
+  ENABLED); 2 services. Task definitions DEFINED in TF (not imported) — TF
+  registers revisions (docex-api:4, docex-web:2); services rolled onto them
+  with zero downtime. Final `terraform plan` = "No changes." App still 200.
+  terraform/ files: main, ecr, cluster, logs, iam, secrets, network,
+  security_groups, alb, ecs. Whole DOCex infra is reproducible code now.
+  Operating model going forward: APP changes -> git push (CD pipeline);
+  INFRA changes -> edit .tf + terraform apply. Never click the console.
+  OPTIONAL Module 5 polish later: remote state backend (S3 + DynamoDB lock)
+  so state is shared/safe instead of a local file.
+- 2026-06-23 — Decided to defer HTTPS/custom domain. When we return it needs:
+  a domain, a free ACM cert (DNS-validated), HTTPS:443 listeners on both
+  ALBs, DNS records (web + api subdomains), rebuild web image with
+  NEXT_PUBLIC_API_URL=https://api... and update API ALLOWED_ORIGINS to the
+  https web origin, plus HTTP->HTTPS redirect. All additive.
 - NOTE: 2 ALBs + 2 Fargate tasks now running = burning Free-Plan credits.
   Fine for now; can tear down between sessions.
