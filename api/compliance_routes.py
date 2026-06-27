@@ -412,6 +412,18 @@ async def update_rulebook_endpoint(
         rulebook.name = body.name.strip()
     rulebook.rules = body.rules
     rulebook.interpretation_notes = body.interpretation_notes
+    # Approval workflow — None means "leave unchanged"; a provided list (even
+    # empty) replaces it. Strip blanks and dedupe while preserving order so the
+    # editor can't save empty/duplicate stages.
+    if body.approval_workflow is not None:
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for stage in body.approval_workflow:
+            s = (stage or "").strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                cleaned.append(s)
+        rulebook.approval_workflow = cleaned
     # Notification settings — explicit None means "clear", empty string also
     # means "clear" (officer cleared the field in the UI).
     rulebook.notification_email = (

@@ -285,6 +285,7 @@ export async function updateRulebook(
     interpretation_notes?: string | null;
     notification_email?: string | null;
     notification_trigger?: string | null;
+    approval_workflow?: string[] | null;
   },
 ): Promise<PolicyRulebook> {
   const res = await fetch(
@@ -298,6 +299,9 @@ export async function updateRulebook(
         interpretation_notes: body.interpretation_notes ?? null,
         notification_email: body.notification_email ?? null,
         notification_trigger: body.notification_trigger ?? null,
+        // Only send when provided so we never accidentally wipe the workflow.
+        approval_workflow:
+          body.approval_workflow === undefined ? null : body.approval_workflow,
       }),
     },
   );

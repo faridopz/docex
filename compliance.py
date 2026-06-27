@@ -370,6 +370,11 @@ Note any ambiguous clauses in interpretation_notes."""
         source_documents=filenames,
         rules=parsed.rules,
         interpretation_notes=parsed.interpretation_notes,
+        # Seed a sensible default approval chain so a freshly-interpreted
+        # rulebook isn't left with an empty approval section. The org edits
+        # these stages to match their own process (the workflow editor in the
+        # rulebook screen) — nothing here is TA-Connect-specific.
+        approval_workflow=["Compliance Check", "Review", "Approval"],
     )
 
 

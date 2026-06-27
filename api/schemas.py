@@ -109,6 +109,9 @@ class RulebookUpdateIn(BaseModel):
     # Notification settings — fully optional, opt-in per rulebook.
     notification_email: Optional[str] = None
     notification_trigger: Optional[str] = None  # "always" | "flagged_or_blocked" | "blocked_only"
+    # Ordered approval stages (org-configurable). None = leave unchanged; a
+    # list (even empty) replaces the current workflow.
+    approval_workflow: Optional[list[str]] = None
 
 
 class RulebookSummary(BaseModel):

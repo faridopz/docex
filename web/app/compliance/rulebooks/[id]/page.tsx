@@ -4,13 +4,17 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Check,
   FileText,
+  GitBranch,
   Loader2,
   Mail,
   Pencil,
   Play,
+  Plus,
   ShieldCheck,
   Trash2,
   X,
@@ -116,6 +120,11 @@ export default function RulebookEditorPage({
       (draft.notification_trigger ?? "")
     )
       return true;
+    if (
+      JSON.stringify(original.approval_workflow ?? []) !==
+      JSON.stringify(draft.approval_workflow ?? [])
+    )
+      return true;
     if (original.rules.length !== draft.rules.length) return true;
     return original.rules.some((r, i) => {
       const d = draft.rules[i];
@@ -137,6 +146,11 @@ export default function RulebookEditorPage({
     if (
       (original.notification_trigger ?? "") !==
       (draft.notification_trigger ?? "")
+    )
+      n++;
+    if (
+      JSON.stringify(original.approval_workflow ?? []) !==
+      JSON.stringify(draft.approval_workflow ?? [])
     )
       n++;
     // Rules removed
@@ -205,6 +219,7 @@ export default function RulebookEditorPage({
         interpretation_notes: draft.interpretation_notes,
         notification_email: draft.notification_email,
         notification_trigger: draft.notification_trigger,
+        approval_workflow: draft.approval_workflow ?? [],
       });
       setOriginal(saved);
       setDraft(structuredClone(saved));
@@ -355,6 +370,12 @@ export default function RulebookEditorPage({
           }
         />
 
+        {/* Approval workflow — org-configurable sign-off chain */}
+        <WorkflowEditor
+          stages={draft.approval_workflow ?? []}
+          onChange={(next) => setDraft({ ...draft, approval_workflow: next })}
+        />
+
         {/* Summary chips */}
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-emerald-700 ring-1 ring-emerald-200">
@@ -483,6 +504,115 @@ export default function RulebookEditorPage({
         </div>
       )}
     </div>
+  );
+}
+
+/* ─── Approval workflow editor ────────────────────────────────────────── */
+
+function WorkflowEditor({
+  stages,
+  onChange,
+}: {
+  stages: string[];
+  onChange: (next: string[]) => void;
+}) {
+  function rename(i: number, value: string) {
+    onChange(stages.map((s, idx) => (idx === i ? value : s)));
+  }
+  function remove(i: number) {
+    onChange(stages.filter((_, idx) => idx !== i));
+  }
+  function move(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= stages.length) return;
+    const next = [...stages];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  }
+  function add() {
+    onChange([...stages, ""]);
+  }
+
+  return (
+    <section className="rounded-xl border border-gray-200 bg-white p-5">
+      <div className="flex items-start gap-3">
+        <GitBranch className="mt-0.5 h-5 w-5 shrink-0 text-brand-600" />
+        <div className="flex-1 space-y-1">
+          <h3 className="text-base font-semibold text-gray-900">
+            Approval workflow
+          </h3>
+          <p className="text-sm text-gray-600">
+            The ordered sign-off stages a payment must pass after a check.
+            Every organisation sets its own — rename, reorder, add, or remove
+            stages to match your process.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        {stages.length === 0 && (
+          <p className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-4 text-center text-xs text-gray-500">
+            No approval stages yet — add the first stage of your sign-off chain.
+          </p>
+        )}
+        {stages.map((stage, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">
+              {i + 1}
+            </span>
+            <input
+              type="text"
+              value={stage}
+              onChange={(e) => rename(i, e.target.value)}
+              placeholder={`Stage ${i + 1} — e.g. "Compliance Check"`}
+              className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+            />
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => move(i, -1)}
+                disabled={i === 0}
+                className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-50 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Move up"
+              >
+                <ArrowUp className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => move(i, 1)}
+                disabled={i === stages.length - 1}
+                className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-50 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Move down"
+              >
+                <ArrowDown className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => remove(i)}
+                className="rounded-md p-1.5 text-gray-300 transition hover:bg-rose-50 hover:text-rose-600"
+                aria-label="Remove stage"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={add}
+        className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:border-brand-300 hover:text-brand-700"
+      >
+        <Plus className="h-4 w-4" />
+        Add stage
+      </button>
+
+      <p className="mt-3 text-[11px] text-gray-500">
+        Each stage is a verified sign-off (email magic-link, or your connected
+        approval channel). The payment is approved only when every stage signs.
+      </p>
+    </section>
   );
 }
 
