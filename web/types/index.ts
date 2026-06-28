@@ -125,6 +125,15 @@ export interface PolicyRulebook {
   approval_workflow?: string[];
 }
 
+/** The organisation's config layer — how DOCex adapts to each client. */
+export interface OrgProfile {
+  name: string;
+  roles: string[];
+  default_approval_workflow: string[];
+  directory: Record<string, string>; // stage/role -> email
+  updated_at?: string | null;
+}
+
 export interface RulebookSummary {
   id: string;
   name: string;

@@ -42,6 +42,7 @@ from models import (  # noqa: E402
     ComplianceCheckResult,
     DecisionEvent,
     DecisionEventType,
+    OrgProfile,
     PolicyRulebook,
 )
 from pydantic import BaseModel  # noqa: E402
@@ -157,6 +158,22 @@ def _read_files(uploads: list[UploadFile]) -> list[tuple[str, str]]:
 
 _RULEBOOK_DIR = Path(__file__).parent.parent / "rulebooks"
 _CHECK_DIR = Path(__file__).parent.parent / "checks"
+_ORG_PROFILE_PATH = Path(__file__).parent.parent / "org_profile.json"
+
+
+def _load_org_profile() -> OrgProfile:
+    """The org's config (singleton). Returns sensible defaults if unset."""
+    try:
+        if _ORG_PROFILE_PATH.exists():
+            return OrgProfile.model_validate_json(_ORG_PROFILE_PATH.read_text())
+    except Exception:  # noqa: BLE001 — never let a bad profile break the app
+        pass
+    return OrgProfile()
+
+
+def _save_org_profile(profile: OrgProfile) -> OrgProfile:
+    _ORG_PROFILE_PATH.write_text(profile.model_dump_json(indent=2))
+    return profile
 
 
 def _ensure_rulebook_dir() -> None:
@@ -376,7 +393,46 @@ async def interpret_policy_endpoint(
         rulebook = interpret_policy(docs, name.strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Inherit the organisation's default approval chain so a new rulebook
+    # matches THIS org's process out of the box (not a generic default). The
+    # officer can still tailor it in the rulebook's workflow editor.
+    org = _load_org_profile()
+    if org.default_approval_workflow:
+        rulebook.approval_workflow = list(org.default_approval_workflow)
+    rulebook.org = org.name or rulebook.org
     return _save_rulebook(rulebook)
+
+
+# ─── Organisation profile (the per-org config layer) ───────────────────────
+
+@router.get("/org-profile", response_model=OrgProfile)
+async def get_org_profile_endpoint() -> OrgProfile:
+    """The organisation's configuration — name, roles, default approval chain,
+    and the stage→person directory. Drives how DOCex adapts to each client."""
+    return _load_org_profile()
+
+
+@router.put("/org-profile", response_model=OrgProfile)
+async def update_org_profile_endpoint(body: OrgProfile) -> OrgProfile:
+    """Save the org config. Stage names and roles are trimmed; the default
+    workflow is de-duped (case-insensitive) and order-preserving."""
+    seen: set[str] = set()
+    workflow: list[str] = []
+    for stage in body.default_approval_workflow:
+        s = (stage or "").strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            workflow.append(s)
+    body.default_approval_workflow = workflow
+    body.roles = [r.strip() for r in body.roles if (r or "").strip()]
+    body.directory = {
+        k.strip(): v.strip()
+        for k, v in (body.directory or {}).items()
+        if k.strip() and v.strip()
+    }
+    body.name = (body.name or "").strip() or "Your organisation"
+    body.updated_at = _now_iso()
+    return _save_org_profile(body)
 
 
 # ─── Rulebook CRUD ─────────────────────────────────────────────────────────

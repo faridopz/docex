@@ -18,6 +18,7 @@ import type {
   DiagnosticReport,
   DiagnosticReportSummary,
   KnowledgeAnswer,
+  OrgProfile,
   PolicyRule,
   PolicyRulebook,
   Question,
@@ -310,6 +311,24 @@ export async function updateRulebook(
     throw new Error(`Failed to update rulebook (${res.status}): ${detail}`);
   }
   return res.json() as Promise<PolicyRulebook>;
+}
+
+// ─── Organisation profile (per-org config) ──────────────────────────────────
+
+export async function getOrgProfile(): Promise<OrgProfile> {
+  const res = await fetch(`${BASE}/compliance/org-profile`);
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<OrgProfile>;
+}
+
+export async function updateOrgProfile(profile: OrgProfile): Promise<OrgProfile> {
+  const res = await fetch(`${BASE}/compliance/org-profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<OrgProfile>;
 }
 
 export async function deleteRulebook(id: string): Promise<void> {

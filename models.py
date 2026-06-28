@@ -122,6 +122,30 @@ class PolicyRulebook(BaseModel):
     approval_workflow: list[str] = []
 
 
+class OrgProfile(BaseModel):
+    """An organisation's configuration — the per-org layer that sits above the
+    shared engine. This is how DOCex becomes *any* org's AI auditor without
+    code changes: everything that varies between clients lives here, not in the
+    engine.
+
+      - name:                      the organisation's display name
+      - roles:                     the roles in their process (for assignment)
+      - default_approval_workflow: ordered sign-off stages NEW rulebooks inherit
+                                   (each org's flow chart, e.g. TA Connect's
+                                   "Compliance Check → Reviewer → Approval")
+      - directory:                 stage/role -> email, so a sign-off request
+                                   auto-routes to the right person
+
+    Singleton per instance today; becomes per-tenant (keyed by org_id) once
+    multi-tenant auth lands — the shape doesn't change, only the scoping.
+    """
+    name: str = "Your organisation"
+    roles: list[str] = []
+    default_approval_workflow: list[str] = []
+    directory: dict[str, str] = {}
+    updated_at: Optional[str] = None
+
+
 # pass                  — rule satisfied, evidence cited
 # flag                  — borderline, needs human judgment
 # block                 — clearly violates the rule

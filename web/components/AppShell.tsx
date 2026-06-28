@@ -12,6 +12,7 @@ import {
   Loader2,
   LogOut,
   ScrollText,
+  Settings,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -152,6 +153,13 @@ export function AppShell({
           >
             <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
             Audit log
+          </Link>
+          <Link
+            href="/settings/org"
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+          >
+            <Settings className="h-4 w-4 shrink-0 text-gray-400" />
+            Org settings
           </Link>
 
           <div className="mt-2 flex items-center justify-between gap-2 rounded-lg px-2.5 py-2">
