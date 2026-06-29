@@ -19,6 +19,7 @@ import {
   unapproveCheck,
 } from "@/lib/api";
 import { ApprovalChain } from "@/components/compliance/ApprovalChain";
+import { RiskPanel } from "@/components/compliance/RiskPanel";
 import type { ComplianceCheckResult, PolicyRulebook } from "@/types";
 
 /**
@@ -187,6 +188,9 @@ export default function SavedCheckPage({
                 />
               </div>
             )}
+            <div className="mb-6">
+              <RiskPanel check={check} onUpdate={(updated) => setCheck(updated)} />
+            </div>
             <div className="mb-6">
               <DecisionTimeline
                 check={check}

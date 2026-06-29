@@ -441,6 +441,52 @@ export async function getCheck(id: string): Promise<ComplianceCheckResult> {
   return res.json() as Promise<ComplianceCheckResult>;
 }
 
+// ─── Risk register (per-check) ───────────────────────────────────────────────
+
+export type RiskInput = {
+  description: string;
+  severity?: string;
+  action_taken?: string | null;
+  escalated?: boolean;
+  escalated_to?: string | null;
+  action_plan?: string | null;
+  status?: string;
+  related_rule_id?: string | null;
+};
+
+export async function addRisk(
+  checkId: string,
+  body: RiskInput,
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/risks`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<ComplianceCheckResult>;
+}
+
+export async function updateRisk(
+  checkId: string,
+  riskId: string,
+  body: RiskInput,
+): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/risks/${encodeURIComponent(riskId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<ComplianceCheckResult>;
+}
+
 export async function approveCheck(
   id: string,
   signature?: { signature_data_url?: string | null; signed_name?: string | null },
@@ -602,6 +648,9 @@ export async function exportCheckAuditHistory(
     escalated: "Escalated",
     approved: "Approved",
     unapproved: "Approval revoked",
+    risk_identified: "Risk identified",
+    risk_updated: "Risk updated",
+    risk_resolved: "Risk resolved",
   };
 
   // Sheet 1 — Summary
@@ -679,9 +728,39 @@ export async function exportCheckAuditHistory(
   ];
   historySheet["!freeze"] = { xSplit: 0, ySplit: 1 };
 
+  // Sheet 4 — Risk & actions (the officer's risk register / report)
+  const riskHeader = [
+    "#", "Severity", "Status", "Risk", "Action taken", "Escalated",
+    "Escalated to", "Action plan", "Logged", "Resolved",
+  ];
+  const risks = check.risks ?? [];
+  const riskRows = risks.map((r, i) => [
+    i + 1,
+    r.severity,
+    r.status,
+    r.description,
+    r.action_taken ?? "",
+    r.escalated ? "Yes" : "No",
+    r.escalated_to ?? "",
+    r.action_plan ?? "",
+    r.created_at ?? "",
+    r.resolved_at ?? "",
+  ]);
+  const riskSheet = XLSX.utils.aoa_to_sheet(
+    riskRows.length
+      ? [riskHeader, ...riskRows]
+      : [riskHeader, ["—", "", "", "No risks logged", "", "", "", "", "", ""]],
+  );
+  riskSheet["!cols"] = [
+    { wch: 4 }, { wch: 10 }, { wch: 12 }, { wch: 50 }, { wch: 40 },
+    { wch: 10 }, { wch: 22 }, { wch: 40 }, { wch: 22 }, { wch: 22 },
+  ];
+  riskSheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
   XLSX.utils.book_append_sheet(wb, findingsSheet, "Rule findings");
+  XLSX.utils.book_append_sheet(wb, riskSheet, "Risk & actions");
   XLSX.utils.book_append_sheet(wb, historySheet, "Audit history");
 
   const fn =
@@ -1344,6 +1423,9 @@ const _EVENT_LABEL: Record<string, string> = {
   escalated: "Escalated",
   approved: "Approved",
   unapproved: "Approval revoked",
+  risk_identified: "Risk identified",
+  risk_updated: "Risk updated",
+  risk_resolved: "Risk resolved",
 };
 
 /** Export the org-wide audit log as a clean, auditor-ready Excel workbook. */

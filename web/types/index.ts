@@ -206,6 +206,27 @@ export interface ComplianceCheckResult {
   // audit-trail surface an auditor actually asks for: "what did your team
   // do about this flag, and when, and why?"
   decision_log?: DecisionEvent[];
+  risks?: RiskEntry[];
+}
+
+export type RiskSeverity = "high" | "medium" | "low";
+export type RiskStatus = "open" | "in_progress" | "resolved";
+
+/** A risk the officer identified on a check and how it was handled. */
+export interface RiskEntry {
+  id: string;
+  created_at: string;
+  description: string;
+  severity: RiskSeverity;
+  action_taken?: string | null;
+  escalated: boolean;
+  escalated_to?: string | null;
+  action_plan?: string | null;
+  status: RiskStatus;
+  resolved_at?: string | null;
+  author?: string | null;
+  related_rule_id?: string | null;
+  updated_at?: string | null;
 }
 
 export type DecisionEventType =
@@ -217,7 +238,10 @@ export type DecisionEventType =
   | "clarification_received"
   | "escalated"
   | "approved"
-  | "unapproved";
+  | "unapproved"
+  | "risk_identified"
+  | "risk_updated"
+  | "risk_resolved";
 
 export interface DecisionEvent {
   type: DecisionEventType;

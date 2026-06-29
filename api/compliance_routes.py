@@ -44,6 +44,7 @@ from models import (  # noqa: E402
     DecisionEventType,
     OrgProfile,
     PolicyRulebook,
+    RiskEntry,
 )
 from pydantic import BaseModel  # noqa: E402
 from notifications import (  # noqa: E402
@@ -831,6 +832,120 @@ async def unapprove_check_endpoint(check_id: str) -> ComplianceCheckResult:
             type="unapproved",
             timestamp=_now_iso(),
             note="Approval revoked.",
+        ),
+    )
+    return check
+
+
+# ─── Risk register endpoints ────────────────────────────────────────────────
+
+class RiskIn(BaseModel):
+    """Officer logs / updates a risk on a check."""
+    description: str
+    severity: Optional[str] = None       # high | medium | low
+    action_taken: Optional[str] = None
+    escalated: Optional[bool] = None
+    escalated_to: Optional[str] = None
+    action_plan: Optional[str] = None
+    status: Optional[str] = None         # open | in_progress | resolved
+    related_rule_id: Optional[str] = None
+
+
+def _norm_severity(v: Optional[str]) -> str:
+    return v if v in ("high", "medium", "low") else "medium"
+
+
+def _norm_status(v: Optional[str]) -> str:
+    return v if v in ("open", "in_progress", "resolved") else "open"
+
+
+@router.post("/checks/{check_id}/risks", response_model=ComplianceCheckResult)
+async def add_risk_endpoint(check_id: str, body: RiskIn) -> ComplianceCheckResult:
+    """Log a risk on a check: what it is, severity, action taken, whether it
+    was escalated, and the plan. Mirrored to the decision log so it lands in
+    the audit trail and the officer's report."""
+    desc = (body.description or "").strip()
+    if not desc:
+        raise HTTPException(status_code=422, detail="A risk description is required.")
+    check = _load_check(check_id)
+    now = _now_iso()
+    severity = _norm_severity(body.severity)
+    status = _norm_status(body.status)
+    escalated = bool(body.escalated)
+    risk = RiskEntry(
+        id=f"risk-{uuid.uuid4().hex[:8]}",
+        created_at=now,
+        description=desc,
+        severity=severity,  # type: ignore[arg-type]
+        action_taken=(body.action_taken or None),
+        escalated=escalated,
+        escalated_to=(body.escalated_to or None),
+        action_plan=(body.action_plan or None),
+        status=status,  # type: ignore[arg-type]
+        resolved_at=now if status == "resolved" else None,
+        related_rule_id=(body.related_rule_id or None),
+        updated_at=now,
+    )
+    check.risks.append(risk)
+    esc = f" Escalated to {risk.escalated_to}." if escalated and risk.escalated_to else (" Escalated." if escalated else "")
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="risk_identified",
+            timestamp=now,
+            note=f"Risk ({severity}): {desc}." + esc,
+            rule_id=risk.related_rule_id,
+        ),
+    )
+    return check
+
+
+@router.put(
+    "/checks/{check_id}/risks/{risk_id}", response_model=ComplianceCheckResult
+)
+async def update_risk_endpoint(
+    check_id: str, risk_id: str, body: RiskIn
+) -> ComplianceCheckResult:
+    """Update a risk — revise the action/plan, escalate it, or move it toward
+    resolved. Logged to the audit trail (resolution is its own event)."""
+    check = _load_check(check_id)
+    risk = next((r for r in check.risks if r.id == risk_id), None)
+    if risk is None:
+        raise HTTPException(status_code=404, detail="Risk not found on this check.")
+    now = _now_iso()
+    if body.description and body.description.strip():
+        risk.description = body.description.strip()
+    if body.severity is not None:
+        risk.severity = _norm_severity(body.severity)  # type: ignore[assignment]
+    if body.action_taken is not None:
+        risk.action_taken = body.action_taken or None
+    if body.escalated is not None:
+        risk.escalated = bool(body.escalated)
+    if body.escalated_to is not None:
+        risk.escalated_to = body.escalated_to or None
+    if body.action_plan is not None:
+        risk.action_plan = body.action_plan or None
+    became_resolved = False
+    if body.status is not None:
+        new_status = _norm_status(body.status)
+        if new_status == "resolved" and risk.status != "resolved":
+            became_resolved = True
+            risk.resolved_at = now
+        if new_status != "resolved":
+            risk.resolved_at = None
+        risk.status = new_status  # type: ignore[assignment]
+    risk.updated_at = now
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="risk_resolved" if became_resolved else "risk_updated",
+            timestamp=now,
+            note=(
+                f"Risk resolved: {risk.description}."
+                if became_resolved
+                else f"Risk updated ({risk.severity}, {risk.status}): {risk.description}."
+            ),
+            rule_id=risk.related_rule_id,
         ),
     )
     return check

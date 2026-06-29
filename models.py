@@ -179,6 +179,31 @@ class RuleResult(BaseModel):
     confidence: Literal["found", "inferred", "not_found"]
 
 
+RiskSeverity = Literal["high", "medium", "low"]
+RiskStatus = Literal["open", "in_progress", "resolved"]
+
+
+class RiskEntry(BaseModel):
+    """A risk the compliance officer identified on a check, and how it was
+    handled. This is the heart of the officer's report and the org's risk
+    register: was there a risk, what was it, how severe, what action was
+    taken, was it escalated, what's the plan, and is it resolved.
+    """
+    id: str
+    created_at: str
+    description: str                          # the risk itself
+    severity: RiskSeverity = "medium"
+    action_taken: Optional[str] = None        # what the officer did about it
+    escalated: bool = False
+    escalated_to: Optional[str] = None        # who it was escalated to
+    action_plan: Optional[str] = None         # the plan to deal with it
+    status: RiskStatus = "open"               # open -> in_progress -> resolved
+    resolved_at: Optional[str] = None
+    author: Optional[str] = None              # who logged it (None until auth)
+    related_rule_id: Optional[str] = None     # the rule/finding that surfaced it
+    updated_at: Optional[str] = None
+
+
 class ComplianceCheckResult(BaseModel):
     """Full compliance check of one payment against one rulebook."""
     payment_id: str
@@ -247,6 +272,9 @@ class ComplianceCheckResult(BaseModel):
     # note. New events are always appended; existing events are never
     # mutated — preserving defensibility.
     decision_log: list["DecisionEvent"] = []
+    # The officer's risk register for this check — identified risks, how they
+    # were handled, escalations, and resolution status. Feeds the report.
+    risks: list[RiskEntry] = []
 
 
 # Event types are deliberately concrete. Each represents one human action.
@@ -262,6 +290,9 @@ DecisionEventType = Literal[
     "escalated",              # the whole check was escalated to a named reviewer
     "approved",               # check marked approved
     "unapproved",             # approval revoked (rare but audit-relevant)
+    "risk_identified",        # officer logged a risk on this check
+    "risk_updated",           # a risk's action/plan/status changed
+    "risk_resolved",          # a risk was marked resolved
 ]
 
 
