@@ -441,6 +441,16 @@ export async function getCheck(id: string): Promise<ComplianceCheckResult> {
   return res.json() as Promise<ComplianceCheckResult>;
 }
 
+/** Toggle whether a payment has been executed ("Paid" on the board). */
+export async function markPaid(checkId: string): Promise<ComplianceCheckResult> {
+  const res = await fetch(
+    `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/mark-paid`,
+    { method: "POST" },
+  );
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<ComplianceCheckResult>;
+}
+
 // ─── Risk register (per-check) ───────────────────────────────────────────────
 
 export type RiskInput = {

@@ -6,7 +6,7 @@ Field names here must stay in sync with api/schemas.py and web/types/index.ts.
 """
 from __future__ import annotations
 from typing import Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Question(BaseModel):
@@ -122,6 +122,41 @@ class PolicyRulebook(BaseModel):
     approval_workflow: list[str] = []
 
 
+class PaymentType(BaseModel):
+    """A category of payment with its own required-document checklist and
+    special rules — e.g. Travel Advance, Participant Payment, Procurement.
+    Different orgs define their own; this is what lets DOCex enforce 'complete
+    documentation' (the #1 cause of delay) per type instead of generically."""
+    name: str
+    required_documents: list[str] = []
+    notes: Optional[str] = None        # special rules, e.g. "retire within 5 days"
+
+
+def _default_payment_types() -> list[PaymentType]:
+    """Common payment types as a starting set. Every org edits these to match
+    their own process — nothing here is mandatory or org-specific."""
+    return [
+        PaymentType(name="Travel Advance",
+                    required_documents=["Travel request form", "Itinerary", "Approval email"],
+                    notes="Request 7+ days before; retire within 5 working days of return."),
+        PaymentType(name="Travel Retirement",
+                    required_documents=["Receipts", "Reconciliation note"],
+                    notes="Unspent funds refunded immediately."),
+        PaymentType(name="Participant Payment",
+                    required_documents=["Payment schedule", "Attendance sheet", "Activity report"],
+                    notes="Direct bank transfer only."),
+        PaymentType(name="Procurement Payment",
+                    required_documents=["Purchase order (PO)", "Invoice", "Goods Received Note (GRN)"],
+                    notes="Must have PO, invoice, and proof of delivery."),
+        PaymentType(name="Consultant Payment",
+                    required_documents=["Signed contract", "Invoice", "Deliverables report"],
+                    notes="Contract must be signed before work begins."),
+        PaymentType(name="Vendor Payment",
+                    required_documents=["Invoice", "PO (if applicable)", "Proof of service"],
+                    notes="Must be from the approved vendor list."),
+    ]
+
+
 class OrgProfile(BaseModel):
     """An organisation's configuration — the per-org layer that sits above the
     shared engine. This is how DOCex becomes *any* org's AI auditor without
@@ -143,6 +178,12 @@ class OrgProfile(BaseModel):
     roles: list[str] = []
     default_approval_workflow: list[str] = []
     directory: dict[str, str] = {}
+    payment_types: list[PaymentType] = Field(default_factory=_default_payment_types)
+    # What this org calls the intake artifact an officer checks. The request
+    # staff submit is a "Payment requisition"; Finance later turns an approved
+    # one into a "Payment voucher (PV)". Configurable so each org uses its own
+    # term. Default reflects the correct intake artifact.
+    payment_subject: str = "Payment requisition"
     updated_at: Optional[str] = None
 
 
@@ -225,6 +266,8 @@ class ComplianceCheckResult(BaseModel):
     created_at: Optional[str] = None          # ISO 8601 when the check ran
     approved: bool = False                    # True once the user marked it ED-approved
     approved_at: Optional[str] = None         # ISO 8601 when marked approved
+    paid: bool = False                        # True once finance executed the payment
+    paid_at: Optional[str] = None             # ISO 8601 when marked paid
     # Snapshot of the active rules at check time. Without this, editing
     # the rulebook AFTER a check would silently change the meaning of the
     # audit trail — "this check passed Clause 4.2" loses defensibility if

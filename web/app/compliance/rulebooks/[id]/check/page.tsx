@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { DropZone } from "@/components/DropZone";
 import { GuidanceCard } from "@/components/GuidanceCard";
+import { PaymentTypeChecklist } from "@/components/compliance/PaymentTypeChecklist";
 import { VerdictScreen } from "@/components/compliance/VerdictScreen";
 import {
   approveCheck,
@@ -290,6 +291,8 @@ function UploadForm({
         reads them all together. Receipts get checked individually against
         any receipts-category rules in your rulebook.
       </GuidanceCard>
+
+      <PaymentTypeChecklist />
 
       {/* Payment label */}
       <div className="space-y-2">

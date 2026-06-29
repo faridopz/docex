@@ -43,6 +43,7 @@ from models import (  # noqa: E402
     DecisionEvent,
     DecisionEventType,
     OrgProfile,
+    PaymentType,
     PolicyRulebook,
     RiskEntry,
 )
@@ -350,7 +351,41 @@ def _list_checks() -> list[ComplianceCheckResult]:
     return checks
 
 
+def _derive_lifecycle(c: ComplianceCheckResult) -> tuple[str, str]:
+    """Where is this payment in the pipeline? Returns (lifecycle, stage_label).
+    Org-agnostic: built from the verdict, the rulebook's approval workflow, the
+    signed stages, and paid status — works for any org's chain."""
+    if c.paid:
+        return "paid", "Paid"
+    if c.approved:
+        return "approved", "Approved — ready for payment"
+    workflow = _workflow_for(c)
+    signed = _signed_stages(c)
+    open_risks = [r for r in (c.risks or []) if r.status != "resolved"]
+    # Unresolved blocks/flags/risks with no sign-off progress → needs attention.
+    if not signed and (c.overall_verdict == "blocked" or open_risks):
+        return "needs_attention", (
+            "Blocked — needs resolution" if c.overall_verdict == "blocked"
+            else "Open risk — needs action"
+        )
+    if not signed and c.overall_verdict == "flagged":
+        return "needs_attention", "Flagged — needs review"
+    # Checked and clean, but no sign-off yet = still a REQUISITION (the request),
+    # before Finance turns it into a payment voucher and the chain begins.
+    if not signed:
+        return "requisition", "Checked — awaiting PV / first sign-off"
+    # At least one stage signed = a PV has been raised and is moving through the
+    # approval chain.
+    if workflow:
+        nxt = next((s for s in workflow if s not in signed), None)
+        if nxt:
+            return "in_approval", f"Awaiting {nxt}"
+        return "approved", "All sign-offs in — ready for payment"
+    return "in_approval", "In approval"
+
+
 def _to_check_summary(c: ComplianceCheckResult) -> CheckSummary:
+    lifecycle, stage_label = _derive_lifecycle(c)
     return CheckSummary(
         payment_id=c.payment_id,
         payment_label=c.payment_label,
@@ -365,6 +400,11 @@ def _to_check_summary(c: ComplianceCheckResult) -> CheckSummary:
         error=c.error,
         pending_with=c.pending_with,
         pending_question=c.pending_question,
+        paid=c.paid,
+        paid_at=c.paid_at,
+        lifecycle=lifecycle,
+        stage_label=stage_label,
+        open_risk_count=len([r for r in (c.risks or []) if r.status != "resolved"]),
     )
 
 
@@ -432,6 +472,21 @@ async def update_org_profile_endpoint(body: OrgProfile) -> OrgProfile:
         if k.strip() and v.strip()
     }
     body.name = (body.name or "").strip() or "Your organisation"
+    # Payment types — keep those with a name; trim names + required docs.
+    cleaned_types: list[PaymentType] = []
+    for pt in body.payment_types or []:
+        nm = (pt.name or "").strip()
+        if not nm:
+            continue
+        cleaned_types.append(
+            PaymentType(
+                name=nm,
+                required_documents=[d.strip() for d in pt.required_documents if (d or "").strip()],
+                notes=(pt.notes or "").strip() or None,
+            )
+        )
+    body.payment_types = cleaned_types
+    body.payment_subject = (body.payment_subject or "").strip() or "Payment requisition"
     body.updated_at = _now_iso()
     return _save_org_profile(body)
 
@@ -946,6 +1001,25 @@ async def update_risk_endpoint(
                 else f"Risk updated ({risk.severity}, {risk.status}): {risk.description}."
             ),
             rule_id=risk.related_rule_id,
+        ),
+    )
+    return check
+
+
+@router.post("/checks/{check_id}/mark-paid", response_model=ComplianceCheckResult)
+async def mark_paid_endpoint(check_id: str) -> ComplianceCheckResult:
+    """Toggle whether the payment has been executed ('Paid' on the board).
+    Records the change on the audit trail."""
+    check = _load_check(check_id)
+    now = _now_iso()
+    check.paid = not check.paid
+    check.paid_at = now if check.paid else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="note_added",
+            timestamp=now,
+            note="Payment recorded — marked Paid." if check.paid else "Marked unpaid.",
         ),
     )
     return check

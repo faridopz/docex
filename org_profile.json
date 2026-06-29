@@ -1,0 +1,44 @@
+{
+  "name": "TA Connect",
+  "roles": [],
+  "default_approval_workflow": [
+    "Compliance Check",
+    "Reviewer",
+    "Approval"
+  ],
+  "directory": {},
+  "payment_types": [
+    {
+      "name": "Travel Advance",
+      "required_documents": ["Travel request form", "Itinerary", "Approval email"],
+      "notes": "Request 7+ days before; retire within 5 working days of return."
+    },
+    {
+      "name": "Travel Retirement",
+      "required_documents": ["Receipts", "Reconciliation note"],
+      "notes": "Unspent funds refunded immediately."
+    },
+    {
+      "name": "Participant Payment",
+      "required_documents": ["Payment schedule", "Attendance sheet", "Activity report"],
+      "notes": "Direct bank transfer only."
+    },
+    {
+      "name": "Procurement Payment",
+      "required_documents": ["Purchase order (PO)", "Invoice", "Goods Received Note (GRN)"],
+      "notes": "Must have PO, invoice, and proof of delivery."
+    },
+    {
+      "name": "Consultant Payment",
+      "required_documents": ["Signed contract", "Invoice", "Deliverables report"],
+      "notes": "Contract must be signed before work begins."
+    },
+    {
+      "name": "Vendor Payment",
+      "required_documents": ["Invoice", "PO (if applicable)", "Proof of service"],
+      "notes": "Must be from the approved vendor list."
+    }
+  ],
+  "payment_subject": "Payment requisition",
+  "updated_at": null
+}

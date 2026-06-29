@@ -153,6 +153,15 @@ class CheckSummary(BaseModel):
     # awaiting a clarification — without fetching each check in full.
     pending_with: Optional[str] = None
     pending_question: Optional[str] = None
+    # ─── Pipeline status (for the board view) ───────────────────────────
+    # Whether the payment has been executed, plus a derived lifecycle bucket
+    # and a human stage label ("Awaiting Reviewer", "Approved — ready for
+    # payment", …) so the board can render without fetching each check.
+    paid: bool = False
+    paid_at: Optional[str] = None
+    lifecycle: str = "in_approval"   # needs_attention | in_approval | approved | paid
+    stage_label: str = ""
+    open_risk_count: int = 0
 
 
 class CheckListResponse(BaseModel):

@@ -125,12 +125,21 @@ export interface PolicyRulebook {
   approval_workflow?: string[];
 }
 
+/** A payment category with its own required-doc checklist + special rules. */
+export interface PaymentType {
+  name: string;
+  required_documents: string[];
+  notes?: string | null;
+}
+
 /** The organisation's config layer — how DOCex adapts to each client. */
 export interface OrgProfile {
   name: string;
   roles: string[];
   default_approval_workflow: string[];
   directory: Record<string, string>; // stage/role -> email
+  payment_types: PaymentType[];
+  payment_subject: string; // what the org calls the intake artifact
   updated_at?: string | null;
 }
 
@@ -198,6 +207,9 @@ export interface ComplianceCheckResult {
   // action.
   pending_with?: string | null;
   pending_question?: string | null;
+  // Payment execution status (board "Paid" column).
+  paid?: boolean;
+  paid_at?: string | null;
   // Snapshot of the active rules at check time. Frozen on first save so
   // later rulebook edits never alter historical audit trails.
   rulebook_snapshot_rules?: PolicyRule[] | null;
@@ -317,7 +329,20 @@ export interface CheckSummary {
   error?: string | null;
   pending_with?: string | null;
   pending_question?: string | null;
+  // Pipeline status (board view)
+  paid?: boolean;
+  paid_at?: string | null;
+  lifecycle?: CheckLifecycle;
+  stage_label?: string;
+  open_risk_count?: number;
 }
+
+export type CheckLifecycle =
+  | "needs_attention"
+  | "requisition"
+  | "in_approval"
+  | "approved"
+  | "paid";
 
 export interface CheckListResponse {
   checks: CheckSummary[];

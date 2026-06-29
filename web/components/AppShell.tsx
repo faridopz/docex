@@ -9,6 +9,7 @@ import {
   FileSearch,
   Landmark,
   Layers,
+  LayoutGrid,
   Loader2,
   LogOut,
   ScrollText,
@@ -147,6 +148,13 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-gray-100 px-3 py-3">
+          <Link
+            href="/compliance/board"
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+          >
+            <LayoutGrid className="h-4 w-4 shrink-0 text-gray-400" />
+            Pipeline
+          </Link>
           <Link
             href="/compliance/checks"
             className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
