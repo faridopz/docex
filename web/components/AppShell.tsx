@@ -13,6 +13,7 @@ import {
   Loader2,
   LogOut,
   ScrollText,
+  Send,
   Settings,
   ShieldCheck,
   type LucideIcon,
@@ -36,6 +37,7 @@ export type NavSection =
   | "extract"
   | "templates"
   | "knowledge"
+  | "submit"
   | "compliance"
   | "verify"
   | "attendance";
@@ -62,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Payments & Compliance",
     items: [
+      { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
       { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"] },
