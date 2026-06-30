@@ -149,26 +149,59 @@ if not _access_log.handlers:
     _access_log.setLevel(logging.INFO)
 
 
-@app.middleware("http")
-async def request_id_middleware(request, call_next):
-    rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
-    start = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
+class _RequestIDMiddleware:
+    """Pure-ASGI request-ID stamping + one-line access log.
+
+    Deliberately raw ASGI, NOT Starlette's BaseHTTPMiddleware (i.e. not
+    `@app.middleware("http")`): BaseHTTPMiddleware buffers the whole response
+    and DEADLOCKS with GZipMiddleware on any response large enough to be
+    compressed (>1KB) — which made /compliance/checks and /org-profile hang in
+    production while tiny responses (/health) were fine. A pure-ASGI middleware
+    just streams messages through and tags the response start, so it composes
+    correctly with GZip.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        rid = ""
+        for k, v in scope.get("headers") or []:
+            if k == b"x-request-id":
+                rid = v.decode("latin-1")
+                break
+        rid = rid or uuid.uuid4().hex[:12]
+        start = time.perf_counter()
+        status = {"code": 0}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+                message.setdefault("headers", []).append(
+                    (b"x-request-id", rid.encode("latin-1"))
+                )
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception:
+            elapsed = (time.perf_counter() - start) * 1000
+            _access_log.exception(
+                "rid=%s %s %s -> EXCEPTION (%.0fms)",
+                rid, scope.get("method", ""), scope.get("path", ""), elapsed,
+            )
+            raise
         elapsed = (time.perf_counter() - start) * 1000
-        _access_log.exception(
-            "rid=%s %s %s -> EXCEPTION (%.0fms)",
-            rid, request.method, request.url.path, elapsed,
+        _access_log.info(
+            "rid=%s %s %s -> %s (%.0fms)",
+            rid, scope.get("method", ""), scope.get("path", ""), status["code"], elapsed,
         )
-        raise
-    elapsed = (time.perf_counter() - start) * 1000
-    response.headers["X-Request-ID"] = rid
-    _access_log.info(
-        "rid=%s %s %s -> %s (%.0fms)",
-        rid, request.method, request.url.path, response.status_code, elapsed,
-    )
-    return response
+
+
+app.add_middleware(_RequestIDMiddleware)
 
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.
