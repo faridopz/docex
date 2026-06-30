@@ -301,6 +301,9 @@ export const decisionEventLabel: Record<DecisionEventType, string> = {
   escalated: "Escalated",
   approved: "Approved",
   unapproved: "Approval revoked",
+  risk_identified: "Risk identified",
+  risk_updated: "Risk updated",
+  risk_resolved: "Risk resolved",
 };
 
 export const decisionEventColor: Record<DecisionEventType, string> = {
@@ -313,6 +316,9 @@ export const decisionEventColor: Record<DecisionEventType, string> = {
   escalated: "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
   approved: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
   unapproved: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
+  risk_identified: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
+  risk_updated: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
+  risk_resolved: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
 };
 
 export interface CheckSummary {
