@@ -5,6 +5,13 @@ __pycache__/
 *.pyo
 .env
 
+# Secrets — the HMAC signing key for approval magic-links is generated at
+# runtime and must NEVER be committed (this repo is public). Prefer setting
+# APPROVAL_SECRET as an env var so it isn't written to disk at all.
+.approval_secret
+*.pem
+*.key
+
 # Next.js
 web/.next/
 web/node_modules/
