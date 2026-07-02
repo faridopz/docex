@@ -441,6 +441,30 @@ export async function getCheck(id: string): Promise<ComplianceCheckResult> {
   return res.json() as Promise<ComplianceCheckResult>;
 }
 
+export type PrecheckResult = {
+  checklist: string[];
+  present: string[];
+  missing: string[];
+  unclassified_files: string[];
+  complete: boolean;
+};
+
+/** Instant, deterministic document-completeness check (no LLM). */
+export async function precheckDocs(
+  files: File[],
+  paymentType: string,
+): Promise<PrecheckResult> {
+  const body = new FormData();
+  for (const f of files) body.append("payment_documents", f);
+  body.append("payment_type", paymentType);
+  const res = await fetch(`${BASE}/compliance/precheck`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<PrecheckResult>;
+}
+
 /** Toggle whether a payment has been executed ("Paid" on the board). */
 export async function markPaid(checkId: string): Promise<ComplianceCheckResult> {
   const res = await fetch(

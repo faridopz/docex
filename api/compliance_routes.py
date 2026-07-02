@@ -57,6 +57,8 @@ from notifications import (  # noqa: E402
 )
 from approval_tokens import make_token, verify_token  # noqa: E402
 from approval_webhook import emit_approval_request, verify_callback_secret  # noqa: E402
+import fast_extract  # noqa: E402 — fast PDF text extraction (fitz-first)
+from doc_completeness import check_completeness  # noqa: E402 — deterministic doc-presence
 from .schemas import (  # noqa: E402
     CheckListResponse,
     CheckSummary,
@@ -82,12 +84,10 @@ def _extract_text(upload: UploadFile) -> str:
     name = (upload.filename or "").lower()
 
     if name.endswith(".pdf"):
-        with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            parts = []
-            for i, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                parts.append(f"=== PAGE {i} ===\n{text}")
-        return "\n\n".join(parts).strip()
+        # Fast path: PyMuPDF (fitz) — ~5-10x pdfplumber — with automatic
+        # pdfplumber fallback if fitz isn't installed. Same "=== PAGE N ==="
+        # markers, so source-page citations are unaffected.
+        return fast_extract.extract_text(upload.filename or "", raw).strip()
 
     if name.endswith(".docx"):
         doc = DocxDocument(io.BytesIO(raw))
@@ -445,6 +445,41 @@ async def interpret_policy_endpoint(
 
 
 # ─── Organisation profile (the per-org config layer) ───────────────────────
+
+class PrecheckOut(BaseModel):
+    """Instant, deterministic document-completeness result (no LLM)."""
+    checklist: list[str]              # required docs for the chosen type
+    present: list[str]
+    missing: list[str]
+    unclassified_files: list[str]
+    complete: bool
+
+
+@router.post("/precheck", response_model=PrecheckOut)
+async def precheck_endpoint(
+    payment_documents: Annotated[
+        list[UploadFile],
+        File(description="The requisition's documents, to check for completeness"),
+    ],
+    payment_type: Annotated[str, Form(description="Payment type name")] = "",
+) -> PrecheckOut:
+    """Deterministic pre-flight: are the required documents attached? Runs in
+    milliseconds with no LLM — the first, cheapest layer of the check, so the
+    slow AI pass only runs on complete bundles. Required docs come from the
+    org's payment-type checklist."""
+    org = _load_org_profile()
+    want = payment_type.strip().lower()
+    pt = next(
+        (t for t in org.payment_types if t.name.strip().lower() == want), None
+    )
+    required = pt.required_documents if pt else []
+    files: list[tuple[str, str]] = []
+    for u in payment_documents:
+        raw = u.file.read()
+        files.append((u.filename or "file", fast_extract.extract_text(u.filename or "", raw)))
+    result = check_completeness(required, files)
+    return PrecheckOut(checklist=required, **result)
+
 
 @router.get("/org-profile", response_model=OrgProfile)
 async def get_org_profile_endpoint() -> OrgProfile:

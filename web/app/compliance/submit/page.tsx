@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   CheckSquare,
   Info,
   Loader2,
@@ -16,7 +17,9 @@ import {
   checkPaymentSingle,
   getOrgProfile,
   listRulebooks,
+  precheckDocs,
   routePayment,
+  type PrecheckResult,
 } from "@/lib/api";
 import type { PaymentType, RulebookSummary } from "@/types";
 
@@ -45,6 +48,8 @@ export default function SubmitRequisitionPage() {
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
+  const [precheck, setPrecheck] = useState<PrecheckResult | null>(null);
+  const [prechecking, setPrechecking] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,6 +67,30 @@ export default function SubmitRequisitionPage() {
       cancelled = true;
     };
   }, []);
+
+  // Instant, deterministic completeness pre-check (no LLM) whenever the type +
+  // files are set. Tells the submitter what's missing before they submit.
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedType || files.length === 0) {
+      setPrecheck(null);
+      return;
+    }
+    setPrechecking(true);
+    (async () => {
+      try {
+        const r = await precheckDocs(files, selectedType);
+        if (!cancelled) setPrecheck(r);
+      } catch {
+        if (!cancelled) setPrecheck(null);
+      } finally {
+        if (!cancelled) setPrechecking(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [files, selectedType]);
 
   const current = types.find((t) => t.name === selectedType);
   const canSubmit = label.trim().length > 0 && files.length > 0;
@@ -193,20 +222,54 @@ export default function SubmitRequisitionPage() {
 
                 {current && (
                   <div className="mt-2 space-y-2 rounded-xl border border-brand-100 bg-brand-50/40 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-brand-700">
                       Documents to attach
+                      {prechecking && (
+                        <Loader2 className="h-3 w-3 animate-spin text-brand-400" />
+                      )}
                     </p>
                     <ul className="space-y-1">
-                      {current.required_documents.map((d) => (
-                        <li
-                          key={d}
-                          className="flex items-center gap-2 text-sm text-gray-700"
-                        >
-                          <CheckSquare className="h-4 w-4 shrink-0 text-brand-500" />
-                          {d}
-                        </li>
-                      ))}
+                      {current.required_documents.map((d) => {
+                        const found = precheck
+                          ? precheck.present.includes(d)
+                          : null;
+                        return (
+                          <li
+                            key={d}
+                            className="flex items-center gap-2 text-sm"
+                          >
+                            {found === true ? (
+                              <CheckSquare className="h-4 w-4 shrink-0 text-emerald-600" />
+                            ) : found === false ? (
+                              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                            ) : (
+                              <CheckSquare className="h-4 w-4 shrink-0 text-brand-500" />
+                            )}
+                            <span
+                              className={
+                                found === false ? "text-amber-800" : "text-gray-700"
+                              }
+                            >
+                              {d}
+                              {found === false && " — not detected"}
+                            </span>
+                          </li>
+                        );
+                      })}
                     </ul>
+                    {precheck && !precheck.complete && (
+                      <p className="rounded-md bg-amber-100 px-2.5 py-1.5 text-xs font-medium text-amber-900">
+                        {precheck.missing.length} required document
+                        {precheck.missing.length === 1 ? "" : "s"} not detected.
+                        You can still submit — but incomplete bundles get sent
+                        back, so attach what&apos;s missing if you can.
+                      </p>
+                    )}
+                    {precheck && precheck.complete && (
+                      <p className="rounded-md bg-emerald-100 px-2.5 py-1.5 text-xs font-medium text-emerald-900">
+                        All required documents detected. ✓
+                      </p>
+                    )}
                     {current.notes && (
                       <p className="flex items-start gap-1.5 text-xs text-amber-800">
                         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

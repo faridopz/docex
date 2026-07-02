@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Annotated
 
 import anthropic
+import fast_extract
 import pdfplumber
 from docx import Document as DocxDocument
 from dotenv import load_dotenv
@@ -251,12 +252,9 @@ def _extract_text(upload: UploadFile) -> str:
     name = (upload.filename or "").lower()
 
     if name.endswith(".pdf"):
-        with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            parts = []
-            for i, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                parts.append(f"=== PAGE {i} ===\n{text}")
-        return "\n\n".join(parts).strip()
+        # Fast path: PyMuPDF (fitz) — ~5-10x pdfplumber — with pdfplumber
+        # fallback if fitz isn't installed. Same "=== PAGE N ===" markers.
+        return fast_extract.extract_text(upload.filename or "", raw).strip()
 
     if name.endswith(".docx"):
         # Walk the document body in order, capturing both paragraphs AND

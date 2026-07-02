@@ -73,7 +73,11 @@ _STOP = {
 def classify(filename: str, text: str) -> set[str]:
     """Return the set of document categories a file appears to be. One file can
     match several (e.g. a combined invoice + receipt scan)."""
-    hay = f"{filename or ''}\n{(text or '')[:1500]}"
+    # Normalise separators so filename signals match too: "invoice_acme.pdf"
+    # and "LPO-2026.pdf" should still hit \binvoice\b / \bLPO\b (underscores,
+    # dots and hyphens are word chars that otherwise defeat \b boundaries).
+    raw = f"{filename or ''}\n{(text or '')[:1500]}"
+    hay = re.sub(r"[_\-.]+", " ", raw)
     hits: set[str] = set()
     for cat, patterns in _SIGNATURES.items():
         if any(re.search(p, hay, re.I) for p in patterns):
