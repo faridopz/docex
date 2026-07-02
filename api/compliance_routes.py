@@ -522,6 +522,11 @@ async def update_org_profile_endpoint(body: OrgProfile) -> OrgProfile:
         )
     body.payment_types = cleaned_types
     body.payment_subject = (body.payment_subject or "").strip() or "Payment requisition"
+    # Enabled modules — keep only known values; never allow an empty set (an org
+    # with zero modules would see a blank app), so fall back to all three.
+    valid = {"compliance", "screening", "knowledge"}
+    mods = [m.strip() for m in (body.enabled_modules or []) if m.strip() in valid]
+    body.enabled_modules = mods or ["compliance", "screening", "knowledge"]
     body.updated_at = _now_iso()
     return _save_org_profile(body)
 

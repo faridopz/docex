@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { getOrgProfile } from "@/lib/api";
 
 /**
  * AppShell — the canonical in-product layout: a persistent left sidebar +
@@ -50,24 +51,36 @@ type NavItem = {
   match: string[];
 };
 
-type NavGroup = { label: string; items: NavItem[] };
+// The three product modules a client can switch on independently. The engine
+// underneath is shared; these are just the workflows on top.
+export type ModuleKey = "compliance" | "screening" | "knowledge";
+
+type NavGroup = { module: ModuleKey; label: string; items: NavItem[] };
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Documents",
-    items: [
-      { section: "extract", label: "Extract", href: "/app", icon: FileSearch, match: ["/app", "/agents/sub-award"] },
-      { section: "templates", label: "Templates", href: "/templates", icon: Layers, match: ["/templates"] },
-      { section: "knowledge", label: "Knowledge", href: "/knowledge", icon: BookOpen, match: ["/knowledge"] },
-    ],
-  },
-  {
-    label: "Payments & Compliance",
+    module: "compliance",
+    label: "Compliance & Finance",
     items: [
       { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
       { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"] },
+    ],
+  },
+  {
+    module: "screening",
+    label: "Screening",
+    items: [
+      { section: "extract", label: "Extract", href: "/app", icon: FileSearch, match: ["/app", "/agents/sub-award"] },
+      { section: "templates", label: "Templates", href: "/templates", icon: Layers, match: ["/templates"] },
+    ],
+  },
+  {
+    module: "knowledge",
+    label: "Knowledge",
+    items: [
+      { section: "knowledge", label: "Knowledge", href: "/knowledge", icon: BookOpen, match: ["/knowledge"] },
     ],
   },
 ];
@@ -84,6 +97,33 @@ export function AppShell({
   const pathname = usePathname() ?? "";
   const router = useRouter();
   const { ready, user, signOut } = useAuth();
+
+  // Which modules this org has switched on. Default to all until we know, so
+  // nav never flashes empty; if the profile can't load we just show everything.
+  const [enabledModules, setEnabledModules] = useState<ModuleKey[]>([
+    "compliance",
+    "screening",
+    "knowledge",
+  ]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await getOrgProfile();
+        if (!cancelled && Array.isArray(p.enabled_modules) && p.enabled_modules.length) {
+          setEnabledModules(p.enabled_modules as ModuleKey[]);
+        }
+      } catch {
+        /* keep all modules visible on failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const groups = NAV_GROUPS.filter((g) => enabledModules.includes(g.module));
+  const complianceOn = enabledModules.includes("compliance");
 
   // Demo gate: every page rendered inside AppShell requires a signed-in demo
   // user. Public pages (landing, tour, /approve, /checkin) don't use AppShell,
@@ -120,7 +160,7 @@ export function AppShell({
         </div>
 
         <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-2">
-          {NAV_GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.label}>
               <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                 {group.label}
@@ -151,20 +191,24 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-gray-100 px-3 py-3">
-          <Link
-            href="/compliance/board"
-            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-          >
-            <LayoutGrid className="h-4 w-4 shrink-0 text-gray-400" />
-            Pipeline
-          </Link>
-          <Link
-            href="/compliance/checks"
-            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-          >
-            <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
-            Audit log
-          </Link>
+          {complianceOn && (
+            <>
+              <Link
+                href="/compliance/board"
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+              >
+                <LayoutGrid className="h-4 w-4 shrink-0 text-gray-400" />
+                Pipeline
+              </Link>
+              <Link
+                href="/compliance/checks"
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+              >
+                <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
+                Audit log
+              </Link>
+            </>
+          )}
           <Link
             href="/settings/org"
             className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -209,7 +253,7 @@ export function AppShell({
           </div>
           {/* Mobile horizontal nav */}
           <nav className="flex items-center gap-1 overflow-x-auto border-t border-gray-100 px-3 py-2 md:hidden">
-            {NAV_GROUPS.flatMap((g) => g.items).map((item) => {
+            {groups.flatMap((g) => g.items).map((item) => {
               const on = isActive(item);
               return (
                 <Link

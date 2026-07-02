@@ -30,6 +30,11 @@ export default function OrgSettingsPage() {
   const [subject, setSubject] = useState("Payment requisition");
   const [stages, setStages] = useState<StageRow[]>([]);
   const [types, setTypes] = useState<PaymentType[]>([]);
+  const [modules, setModules] = useState<string[]>([
+    "compliance",
+    "screening",
+    "knowledge",
+  ]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -50,6 +55,9 @@ export default function OrgSettingsPage() {
           })),
         );
         setTypes(p.payment_types ?? []);
+        if (Array.isArray(p.enabled_modules) && p.enabled_modules.length) {
+          setModules(p.enabled_modules);
+        }
       } catch (err) {
         if (!cancelled)
           setError(
@@ -98,6 +106,13 @@ export default function OrgSettingsPage() {
     setSaved(false);
   }
 
+  function toggleModule(key: string) {
+    setModules((m) =>
+      m.includes(key) ? m.filter((x) => x !== key) : [...m, key],
+    );
+    setSaved(false);
+  }
+
   async function save() {
     setSaving(true);
     setError(null);
@@ -112,6 +127,7 @@ export default function OrgSettingsPage() {
       const profile: OrgProfile = {
         name: name.trim() || "Your organisation",
         payment_subject: subject.trim() || "Payment requisition",
+        enabled_modules: modules.length ? modules : ["compliance", "screening", "knowledge"],
         roles: [],
         default_approval_workflow: stages
           .map((s) => s.name.trim())
@@ -130,6 +146,9 @@ export default function OrgSettingsPage() {
       const saved = await updateOrgProfile(profile);
       setName(saved.name);
       setSubject(saved.payment_subject ?? "Payment requisition");
+      if (Array.isArray(saved.enabled_modules) && saved.enabled_modules.length) {
+        setModules(saved.enabled_modules);
+      }
       setStages(
         (saved.default_approval_workflow ?? []).map((s) => ({
           name: s,
@@ -206,6 +225,78 @@ export default function OrgSettingsPage() {
                 placeholder="e.g. Payment requisition"
                 className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
               />
+            </section>
+
+            {/* Modules — which products this org has switched on */}
+            <section className="rounded-xl border border-gray-200 bg-white p-5">
+              <div className="mb-4">
+                <h3 className="text-base font-semibold text-gray-900">
+                  Modules
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Turn on only what this organisation uses. One engine
+                  underneath — pay for one product or all three.
+                </p>
+              </div>
+              <div className="space-y-2">
+                {[
+                  {
+                    key: "compliance",
+                    label: "Compliance & Finance",
+                    desc: "Requisitions, policy checks, approvals, pipeline, bank verification, attendance.",
+                  },
+                  {
+                    key: "screening",
+                    label: "Screening",
+                    desc: "Ask questions across a stack of documents — applications, CVs, proposals, contracts — with cited answers. Templates.",
+                  },
+                  {
+                    key: "knowledge",
+                    label: "Knowledge",
+                    desc: "Ask your document library a question and get a cited answer.",
+                  },
+                ].map((m) => {
+                  const on = modules.includes(m.key);
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => toggleModule(m.key)}
+                      className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left transition ${
+                        on
+                          ? "border-brand-300 bg-brand-50/50"
+                          : "border-gray-200 bg-white hover:border-gray-300"
+                      }`}
+                    >
+                      <span
+                        className={`mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                          on ? "bg-brand-600" : "bg-gray-200"
+                        }`}
+                      >
+                        <span
+                          className={`h-4 w-4 transform rounded-full bg-white shadow transition ${
+                            on ? "translate-x-[18px]" : "translate-x-0.5"
+                          }`}
+                        />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-gray-900">
+                          {m.label}
+                        </span>
+                        <span className="block text-xs text-gray-500">
+                          {m.desc}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {modules.length === 0 && (
+                <p className="mt-2 text-xs text-amber-700">
+                  At least one module stays on — an org with none would see an
+                  empty app.
+                </p>
+              )}
             </section>
 
             {/* Default approval workflow + routing */}

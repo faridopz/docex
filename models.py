@@ -184,6 +184,12 @@ class OrgProfile(BaseModel):
     # one into a "Payment voucher (PV)". Configurable so each org uses its own
     # term. Default reflects the correct intake artifact.
     payment_subject: str = "Payment requisition"
+    # Which product modules this org has switched on. Lets clients buy 1 or all
+    # of: compliance (finance/approvals), screening (extraction/templates),
+    # knowledge (library Q&A). Drives what the app shows them.
+    enabled_modules: list[str] = Field(
+        default_factory=lambda: ["compliance", "screening", "knowledge"]
+    )
     updated_at: Optional[str] = None
 
 

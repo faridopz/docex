@@ -140,6 +140,7 @@ export interface OrgProfile {
   directory: Record<string, string>; // stage/role -> email
   payment_types: PaymentType[];
   payment_subject: string; // what the org calls the intake artifact
+  enabled_modules: string[]; // "compliance" | "screening" | "knowledge"
   updated_at?: string | null;
 }
 
