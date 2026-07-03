@@ -102,7 +102,10 @@ export default function OrgSettingsPage() {
     setSaved(false);
   }
   function addType() {
-    setTypes((ts) => [...ts, { name: "", required_documents: [], notes: "" }]);
+    setTypes((ts) => [
+      ...ts,
+      { name: "", required_documents: [], notes: "", intake_mode: "document", form_fields: [] },
+    ]);
     setSaved(false);
   }
 
@@ -141,6 +144,13 @@ export default function OrgSettingsPage() {
               .map((d) => d.trim())
               .filter(Boolean),
             notes: (t.notes ?? "").trim() || null,
+            // Preserve intake_mode/form_fields/default_rulebook_id — this
+            // page has no UI to edit them yet, but it must not silently
+            // drop them on save (that would revert a form/hybrid payment
+            // type back to a bare document checklist).
+            intake_mode: t.intake_mode ?? "document",
+            form_fields: t.form_fields ?? [],
+            default_rulebook_id: t.default_rulebook_id ?? null,
           })),
       };
       const saved = await updateOrgProfile(profile);
