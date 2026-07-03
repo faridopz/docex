@@ -12,14 +12,17 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { DropZone } from "@/components/DropZone";
+import { DynamicFormFields } from "@/components/compliance/DynamicFormFields";
 import { GuidanceCard } from "@/components/GuidanceCard";
 import {
+  checkPaymentForm,
   checkPaymentSingle,
   getOrgProfile,
   listRulebooks,
   precheckDocs,
   routePayment,
   type PrecheckResult,
+  type RequisitionContext,
 } from "@/lib/api";
 import type { PaymentType, RulebookSummary } from "@/types";
 
@@ -38,11 +41,36 @@ export default function SubmitRequisitionPage() {
 
   const [subject, setSubject] = useState("Payment requisition");
   const [types, setTypes] = useState<PaymentType[]>([]);
+  // The org's live "choices_source" lists, keyed the same way FormFieldSpec
+  // marks them. Today just the approved vendor list, but this shape
+  // extends to any future live-list source without touching the renderer.
+  const [approvedVendors, setApprovedVendors] = useState<string[]>([]);
 
   const [selectedType, setSelectedType] = useState("");
   const [label, setLabel] = useState("");
   const [department, setDepartment] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+
+  // Values for a "form" or "hybrid" payment type's structured fields,
+  // keyed by FormFieldSpec.name. Generic — whatever fields the selected
+  // type asks for, this is where their values live. Cleared whenever the
+  // selected type changes so a stale field from a previous type can't leak
+  // into a new submission.
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setFormValues({});
+  }, [selectedType]);
+
+  // Requisition context — the fields that used to require an uploaded
+  // "Payment Requisition Form" PDF for the AI to parse. Optional: an org
+  // that doesn't care about donor coding or a formal approver-of-record
+  // can leave these blank and nothing changes for them. requisitionDate
+  // defaults to today so the common case needs zero typing.
+  const [requisitionDate, setRequisitionDate] = useState(
+    () => new Date().toISOString().slice(0, 10),
+  );
+  const [billingDonor, setBillingDonor] = useState("");
+  const [approvedBy, setApprovedBy] = useState("");
 
   const [phase, setPhase] = useState<Phase>("form");
   const [statusMsg, setStatusMsg] = useState("");
@@ -59,6 +87,7 @@ export default function SubmitRequisitionPage() {
         if (cancelled) return;
         setSubject(p.payment_subject || "Payment requisition");
         setTypes(p.payment_types ?? []);
+        setApprovedVendors(p.approved_vendors ?? []);
       } catch {
         /* types are optional — the form still works without them */
       }
@@ -93,7 +122,20 @@ export default function SubmitRequisitionPage() {
   }, [files, selectedType]);
 
   const current = types.find((t) => t.name === selectedType);
-  const canSubmit = label.trim().length > 0 && files.length > 0;
+  // Every payment type defaults to "document" (see PaymentType.intake_mode)
+  // so a type with no intake_mode set at all — or no type selected yet —
+  // behaves exactly like the original document-only flow.
+  const intakeMode = current?.intake_mode ?? "document";
+  const usesForm = intakeMode === "form" || intakeMode === "hybrid";
+  const usesDocs = intakeMode === "document" || intakeMode === "hybrid";
+  const requiredFormFields = current?.form_fields.filter((f) => f.required) ?? [];
+  const formFieldsFilled = requiredFormFields.every((f) =>
+    (formValues[f.name] ?? "").trim().length > 0,
+  );
+  const canSubmit =
+    label.trim().length > 0 &&
+    (!usesDocs || files.length > 0) &&
+    (!usesForm || formFieldsFilled);
 
   function fullLabel(): string {
     const base = label.trim();
@@ -103,11 +145,29 @@ export default function SubmitRequisitionPage() {
     return parts.join(" · ");
   }
 
+  function requisitionContext(): RequisitionContext {
+    // label and department already ask exactly what payment_purpose and
+    // requested_by need — reusing them here means the officer isn't asked
+    // the same question twice under two different names.
+    return {
+      requisitionDate: requisitionDate || undefined,
+      billingDonor: billingDonor.trim() || undefined,
+      paymentPurpose: label.trim() || undefined,
+      requestedBy: department.trim() || undefined,
+      approvedBy: approvedBy.trim() || undefined,
+    };
+  }
+
   async function runAgainst(rulebookId: string) {
     setPhase("working");
     setStatusMsg("Checking against your policy…");
     try {
-      const result = await checkPaymentSingle(rulebookId, fullLabel(), files);
+      const result = await checkPaymentSingle(
+        rulebookId,
+        fullLabel(),
+        files,
+        requisitionContext(),
+      );
       router.push(`/compliance/checks/${result.payment_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The check failed.");
@@ -118,6 +178,33 @@ export default function SubmitRequisitionPage() {
   async function submit() {
     if (!canSubmit) return;
     setError(null);
+
+    // Form and hybrid types skip document-based routing entirely — the
+    // backend resolves the rulebook from the payment type's own
+    // default_rulebook_id (or, for hybrid, from any attached documents).
+    // There's no "picking" step here: a form type with no rulebook wired
+    // up is a configuration gap for whoever set up the payment type, not
+    // something the submitter should have to resolve.
+    if (usesForm) {
+      setPhase("working");
+      setStatusMsg(
+        usesDocs ? "Checking your submission…" : "Checking your request…",
+      );
+      try {
+        const result = await checkPaymentForm(
+          selectedType,
+          fullLabel(),
+          formValues,
+          usesDocs ? files : [],
+        );
+        router.push(`/compliance/checks/${result.payment_id}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "The check failed.");
+        setPhase("error");
+      }
+      return;
+    }
+
     setPhase("working");
     setStatusMsg("Finding the right policy for these documents…");
     try {
@@ -220,7 +307,7 @@ export default function SubmitRequisitionPage() {
                   ))}
                 </select>
 
-                {current && (
+                {current && usesDocs && (
                   <div className="mt-2 space-y-2 rounded-xl border border-brand-100 bg-brand-50/40 p-3">
                     <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-brand-700">
                       Documents to attach
@@ -278,6 +365,35 @@ export default function SubmitRequisitionPage() {
                     )}
                   </div>
                 )}
+
+                {/* Form-mode types have no document checklist, but the
+                    org's notes (e.g. "retire within 5 working days") are
+                    still worth showing. */}
+                {current && !usesDocs && current.notes && (
+                  <p className="mt-2 flex items-start gap-1.5 rounded-xl border border-amber-100 bg-amber-50/60 p-3 text-xs text-amber-800">
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {current.notes}
+                  </p>
+                )}
+              </section>
+            )}
+
+            {/* 1b. Structured fields — form or hybrid payment types. Renders
+                entirely from PaymentType.form_fields, so this works for any
+                org's own payment type, not just a built-in one. */}
+            {current && usesForm && current.form_fields.length > 0 && (
+              <section className="space-y-2">
+                <label className="block text-sm font-semibold text-gray-900">
+                  Details
+                </label>
+                <DynamicFormFields
+                  fields={current.form_fields}
+                  values={formValues}
+                  onChange={(name, value) =>
+                    setFormValues((prev) => ({ ...prev, [name]: value }))
+                  }
+                  liveChoices={{ org_approved_vendors: approvedVendors }}
+                />
               </section>
             )}
 
@@ -310,7 +426,61 @@ export default function SubmitRequisitionPage() {
               </div>
             </section>
 
-            {/* 3. Upload */}
+            {/* 2b. Requisition details — optional, structured. Replaces
+                having to upload a scanned Payment Requisition Form for the
+                AI to read these back out of a PDF. Document-mode only: a
+                form/hybrid type's /check/form endpoint doesn't take these
+                fields — whatever context it needs is part of form_fields
+                instead, so this section would be silently ignored there. */}
+            {intakeMode === "document" && (
+            <section className="grid gap-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 sm:col-span-2">
+                Requisition details{" "}
+                <span className="font-normal normal-case text-gray-400">
+                  (optional)
+                </span>
+              </p>
+              <div className="space-y-1.5">
+                <label className="block text-sm font-semibold text-gray-900">
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={requisitionDate}
+                  onChange={(e) => setRequisitionDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="block text-sm font-semibold text-gray-900">
+                  Billing donor / fund
+                </label>
+                <input
+                  type="text"
+                  value={billingDonor}
+                  onChange={(e) => setBillingDonor(e.target.value)}
+                  placeholder="e.g. USAID, Gates Foundation"
+                  className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <label className="block text-sm font-semibold text-gray-900">
+                  Requisition approved by
+                </label>
+                <input
+                  type="text"
+                  value={approvedBy}
+                  onChange={(e) => setApprovedBy(e.target.value)}
+                  placeholder="e.g. Tunde Balogun, Head of Operations"
+                  className="w-full rounded-lg border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
+            </section>
+            )}
+
+            {/* 3. Upload — document and hybrid types only. A pure form
+                type has nothing for this section to collect. */}
+            {usesDocs && (
             <section className="space-y-2">
               <label className="block text-sm font-semibold text-gray-900">
                 Attach all the documents
@@ -320,6 +490,7 @@ export default function SubmitRequisitionPage() {
               </p>
               <DropZone files={files} onFilesChange={setFiles} />
             </section>
+            )}
 
             <GuidanceCard title="One inbox for every department">
               Procurement, travel, participant payments, consultant invoices —
@@ -346,7 +517,9 @@ export default function SubmitRequisitionPage() {
             </div>
             <p className="-mt-4 flex items-center justify-end gap-1.5 text-xs text-gray-400">
               <Sparkles className="h-3.5 w-3.5" />
-              DOCex auto-selects the policy from your documents
+              {usesDocs
+                ? "DOCex auto-selects the policy from your documents"
+                : "DOCex checks this instantly against your policy"}
             </p>
           </div>
         )}

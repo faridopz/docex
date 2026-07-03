@@ -362,15 +362,42 @@ export async function routePayment(files: File[]): Promise<RouteSuggestion[]> {
   return res.json() as Promise<RouteSuggestion[]>;
 }
 
+// Requisition context — the Payment Requisition Form fields, captured
+// directly on the submit form (Phase 2 of the forms build) instead of
+// parsed by AI from an uploaded PDF. Every field is optional; only the
+// ones a caller actually has get sent.
+export interface RequisitionContext {
+  requisitionDate?: string;
+  billingDonor?: string;
+  paymentPurpose?: string;
+  itemsRequested?: string;
+  requestedBy?: string;
+  approvedBy?: string;
+}
+
 export async function checkPaymentSingle(
   rulebookId: string,
   paymentLabel: string,
   files: File[],
+  requisition?: RequisitionContext,
 ): Promise<ComplianceCheckResult> {
   const body = new FormData();
   body.append("rulebook_id", rulebookId);
   body.append("payment_label", paymentLabel);
   for (const f of files) body.append("payment_documents", f);
+  if (requisition) {
+    const map: Record<string, string | undefined> = {
+      requisition_date: requisition.requisitionDate,
+      billing_donor: requisition.billingDonor,
+      payment_purpose: requisition.paymentPurpose,
+      items_requested: requisition.itemsRequested,
+      requested_by: requisition.requestedBy,
+      approved_by: requisition.approvedBy,
+    };
+    for (const [key, value] of Object.entries(map)) {
+      if (value && value.trim()) body.append(key, value.trim());
+    }
+  }
 
   const res = await fetch(`${BASE}/compliance/check/single`, {
     method: "POST",
@@ -381,6 +408,51 @@ export async function checkPaymentSingle(
     throw new Error(`Compliance check failed (${res.status}): ${detail}`);
   }
   return res.json() as Promise<ComplianceCheckResult>;
+}
+
+// Companion to checkPaymentSingle for form/hybrid payment types (see
+// PaymentType.intake_mode). Generic — paymentTypeName is whatever the org
+// named it, formData is whatever fields that org's form asked for. files
+// is optional and only meaningful for a "hybrid" type.
+export async function checkPaymentForm(
+  paymentTypeName: string,
+  paymentLabel: string,
+  formData: Record<string, string>,
+  files: File[] = [],
+  rulebookId?: string,
+): Promise<ComplianceCheckResult> {
+  const body = new FormData();
+  body.append("payment_type_name", paymentTypeName);
+  body.append("payment_label", paymentLabel);
+  body.append("form_data_json", JSON.stringify(formData));
+  if (rulebookId) body.append("rulebook_id", rulebookId);
+  for (const f of files) body.append("payment_documents", f);
+
+  const res = await fetch(`${BASE}/compliance/check/form`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Form check failed (${res.status}): ${detail}`);
+  }
+  return res.json() as Promise<ComplianceCheckResult>;
+}
+
+// Seeds a deterministic-only rulebook from a named starter template (no
+// policy PDF, no AI call) — e.g. "travel_advance". The result is a normal,
+// fully editable PolicyRulebook.
+export async function createStarterRulebook(
+  kind: string,
+  name?: string,
+): Promise<PolicyRulebook> {
+  const res = await fetch(`${BASE}/compliance/rulebooks/starter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, name }),
+  });
+  if (!res.ok) await throwFriendly(res);
+  return res.json() as Promise<PolicyRulebook>;
 }
 
 export interface PaymentInput {

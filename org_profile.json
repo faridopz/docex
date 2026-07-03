@@ -15,15 +15,32 @@
         "Itinerary",
         "Approval email"
       ],
-      "notes": "Request 7+ days before; retire within 5 working days of return."
+      "notes": "Request 7+ days before; retire within 5 working days of return.",
+      "intake_mode": "form",
+      "form_fields": [
+        { "name": "requester_name", "label": "Your Name", "type": "text", "required": true, "choices": [] },
+        { "name": "destination", "label": "Destination", "type": "text", "required": true, "choices": [] },
+        { "name": "departure_date", "label": "Departure Date", "type": "date", "required": true, "choices": [] },
+        { "name": "return_date", "label": "Return Date", "type": "date", "required": true, "choices": [] },
+        { "name": "amount", "label": "Amount Requested", "type": "currency", "required": true, "choices": [] },
+        { "name": "approver_email", "label": "Approver Email", "type": "email", "required": true, "choices": [] }
+      ],
+      "default_rulebook_id": "rb-45528bcd"
     },
     {
       "name": "Travel Retirement",
       "required_documents": [
-        "Receipts",
-        "Reconciliation note"
+        "Lodging receipt(s)"
       ],
-      "notes": "Unspent funds refunded immediately."
+      "notes": "Unspent funds refunded immediately. Meals/incidentals are per diem — no receipt needed for those; lodging is reimbursed on actual cost and needs one.",
+      "intake_mode": "hybrid",
+      "form_fields": [
+        { "name": "advance_reference", "label": "Advance Reference (from your Travel Advance confirmation)", "type": "text", "required": true, "choices": [] },
+        { "name": "requester_name", "label": "Your Name", "type": "text", "required": true, "choices": [] },
+        { "name": "return_date", "label": "Return Date", "type": "date", "required": true, "choices": [] },
+        { "name": "amount_spent", "label": "Actual Amount Spent", "type": "currency", "required": true, "choices": [] }
+      ],
+      "default_rulebook_id": "rb-3ef38a50"
     },
     {
       "name": "Participant Payment",
@@ -56,10 +73,14 @@
       "name": "Vendor Payment",
       "required_documents": [
         "Invoice",
-        "PO (if applicable)",
         "Proof of service"
       ],
-      "notes": "Must be from the approved vendor list."
+      "notes": "Must be from the approved vendor list.",
+      "intake_mode": "hybrid",
+      "form_fields": [
+        { "name": "vendor", "label": "Vendor", "type": "choice", "required": true, "choices": [], "choices_source": "org_approved_vendors" }
+      ],
+      "default_rulebook_id": "rb-dc3a87b9"
     }
   ],
   "payment_subject": "Payment requisition",

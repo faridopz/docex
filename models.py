@@ -54,6 +54,58 @@ class ApplicantExtraction(BaseModel):
 #            producing a verdict with citations from both sides.
 
 
+class DeterministicCheckSpec(BaseModel):
+    """A field-level rule that can be evaluated in code, no LLM call.
+
+    Used by PolicyRule.deterministic_check when evaluation_type ==
+    "deterministic". Evaluated against the structured form_data of a form
+    or hybrid intake submission (see PaymentType.form_fields) by
+    deterministic_checks.py — mirrors doc_completeness.py's philosophy:
+    routine, unambiguous rules should cost zero tokens and return instantly.
+
+      - "date_offset"        — compare two date fields (or a date field
+                                against submission time) against a day
+                                threshold. e.g. departure_date must be >= 7
+                                days after submitted_at.
+      - "threshold"          — compare a numeric field against a value
+                                with an operator (">=", "<=", ">", "<", "==").
+      - "membership"         — field's value must be (or must not be) in a
+                                fixed list, e.g. vendor must be on the
+                                approved vendor list.
+      - "no_outstanding_advance" — block if the requester has a prior
+                                submission of the same payment type that
+                                hasn't been retired/closed yet.
+      - "reference_lookup"   — field holds a reference to another
+                                submission (e.g. a Travel Retirement's
+                                "advance_reference" pointing at the
+                                original advance's payment_id). Blocks if
+                                the reference doesn't resolve to a real,
+                                unretired submission, or belongs to a
+                                different requester. The caller resolves
+                                the actual lookup (see
+                                api/compliance_routes.py) — this module
+                                stays storage-agnostic.
+    """
+    kind: Literal[
+        "date_offset", "threshold", "membership",
+        "no_outstanding_advance", "reference_lookup",
+    ]
+    field: str                                # form field name this check reads
+    compare_field: Optional[str] = None       # second field, for date_offset
+    operator: Optional[str] = None            # ">=", "<=", ">", "<", "==", "in", "not_in"
+    value: Optional[str] = None               # threshold / reference value (string; caller casts)
+    values: list[str] = []                    # for membership checks — the allowed/blocked list
+    # Some membership lists change constantly (an approved-vendor list gets
+    # new vendors added all the time) and shouldn't be frozen into a rule at
+    # rulebook-creation time — that would go stale the first time an org
+    # edits its vendor list. When set, the API layer replaces `values` with
+    # the live list from the named org config field right before evaluation
+    # (see api/compliance_routes.py's _resolve_live_deterministic_values),
+    # and that resolved snapshot is what gets frozen into the audit trail —
+    # so the record still shows exactly what was checked against.
+    values_source: Optional[Literal["org_approved_vendors"]] = None
+
+
 class PolicyRule(BaseModel):
     """A single rule extracted from a compliance policy."""
     id: str
@@ -72,6 +124,14 @@ class PolicyRule(BaseModel):
     # clauses, rules handled outside DOCex) without deleting them — the
     # rulebook still represents the full policy interpretation.
     active: bool = True
+    # ─── Deterministic evaluation (forms) ───────────────────────────────
+    # Defaults to "llm" so every existing rulebook (none of which have this
+    # field on disk) behaves EXACTLY as before — Pydantic fills the default
+    # on load, no migration needed. Only rules explicitly authored with
+    # evaluation_type="deterministic" (today: none — wired up per payment
+    # type as forms are built) skip the LLM and run in code instead.
+    evaluation_type: Literal["llm", "deterministic"] = "llm"
+    deterministic_check: Optional[DeterministicCheckSpec] = None
 
 
 class PolicyRulebook(BaseModel):
@@ -122,6 +182,26 @@ class PolicyRulebook(BaseModel):
     approval_workflow: list[str] = []
 
 
+class FormField(BaseModel):
+    """One field in a structured intake form (PaymentType.form_fields).
+
+    Routine, repeatable payment types (Travel Advance) collect a handful of
+    structured fields instead of a stack of documents to re-type from; the
+    field type drives both the frontend input control and how
+    deterministic_checks.py interprets the submitted value.
+    """
+    name: str                                 # machine key, e.g. "departure_date"
+    label: str                                # display label, e.g. "Departure Date"
+    type: Literal["text", "date", "currency", "choice", "email", "number"]
+    required: bool = True
+    choices: list[str] = []                   # populated when type == "choice", for a FIXED list
+    # Like DeterministicCheckSpec.values_source — some choice lists are live
+    # org config (the approved vendor list) rather than a fixed set typed in
+    # once. When set, the frontend renders options from that live org field
+    # instead of (or in addition to) `choices`.
+    choices_source: Optional[Literal["org_approved_vendors"]] = None
+
+
 class PaymentType(BaseModel):
     """A category of payment with its own required-document checklist and
     special rules — e.g. Travel Advance, Participant Payment, Procurement.
@@ -130,6 +210,149 @@ class PaymentType(BaseModel):
     name: str
     required_documents: list[str] = []
     notes: Optional[str] = None        # special rules, e.g. "retire within 5 days"
+    # ─── Structured intake (forms) ──────────────────────────────────────
+    # "document" (default) preserves today's behaviour exactly — a required-
+    # documents checklist and nothing else. "form" replaces the document
+    # checklist with structured fields end to end (e.g. Travel Advance).
+    # "hybrid" collects structured fields AND still requires documents
+    # (e.g. Travel Retirement: trip/amount fields + a receipt upload).
+    #
+    # None of this is TA-Connect-specific: every org edits its own
+    # payment_types (name, fields, rulebook) via the org-profile screen.
+    # The frontend renders whatever form_fields say — it has no per-org
+    # hardcoded knowledge of what "Travel Advance" is.
+    intake_mode: Literal["document", "form", "hybrid"] = "document"
+    form_fields: list[FormField] = []
+    # A form/hybrid type usually has no documents for the policy router to
+    # rank rulebooks against (compliance_router.py needs payment text). This
+    # lets an org point a payment type straight at its rulebook instead —
+    # set once, in org-profile, by whoever configures the payment type.
+    default_rulebook_id: Optional[str] = None
+
+
+def default_travel_advance_form_fields() -> list[FormField]:
+    """Generic starting field set for a Travel Advance form. Any org can
+    rename, remove, or add to these via the org-profile screen — nothing
+    downstream (the renderer, the deterministic engine) hardcodes these
+    names; they're read generically off whatever fields are configured."""
+    return [
+        FormField(name="requester_name", label="Your Name", type="text"),
+        FormField(name="destination", label="Destination", type="text"),
+        FormField(name="departure_date", label="Departure Date", type="date"),
+        FormField(name="return_date", label="Return Date", type="date"),
+        FormField(name="amount", label="Amount Requested", type="currency"),
+        FormField(name="approver_email", label="Approver Email", type="email"),
+    ]
+
+
+def default_travel_advance_rules() -> list[PolicyRule]:
+    """Generic starter deterministic rules for a Travel Advance rulebook —
+    field-level checks with no LLM involved (see deterministic_checks.py).
+    Sourced from common donor-compliance guidance (e.g. USAID partner
+    travel-policy implementation tips): request >= 7 days ahead, and only
+    one outstanding advance per person at a time. Every value here (which
+    field, what threshold) is just PolicyRule data — an org can edit or
+    delete these rules the same way it edits any other rulebook rule."""
+    return [
+        PolicyRule(
+            id="advance-7-day-rule",
+            description="Travel advance must be requested at least 7 days before departure.",
+            condition="departure_date >= 7 days from today",
+            category="advance",
+            evaluation_type="deterministic",
+            deterministic_check=DeterministicCheckSpec(
+                kind="date_offset", field="departure_date", operator=">=", value="7",
+            ),
+        ),
+        PolicyRule(
+            id="one-advance-at-a-time",
+            description="No new travel advance while the requester has an outstanding, unretired advance.",
+            condition="requester has no other unretired advance",
+            category="advance",
+            evaluation_type="deterministic",
+            deterministic_check=DeterministicCheckSpec(
+                kind="no_outstanding_advance", field="requester_name",
+            ),
+        ),
+    ]
+
+
+def default_travel_retirement_form_fields() -> list[FormField]:
+    """Generic starting field set for a Travel Retirement — a hybrid intake:
+    the trip details are structured fields, but a lodging receipt is a real
+    document (a photo/scan of what was actually paid), because that's the
+    one part a form field can't stand in for as evidence."""
+    return [
+        FormField(name="advance_reference", label="Advance Reference (from your Travel Advance confirmation)", type="text"),
+        FormField(name="requester_name", label="Your Name", type="text"),
+        FormField(name="return_date", label="Return Date", type="date"),
+        FormField(name="amount_spent", label="Actual Amount Spent", type="currency"),
+    ]
+
+
+def default_travel_retirement_rules() -> list[PolicyRule]:
+    """Generic starter deterministic rules for a Travel Retirement rulebook.
+    Both are field-level, no LLM involved (see deterministic_checks.py):
+    the retirement must reference a real, unretired, same-requester advance,
+    and it must be submitted within a reconciliation window of the return
+    date (see docs/DEMO_READINESS notes and USAID partner travel-policy
+    guidance: a fixed reconciliation deadline is standard practice)."""
+    return [
+        PolicyRule(
+            id="retirement-references-valid-advance",
+            description="Must reference a real, unretired travel advance belonging to the same requester.",
+            condition="advance_reference resolves to an unretired advance for this requester",
+            category="advance",
+            evaluation_type="deterministic",
+            deterministic_check=DeterministicCheckSpec(
+                kind="reference_lookup", field="advance_reference",
+            ),
+        ),
+        PolicyRule(
+            id="retirement-within-5-days",
+            description="Travel advance must be retired within 5 days of return.",
+            # return_date compared to today (compare_field omitted): the gap
+            # (return_date - today) must be >= -5, i.e. today is at most 5
+            # days after the return date.
+            condition="today is within 5 days of return_date",
+            category="retirement",
+            evaluation_type="deterministic",
+            deterministic_check=DeterministicCheckSpec(
+                kind="date_offset", field="return_date", operator=">=", value="-5",
+            ),
+        ),
+    ]
+
+
+def default_vendor_payment_form_fields() -> list[FormField]:
+    """Generic starting field for Vendor Payment's hybrid intake: a vendor
+    picker sourced live from the org's approved-vendor list (see
+    OrgProfile.approved_vendors) rather than a fixed set — the whole point
+    is that this list changes over time without needing a form edit."""
+    return [
+        FormField(name="vendor", label="Vendor", type="choice", choices_source="org_approved_vendors"),
+    ]
+
+
+def default_vendor_payment_rules() -> list[PolicyRule]:
+    """Generic starter deterministic rule for a Vendor Payment rulebook: the
+    vendor must be on the org's approved-vendor list. This is the standard
+    Approved Vendor List (AVL) control — pre-approval before any spend, not
+    an AI judgment call — so it's evaluated in code, for free, before the
+    invoice/proof-of-service documents ever reach an LLM."""
+    return [
+        PolicyRule(
+            id="vendor-must-be-approved",
+            description="Vendor must be on the organisation's approved vendor list.",
+            condition="vendor is in the approved vendor list",
+            category="vendor",
+            evaluation_type="deterministic",
+            deterministic_check=DeterministicCheckSpec(
+                kind="membership", field="vendor", operator="in",
+                values_source="org_approved_vendors",
+            ),
+        ),
+    ]
 
 
 def _default_payment_types() -> list[PaymentType]:
@@ -137,11 +360,15 @@ def _default_payment_types() -> list[PaymentType]:
     their own process — nothing here is mandatory or org-specific."""
     return [
         PaymentType(name="Travel Advance",
-                    required_documents=["Travel request form", "Itinerary", "Approval email"],
+                    intake_mode="form",
+                    form_fields=default_travel_advance_form_fields(),
                     notes="Request 7+ days before; retire within 5 working days of return."),
         PaymentType(name="Travel Retirement",
-                    required_documents=["Receipts", "Reconciliation note"],
-                    notes="Unspent funds refunded immediately."),
+                    intake_mode="hybrid",
+                    form_fields=default_travel_retirement_form_fields(),
+                    required_documents=["Lodging receipt(s)"],
+                    notes="Unspent funds refunded immediately. Meals/incidentals are per diem — "
+                          "no receipt needed for those; lodging is reimbursed on actual cost and needs one."),
         PaymentType(name="Participant Payment",
                     required_documents=["Payment schedule", "Attendance sheet", "Activity report"],
                     notes="Direct bank transfer only."),
@@ -152,7 +379,9 @@ def _default_payment_types() -> list[PaymentType]:
                     required_documents=["Signed contract", "Invoice", "Deliverables report"],
                     notes="Contract must be signed before work begins."),
         PaymentType(name="Vendor Payment",
-                    required_documents=["Invoice", "PO (if applicable)", "Proof of service"],
+                    intake_mode="hybrid",
+                    form_fields=default_vendor_payment_form_fields(),
+                    required_documents=["Invoice", "Proof of service"],
                     notes="Must be from the approved vendor list."),
     ]
 
@@ -190,6 +419,15 @@ class OrgProfile(BaseModel):
     enabled_modules: list[str] = Field(
         default_factory=lambda: ["compliance", "screening", "knowledge"]
     )
+    # The org's maintained approved-vendor list — vendor names only for now
+    # (a richer VendorEntry with contact/payment-terms/preferred-status is
+    # a natural later extension, per standard AVL practice, but not needed
+    # yet). Referenced live by Vendor Payment's membership check
+    # (values_source="org_approved_vendors") and by its form field
+    # (choices_source="org_approved_vendors") — one list, always current,
+    # instead of being copied into a rulebook or a form config that goes
+    # stale the moment a vendor is added or removed.
+    approved_vendors: list[str] = []
     updated_at: Optional[str] = None
 
 
@@ -274,6 +512,20 @@ class ComplianceCheckResult(BaseModel):
     approved_at: Optional[str] = None         # ISO 8601 when marked approved
     paid: bool = False                        # True once finance executed the payment
     paid_at: Optional[str] = None             # ISO 8601 when marked paid
+    # True once a Travel Retirement (or equivalent) has closed out an
+    # advance/outstanding payment. Generic on purpose — any payment type
+    # can use this, not just Travel Advance. This is what
+    # deterministic_checks.py's "no_outstanding_advance" rule queries: an
+    # advance with retired=False is still open.
+    retired: bool = False
+    retired_at: Optional[str] = None
+    # ─── Structured intake (forms) ──────────────────────────────────────
+    # Raw field values from a form/hybrid submission (see
+    # PaymentType.intake_mode), keyed by FormField.name. Generic — this
+    # holds whatever fields whatever org's payment type asked for, not a
+    # fixed schema. Lets later submissions look up "does this requester
+    # have anything outstanding" without re-parsing documents.
+    form_data: dict[str, str] = {}
     # Snapshot of the active rules at check time. Without this, editing
     # the rulebook AFTER a check would silently change the meaning of the
     # audit trail — "this check passed Clause 4.2" loses defensibility if

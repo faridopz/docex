@@ -3,11 +3,13 @@ DOCex compliance routes.
 
 Endpoints for the Compliance Check feature:
   POST   /compliance/policy             — interpret a policy doc into a rulebook
+  POST   /compliance/rulebooks/starter  — seed a deterministic-only rulebook from a named template
   GET    /compliance/rulebooks          — list saved rulebooks (summaries)
   GET    /compliance/rulebooks/{id}     — fetch one rulebook in full
   PUT    /compliance/rulebooks/{id}     — update (edit / activate / rename)
   DELETE /compliance/rulebooks/{id}     — delete a rulebook
-  POST   /compliance/check/single       — check one payment against a rulebook
+  POST   /compliance/check/single       — check one document-based payment against a rulebook
+  POST   /compliance/check/form         — check a form/hybrid submission (see PaymentType.intake_mode)
   POST   /compliance/check/batch        — check many payments against a rulebook
 
 Rulebooks are persisted as JSON files in {project_root}/rulebooks/{id}.json.
@@ -42,10 +44,14 @@ from models import (  # noqa: E402
     ComplianceCheckResult,
     DecisionEvent,
     DecisionEventType,
+    FormField,
     OrgProfile,
     PaymentType,
     PolicyRulebook,
     RiskEntry,
+    default_travel_advance_rules,
+    default_travel_retirement_rules,
+    default_vendor_payment_rules,
 )
 from pydantic import BaseModel  # noqa: E402
 from notifications import (  # noqa: E402
@@ -333,6 +339,18 @@ def _load_check(check_id: str) -> ComplianceCheckResult:
         ) from exc
 
 
+def _try_load_check(check_id: str) -> Optional[ComplianceCheckResult]:
+    """Non-raising variant of _load_check — a bad or unknown reference in a
+    submitted form should resolve to a 'block' verdict on that rule, not a
+    hard 404 for the whole request."""
+    if not (check_id or "").strip():
+        return None
+    try:
+        return _load_check(check_id.strip())
+    except HTTPException:
+        return None
+
+
 def _list_checks() -> list[ComplianceCheckResult]:
     """List every persisted check, newest first. Skips corrupted files."""
     _ensure_check_dir()
@@ -508,16 +526,37 @@ async def update_org_profile_endpoint(body: OrgProfile) -> OrgProfile:
     }
     body.name = (body.name or "").strip() or "Your organisation"
     # Payment types — keep those with a name; trim names + required docs.
+    # Preserves intake_mode/form_fields/default_rulebook_id (added for the
+    # forms build) so a save from the settings screen doesn't silently
+    # revert a form/hybrid payment type back to a bare document checklist —
+    # this endpoint used to rebuild PaymentType from only 3 fields, which
+    # dropped the other three on every save. Every org's own payment types
+    # round-trip through here, so this fix applies to any org, not just one.
     cleaned_types: list[PaymentType] = []
     for pt in body.payment_types or []:
         nm = (pt.name or "").strip()
         if not nm:
             continue
+        cleaned_fields = [
+            FormField(
+                name=f.name.strip(), label=(f.label or "").strip() or f.name.strip(),
+                type=f.type, required=f.required,
+                choices=[c.strip() for c in f.choices if (c or "").strip()],
+                # Preserve choices_source — dropped here once already (same
+                # bug class as the Phase 3 fix above, on a different field).
+                choices_source=f.choices_source,
+            )
+            for f in (pt.form_fields or [])
+            if (f.name or "").strip()
+        ]
         cleaned_types.append(
             PaymentType(
                 name=nm,
                 required_documents=[d.strip() for d in pt.required_documents if (d or "").strip()],
                 notes=(pt.notes or "").strip() or None,
+                intake_mode=pt.intake_mode if pt.intake_mode in ("document", "form", "hybrid") else "document",
+                form_fields=cleaned_fields,
+                default_rulebook_id=(pt.default_rulebook_id or "").strip() or None,
             )
         )
     body.payment_types = cleaned_types
@@ -527,6 +566,16 @@ async def update_org_profile_endpoint(body: OrgProfile) -> OrgProfile:
     valid = {"compliance", "screening", "knowledge"}
     mods = [m.strip() for m in (body.enabled_modules or []) if m.strip() in valid]
     body.enabled_modules = mods or ["compliance", "screening", "knowledge"]
+    # Approved vendor list — trim blanks, drop exact duplicates
+    # (case-insensitive), order-preserving.
+    seen_vendors: set[str] = set()
+    vendors: list[str] = []
+    for v in body.approved_vendors or []:
+        vv = (v or "").strip()
+        if vv and vv.lower() not in seen_vendors:
+            seen_vendors.add(vv.lower())
+            vendors.append(vv)
+    body.approved_vendors = vendors
     body.updated_at = _now_iso()
     return _save_org_profile(body)
 
@@ -609,6 +658,52 @@ async def delete_rulebook_endpoint(rulebook_id: str) -> dict:
     return {"deleted": rulebook_id}
 
 
+# ─── Starter rulebooks (deterministic-only, for form/hybrid payment types) ──
+#
+# A form-mode payment type (e.g. Travel Advance) usually has no policy PDF
+# to interpret — its rules ARE the deterministic field checks. This registry
+# maps a template "kind" to a rules factory in models.py. It's a convenience,
+# not a hardcoded engine assumption: the rulebook it produces is a completely
+# normal, editable PolicyRulebook — any org can rename it, edit its rules, or
+# delete it, exactly like an AI-interpreted one. Add a new kind here as more
+# form/hybrid payment types ship; nothing about this is TA-Connect-specific.
+_STARTER_RULEBOOK_TEMPLATES: dict[str, tuple[str, object]] = {
+    "travel_advance": ("Travel Advance Rules", default_travel_advance_rules),
+    "travel_retirement": ("Travel Retirement Rules", default_travel_retirement_rules),
+    "vendor_payment": ("Vendor Payment Rules", default_vendor_payment_rules),
+}
+
+
+class StarterRulebookIn(BaseModel):
+    kind: str                          # one of _STARTER_RULEBOOK_TEMPLATES
+    name: Optional[str] = None         # override the template's default name
+
+
+@router.post("/rulebooks/starter", response_model=PolicyRulebook)
+async def create_starter_rulebook(body: StarterRulebookIn) -> PolicyRulebook:
+    """Seed a deterministic-only rulebook from a named starter template —
+    no policy PDF, no AI call, no cost. Every rule it creates is a normal
+    PolicyRule the officer can edit or deactivate afterward exactly like
+    one interpreted from a document."""
+    entry = _STARTER_RULEBOOK_TEMPLATES.get(body.kind)
+    if entry is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown starter kind '{body.kind}'. Available: {sorted(_STARTER_RULEBOOK_TEMPLATES)}",
+        )
+    default_name, rules_factory = entry
+    org = _load_org_profile()
+    rulebook = PolicyRulebook(
+        id=f"rb-{uuid.uuid4().hex[:8]}",
+        name=(body.name or "").strip() or default_name,
+        source_documents=[],
+        rules=rules_factory(),
+        org=org.name or None,
+        approval_workflow=list(org.default_approval_workflow) if org.default_approval_workflow else ["Approval"],
+    )
+    return _save_rulebook(rulebook)
+
+
 # ─── Compliance checks ─────────────────────────────────────────────────────
 
 class RouteSuggestionOut(BaseModel):
@@ -671,6 +766,18 @@ async def check_single_endpoint(
         str,
         Form(description="Label for this payment, e.g. 'Voucher #2025-04-17 — Office Supplies'"),
     ] = "Payment Request",
+    # ─── Requisition context (Phase 2 — forms build) ────────────────────
+    # Captured directly from the submit form now, instead of requiring the
+    # AI to parse a scanned "Payment Requisition Form" PDF. All optional —
+    # legacy callers and payment types that don't collect these keep working
+    # unchanged. Only non-blank values are applied (see below), so a
+    # partially-filled form never overwrites a field with an empty string.
+    requisition_date: Annotated[Optional[str], Form()] = None,
+    billing_donor: Annotated[Optional[str], Form()] = None,
+    payment_purpose: Annotated[Optional[str], Form()] = None,
+    items_requested: Annotated[Optional[str], Form()] = None,
+    requested_by: Annotated[Optional[str], Form()] = None,
+    approved_by: Annotated[Optional[str], Form()] = None,
 ) -> ComplianceCheckResult:
     """Check one payment request bundle against a saved rulebook.
 
@@ -682,6 +789,20 @@ async def check_single_endpoint(
     rulebook = _load_rulebook(rulebook_id)
     docs = _read_files(payment_documents)
     result = check_payment_safe(docs, rulebook, payment_label)
+    # Apply requisition context straight from form fields — replaces the
+    # old "hope the LLM extracts this from an uploaded PDF" path with direct
+    # structured capture. Blank/whitespace-only values are skipped.
+    for _field, _value in (
+        ("requisition_date", requisition_date),
+        ("billing_donor", billing_donor),
+        ("payment_purpose", payment_purpose),
+        ("items_requested", items_requested),
+        ("requested_by", requested_by),
+        ("approved_by", approved_by),
+    ):
+        _v = (_value or "").strip()
+        if _v:
+            setattr(result, _field, _v)
     # Auto-persist. Best-effort: a save failure is logged but doesn't
     # fail the request — the UI still gets the result and the user can
     # always re-run the check.
@@ -691,6 +812,257 @@ async def check_single_endpoint(
         print(f"Warning: failed to persist check {result.payment_id}: {exc}")
     # Send notification email if configured — best-effort, never blocks
     # the check response. A failed send is a warning, not an error.
+    try:
+        sent = send_check_notification(result, rulebook)
+        if sent:
+            print(
+                f"[DOCex] Notified {rulebook.notification_email} "
+                f"about check {result.payment_id} ({result.overall_verdict})"
+            )
+    except Exception as exc:
+        print(f"Warning: notification send failed for {result.payment_id}: {exc}")
+    return result
+
+
+def _resolve_live_deterministic_values(rulebook: PolicyRulebook, org: OrgProfile) -> PolicyRulebook:
+    """Some deterministic rules compare against live org config rather than
+    a fixed list baked into the rule — the approved vendor list changes
+    constantly, and freezing it into the rulebook at seed time would go
+    stale the moment a vendor is added or removed. This resolves any such
+    rule's `values` from current org config, returning a rulebook COPY
+    (the persisted rulebook file is never touched). That resolved copy is
+    what's evaluated AND what gets frozen into the check's audit snapshot —
+    so the record shows exactly which vendor list was live at check time.
+
+    Currently the only live source is "org_approved_vendors"; more sources
+    can be added the same way without touching any specific payment type.
+    """
+    resolved_rules: list[PolicyRule] = []
+    changed = False
+    for r in rulebook.rules:
+        spec = r.deterministic_check
+        if (
+            r.evaluation_type == "deterministic"
+            and spec is not None
+            and spec.kind == "membership"
+            and spec.values_source == "org_approved_vendors"
+        ):
+            new_spec = spec.model_copy(update={"values": list(org.approved_vendors)})
+            r = r.model_copy(update={"deterministic_check": new_spec})
+            changed = True
+        resolved_rules.append(r)
+    if not changed:
+        return rulebook
+    return rulebook.model_copy(update={"rules": resolved_rules})
+
+
+def _gather_prior_open_submissions(
+    rulebook: PolicyRulebook, form_data: dict[str, str]
+) -> list[dict]:
+    """For any 'no_outstanding_advance' deterministic rule on this rulebook,
+    find prior unretired checks against the SAME rulebook whose form_data
+    matches on that rule's field (e.g. the same requester's name). Generic:
+    works for any org's rulebook and any field name that rule was configured
+    with — nothing here is specific to Travel Advance or to TA Connect.
+
+    Returns [] when the rulebook has no such rule (the common case for most
+    rulebooks) or the submission didn't provide a value for that field —
+    deterministic_checks.py treats an empty list as "nothing outstanding."
+    """
+    no_outstanding_rules = [
+        r for r in rulebook.rules
+        if r.active
+        and r.evaluation_type == "deterministic"
+        and r.deterministic_check is not None
+        and r.deterministic_check.kind == "no_outstanding_advance"
+    ]
+    if not no_outstanding_rules:
+        return []
+    field = no_outstanding_rules[0].deterministic_check.field
+    identity = (form_data.get(field) or "").strip().lower()
+    if not identity:
+        return []
+    matches: list[dict] = []
+    for c in _list_checks():
+        if c.rulebook_id != rulebook.id or c.retired:
+            continue
+        # A blocked request never disbursed anything — nothing to retire, so
+        # it must not count as "outstanding" and lock the requester out of
+        # ever submitting again. Flagged still counts (it may get approved
+        # on review); only "blocked" is excluded.
+        if c.overall_verdict == "blocked":
+            continue
+        if (c.form_data.get(field) or "").strip().lower() == identity:
+            matches.append({"label": c.payment_label, "payment_id": c.payment_id})
+    return matches
+
+
+def _resolve_reference_lookup(
+    rulebook: PolicyRulebook, form_data: dict[str, str]
+) -> Optional[dict]:
+    """For any 'reference_lookup' deterministic rule on this rulebook,
+    resolve the referenced check by ID and report whether it's real,
+    unretired, and belongs to the same requester. Generic: the reference
+    field, and which form field identifies the requester for the match
+    (deterministic_check.compare_field, default 'requester_name'), both
+    come from the rule's own configuration — nothing here is specific to
+    Travel Retirement or any one org.
+
+    Returns None when the rulebook has no such rule (deterministic_checks.py
+    then skips the check entirely, same as _gather_prior_open_submissions).
+    """
+    ref_rules = [
+        r for r in rulebook.rules
+        if r.active
+        and r.evaluation_type == "deterministic"
+        and r.deterministic_check is not None
+        and r.deterministic_check.kind == "reference_lookup"
+    ]
+    if not ref_rules:
+        return None
+    spec = ref_rules[0].deterministic_check
+    ref_id = (form_data.get(spec.field) or "").strip()
+    if not ref_id:
+        return {"found": False}
+    referenced = _try_load_check(ref_id)
+    if referenced is None:
+        return {"found": False}
+    identity_field = spec.compare_field or "requester_name"
+    mine = (form_data.get(identity_field) or "").strip().lower()
+    theirs = (referenced.form_data.get(identity_field) or "").strip().lower()
+    # Fail-open when either side lacks the identity field at all (it's an
+    # extra integrity check, not the only gate — found/retired above already
+    # block a bogus or already-closed reference). Both sides have this field
+    # in the default Travel Advance/Retirement forms, so in practice it's
+    # always populated.
+    requester_match = (not mine) or (not theirs) or (mine == theirs)
+    return {
+        "found": True,
+        "retired": referenced.retired,
+        "requester_match": requester_match,
+        "label": referenced.payment_label,
+        "payment_id": referenced.payment_id,
+    }
+
+
+@router.post("/check/form", response_model=ComplianceCheckResult)
+async def check_form_endpoint(
+    payment_type_name: Annotated[
+        str,
+        Form(description="Name of the payment type being submitted, as configured in this org's payment_types"),
+    ],
+    payment_label: Annotated[str, Form()] = "Payment Request",
+    form_data_json: Annotated[
+        str,
+        Form(description="JSON object of the submitted form field values, keyed by FormField.name"),
+    ] = "{}",
+    rulebook_id: Annotated[
+        Optional[str],
+        Form(description="Explicit rulebook override — skips default_rulebook_id / auto-routing"),
+    ] = None,
+    payment_documents: Annotated[
+        list[UploadFile],
+        File(description="Supporting documents, for hybrid payment types (optional)"),
+    ] = [],
+) -> ComplianceCheckResult:
+    """Check a form or hybrid intake submission.
+
+    Companion to /check/single, which is document-only. This is the entry
+    point for any PaymentType with intake_mode "form" or "hybrid" (see
+    models.PaymentType) — Travel Advance today, whatever an org configures
+    tomorrow. Nothing here is hardcoded to one org or one payment type:
+    payment_type_name is looked up in the CALLING org's own payment_types,
+    and form_data_json is whatever fields that org's form asked for.
+
+    Rulebook resolution, in order: an explicit rulebook_id override, then
+    the payment type's own default_rulebook_id, then (only if documents were
+    attached) the same auto-routing /compliance/route uses. A pure-form
+    submission with no default_rulebook_id configured and no documents to
+    route from is a 422 — there's nothing to check it against.
+    """
+    org = _load_org_profile()
+    payment_type = next(
+        (t for t in org.payment_types if t.name == payment_type_name), None
+    )
+    if payment_type is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Payment type '{payment_type_name}' not found in this org's payment_types.",
+        )
+
+    try:
+        parsed = json.loads(form_data_json) if form_data_json else {}
+        if not isinstance(parsed, dict):
+            raise ValueError("form_data_json must be a JSON object")
+        form_data: dict[str, str] = {str(k): str(v) for k, v in parsed.items()}
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid form_data_json: {exc}") from exc
+
+    docs = _read_files(payment_documents) if payment_documents else []
+
+    rulebook: Optional[PolicyRulebook] = None
+    if rulebook_id:
+        rulebook = _load_rulebook(rulebook_id)
+    elif payment_type.default_rulebook_id:
+        rulebook = _load_rulebook(payment_type.default_rulebook_id)
+    elif docs:
+        import compliance_router  # local import — keeps module load light
+
+        text = "\n\n".join(fn_text for _, fn_text in docs)
+        suggestions = compliance_router.rank_rulebooks(text, _list_rulebooks())
+        strong = [s for s in suggestions if s.confidence in ("high", "medium")]
+        if strong:
+            rulebook = _load_rulebook(strong[0].rulebook_id)
+
+    if rulebook is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No rulebook configured for '{payment_type_name}'. Set "
+                "default_rulebook_id on this payment type in the org profile, "
+                "pass rulebook_id explicitly, or attach documents so DOCex "
+                "can auto-route."
+            ),
+        )
+
+    # Resolve any "live list" deterministic values (e.g. the approved
+    # vendor list) from current org config before evaluating or gathering
+    # anything else — everything downstream should see the resolved copy.
+    rulebook = _resolve_live_deterministic_values(rulebook, org)
+
+    prior_open = _gather_prior_open_submissions(rulebook, form_data)
+    referenced = _resolve_reference_lookup(rulebook, form_data)
+    result = check_payment_safe(
+        docs, rulebook, payment_label,
+        form_data=form_data, prior_open_submissions=prior_open,
+        referenced_submission=referenced,
+    )
+    result.form_data = form_data
+    try:
+        _save_check(result, rulebook)
+    except Exception as exc:
+        print(f"Warning: failed to persist check {result.payment_id}: {exc}")
+    # Auto-close the loop: an APPROVED submission that cleanly references
+    # another (e.g. a Travel Retirement closing out its Travel Advance)
+    # retires that original check automatically — no separate officer
+    # action needed for the common, clean case. A flagged/blocked
+    # retirement leaves the original advance open on purpose: something
+    # needs review before this is considered closed.
+    if result.overall_verdict == "approved" and referenced and referenced.get("found") and not referenced.get("retired"):
+        try:
+            original = _load_check(referenced["payment_id"])
+            original.retired = True
+            original.retired_at = _now_iso()
+            _append_decision_event(
+                original,
+                DecisionEvent(
+                    type="note_added",
+                    timestamp=original.retired_at,
+                    note=f"Auto-retired — closed out by '{result.payment_label}' ({result.payment_id}).",
+                ),
+            )
+        except Exception as exc:
+            print(f"Warning: could not auto-retire referenced check {referenced.get('payment_id')}: {exc}")
     try:
         sent = send_check_notification(result, rulebook)
         if sent:
@@ -1060,6 +1432,28 @@ async def mark_paid_endpoint(check_id: str) -> ComplianceCheckResult:
             type="note_added",
             timestamp=now,
             note="Payment recorded — marked Paid." if check.paid else "Marked unpaid.",
+        ),
+    )
+    return check
+
+
+@router.post("/checks/{check_id}/retire", response_model=ComplianceCheckResult)
+async def toggle_retired_endpoint(check_id: str) -> ComplianceCheckResult:
+    """Toggle whether an advance/outstanding payment has been retired —
+    closed out by a retirement submission, a reconciliation, or manually.
+    Generic: any payment type can use this, not just Travel Advance. This
+    is what a 'no_outstanding_advance' deterministic rule checks — an
+    unretired check for the same requester blocks a new advance."""
+    check = _load_check(check_id)
+    now = _now_iso()
+    check.retired = not check.retired
+    check.retired_at = now if check.retired else None
+    _append_decision_event(
+        check,
+        DecisionEvent(
+            type="note_added",
+            timestamp=now,
+            note="Marked retired/closed." if check.retired else "Marked not retired.",
         ),
     )
     return check

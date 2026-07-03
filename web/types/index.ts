@@ -125,11 +125,33 @@ export interface PolicyRulebook {
   approval_workflow?: string[];
 }
 
+/** One field in a structured intake form (see PaymentType.form_fields).
+ * Generic — the renderer builds whatever inputs this describes, for any
+ * org's payment type, not just a fixed built-in set. */
+export interface FormFieldSpec {
+  name: string;
+  label: string;
+  type: "text" | "date" | "currency" | "choice" | "email" | "number";
+  required: boolean;
+  choices: string[];
+  // When set, this field's options come from a live org config list (e.g.
+  // the approved vendor list) rather than the fixed `choices` above.
+  choices_source?: "org_approved_vendors" | null;
+}
+
+/** "document" (default) = required-documents checklist only, same as
+ * always. "form" = structured fields replace the document checklist
+ * entirely. "hybrid" = structured fields AND documents are both collected. */
+export type IntakeMode = "document" | "form" | "hybrid";
+
 /** A payment category with its own required-doc checklist + special rules. */
 export interface PaymentType {
   name: string;
   required_documents: string[];
   notes?: string | null;
+  intake_mode: IntakeMode;
+  form_fields: FormFieldSpec[];
+  default_rulebook_id?: string | null;
 }
 
 /** The organisation's config layer — how DOCex adapts to each client. */
@@ -141,6 +163,7 @@ export interface OrgProfile {
   payment_types: PaymentType[];
   payment_subject: string; // what the org calls the intake artifact
   enabled_modules: string[]; // "compliance" | "screening" | "knowledge"
+  approved_vendors: string[]; // maintained AVL — feeds Vendor Payment's vendor picker + check
   updated_at?: string | null;
 }
 
@@ -211,6 +234,14 @@ export interface ComplianceCheckResult {
   // Payment execution status (board "Paid" column).
   paid?: boolean;
   paid_at?: string | null;
+  // Whether an advance/outstanding payment has been retired/closed out
+  // (e.g. by a Travel Retirement submission). Generic — any payment type
+  // can use this field.
+  retired?: boolean;
+  retired_at?: string | null;
+  // Raw field values from a form/hybrid submission, keyed by FormFieldSpec
+  // name. Whatever an org's form asked for — not a fixed shape.
+  form_data?: Record<string, string>;
   // Snapshot of the active rules at check time. Frozen on first save so
   // later rulebook edits never alter historical audit trails.
   rulebook_snapshot_rules?: PolicyRule[] | null;

@@ -26,10 +26,11 @@ import logging
 import time
 import traceback
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 import anthropic
 from ai_config import COMPLIANCE_MODEL
+from deterministic_checks import evaluate_deterministic_rules
 from models import (
     ComplianceCheckBatchResult,
     ComplianceCheckResult,
@@ -258,17 +259,41 @@ def _build_document_block(documents: list[tuple[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
-def _rulebook_to_prompt(rulebook: PolicyRulebook) -> str:
-    """Serialise the rulebook to a readable text block for the prompt.
+def _derive_overall_verdict(results: list[RuleResult]) -> Literal["approved", "flagged", "blocked"]:
+    """Same rollup logic check_payment() uses for the LLM path, reused for
+    the deterministic-only path (a pure-form submission with no documents)."""
+    verdicts = {r.verdict for r in results}
+    if "block" in verdicts:
+        return "blocked"
+    if "flag" in verdicts or "insufficient_evidence" in verdicts:
+        return "flagged"
+    return "approved"
+
+
+def _summarize_results(results: list[RuleResult]) -> str:
+    """One-line officer-facing summary for a deterministic-only check."""
+    if not results:
+        return "No rules were evaluated."
+    blocks = [r for r in results if r.verdict == "block"]
+    flags = [r for r in results if r.verdict in ("flag", "insufficient_evidence")]
+    if blocks:
+        return f"Blocked — {blocks[0].reasoning}"
+    if flags:
+        return f"Flagged for {len(flags)} issue(s) — {flags[0].reasoning}"
+    return "Approved — all rules satisfied."
+
+
+def _rulebook_to_prompt(rulebook_name: str, rules: list[PolicyRule]) -> str:
+    """Serialise a set of rules to a readable text block for the prompt.
 
     Plain labelled text is easier for the model to reason over than JSON
-    and lets the system prompt reference fields by name. Only ACTIVE rules
-    are included — deactivated rules are skipped entirely so the model
-    never even sees them.
+    and lets the system prompt reference fields by name. Callers pass only
+    the rules that should reach the model — today that's active rules with
+    evaluation_type == "llm"; deterministic rules are evaluated in code
+    (see deterministic_checks.py) and never enter the prompt at all.
     """
-    active = [r for r in rulebook.rules if r.active]
-    lines = [f"RULEBOOK: {rulebook.name}", f"Active rules: {len(active)}\n"]
-    for r in active:
+    lines = [f"RULEBOOK: {rulebook_name}", f"Active rules: {len(rules)}\n"]
+    for r in rules:
         lines.append(f"--- Rule: {r.id} ---")
         if r.clause_reference:
             lines.append(f"Clause: {r.clause_reference}")
@@ -384,6 +409,9 @@ def check_payment(
     payment_documents: list[tuple[str, str]],  # (filename, text)
     rulebook: PolicyRulebook,
     payment_label: str = "Payment Request",
+    form_data: Optional[dict[str, str]] = None,
+    prior_open_submissions: Optional[list[dict]] = None,
+    referenced_submission: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
     Evaluate a payment request bundle against a PolicyRulebook.
@@ -392,9 +420,22 @@ def check_payment(
     (many payments against the same rulebook) only pay full price for the
     first check; the rest reuse both cached blocks.
 
+    form_data / prior_open_submissions / referenced_submission: structured
+    intake for "form" and "hybrid" PaymentTypes (see
+    models.PaymentType.intake_mode). Rules on the rulebook with
+    evaluation_type == "deterministic" are evaluated in code against
+    form_data (see deterministic_checks.py) — zero LLM cost — and merged
+    into the same results list as the LLM-evaluated rules.
+    prior_open_submissions feeds "no_outstanding_advance" rules;
+    referenced_submission feeds "reference_lookup" rules (e.g. a Travel
+    Retirement validating the advance it's closing out). A rulebook whose
+    active rules are ALL deterministic, or a check with no documents, skips
+    the Claude call entirely: this is what makes a pure-form or hybrid
+    submission with only field-level rules cost nothing.
+
     Raises:
-        ValueError if no payment documents are provided, the rulebook has
-        no active rules, or the model failed to produce parsable output.
+        ValueError if the rulebook has no active rules, or the model failed
+        to produce parsable output.
     """
 
     # Inner response class. overall_verdict is intentionally typed as str
@@ -405,9 +446,6 @@ def check_payment(
         overall_summary: str
         results: list[RuleResult]
 
-    if not payment_documents:
-        raise ValueError("At least one payment document is required.")
-
     active_rules = [r for r in rulebook.rules if r.active]
     if not active_rules:
         raise ValueError(
@@ -415,9 +453,55 @@ def check_payment(
             "Activate at least one rule before running a check."
         )
 
-    rulebook_block = _rulebook_to_prompt(rulebook)
-    doc_block = _build_document_block(payment_documents)
+    # Partition: deterministic rules never reach the model at all — they're
+    # evaluated in code below and folded into the same results list.
+    llm_rules = [r for r in active_rules if r.evaluation_type == "llm"]
+    deterministic_rules = [r for r in active_rules if r.evaluation_type == "deterministic"]
+
+    deterministic_results: list[RuleResult] = (
+        evaluate_deterministic_rules(
+            deterministic_rules, form_data or {},
+            prior_open_submissions=prior_open_submissions,
+            referenced_submission=referenced_submission,
+        )
+        if deterministic_rules
+        else []
+    )
+
     filenames = [fn for fn, _ in payment_documents]
+
+    # Nothing for Claude to do — either every active rule is deterministic
+    # (a pure-form payment type), or there's no LLM-evaluable evidence
+    # (no documents) to hand it. Skip the API call entirely.
+    if not llm_rules or not payment_documents:
+        results = list(deterministic_results)
+        if llm_rules and not payment_documents:
+            # There ARE llm rules but nothing to evaluate them against — make
+            # that explicit per rule rather than silently dropping them.
+            results.extend(
+                RuleResult(
+                    rule_id=r.id,
+                    rule_description=r.description,
+                    verdict="insufficient_evidence",
+                    reasoning="No documents were provided to evaluate this rule.",
+                    missing_evidence=["supporting document(s)"],
+                    confidence="not_found",
+                )
+                for r in llm_rules
+            )
+        return ComplianceCheckResult(
+            payment_id=f"pay-{uuid.uuid4().hex[:8]}",
+            payment_label=payment_label,
+            documents=filenames,
+            rulebook_id=rulebook.id,
+            rulebook_name=rulebook.name,
+            overall_verdict=_derive_overall_verdict(results),
+            overall_summary=_summarize_results(results),
+            results=results,
+        )
+
+    rulebook_block = _rulebook_to_prompt(rulebook.name, llm_rules)
+    doc_block = _build_document_block(payment_documents)
 
     user_message = f"""PAYMENT REQUEST BUNDLE — {payment_label}:
 {doc_block}
@@ -460,17 +544,17 @@ payment text verbatim."""
     parsed = response.parsed_output
 
     # Normalise overall_verdict to the expected literal set. If the model
-    # returned something weird, derive the verdict from the rule outcomes:
-    # any block → blocked; any flag/insufficient → flagged; else approved.
+    # returned something weird, derive the verdict from the rule outcomes —
+    # now including the deterministic results, since both count toward the
+    # final verdict.
+    all_results = deterministic_results + parsed.results
     verdict = parsed.overall_verdict.lower().strip()
     if verdict not in {"approved", "flagged", "blocked"}:
-        verdicts = {r.verdict for r in parsed.results}
-        if "block" in verdicts:
-            verdict = "blocked"
-        elif "flag" in verdicts or "insufficient_evidence" in verdicts:
-            verdict = "flagged"
-        else:
-            verdict = "approved"
+        verdict = _derive_overall_verdict(all_results)
+    elif deterministic_results and _derive_overall_verdict(deterministic_results) == "blocked":
+        # The model only ever saw llm_rules, so it can't know a deterministic
+        # rule blocked the payment. A deterministic block always wins.
+        verdict = "blocked"
 
     return ComplianceCheckResult(
         payment_id=f"pay-{uuid.uuid4().hex[:8]}",
@@ -480,7 +564,7 @@ payment text verbatim."""
         rulebook_name=rulebook.name,
         overall_verdict=verdict,  # type: ignore[arg-type]
         overall_summary=parsed.overall_summary,
-        results=parsed.results,
+        results=all_results,
     )
 
 
@@ -488,6 +572,9 @@ def check_payment_safe(
     payment_documents: list[tuple[str, str]],
     rulebook: PolicyRulebook,
     payment_label: str = "Payment Request",
+    form_data: Optional[dict[str, str]] = None,
+    prior_open_submissions: Optional[list[dict]] = None,
+    referenced_submission: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
     Error-wrapped single check. A failure on one payment never breaks a batch.
@@ -497,7 +584,11 @@ def check_payment_safe(
     """
     filenames = [fn for fn, _ in payment_documents]
     try:
-        return check_payment(payment_documents, rulebook, payment_label)
+        return check_payment(
+            payment_documents, rulebook, payment_label,
+            form_data=form_data, prior_open_submissions=prior_open_submissions,
+            referenced_submission=referenced_submission,
+        )
     except Exception as exc:
         logger.error(
             "Compliance check failed for '%s' (rulebook=%s): %s\n%s",
