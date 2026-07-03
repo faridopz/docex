@@ -35,6 +35,10 @@ export default function OrgSettingsPage() {
     "screening",
     "knowledge",
   ]);
+  // No dedicated UI for this yet (still JSON-only) — but this page must
+  // round-trip it on save rather than silently wiping it out, same
+  // reasoning as the intake_mode/form_fields fix above.
+  const [approvedVendors, setApprovedVendors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -55,6 +59,7 @@ export default function OrgSettingsPage() {
           })),
         );
         setTypes(p.payment_types ?? []);
+        setApprovedVendors(p.approved_vendors ?? []);
         if (Array.isArray(p.enabled_modules) && p.enabled_modules.length) {
           setModules(p.enabled_modules);
         }
@@ -132,6 +137,7 @@ export default function OrgSettingsPage() {
         payment_subject: subject.trim() || "Payment requisition",
         enabled_modules: modules.length ? modules : ["compliance", "screening", "knowledge"],
         roles: [],
+        approved_vendors: approvedVendors,
         default_approval_workflow: stages
           .map((s) => s.name.trim())
           .filter(Boolean),
@@ -166,6 +172,7 @@ export default function OrgSettingsPage() {
         })),
       );
       setTypes(saved.payment_types ?? []);
+      setApprovedVendors(saved.approved_vendors ?? []);
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save settings.");
