@@ -19,6 +19,7 @@ import type {
   DiagnosticReportSummary,
   KnowledgeAnswer,
   OrgProfile,
+  PolicyJob,
   PolicyRule,
   PolicyRulebook,
   Question,
@@ -255,6 +256,41 @@ export async function interpretPolicy(
     throw new Error(`Failed to interpret policy (${res.status}): ${detail}`);
   }
   return res.json() as Promise<PolicyRulebook>;
+}
+
+// Non-blocking policy interpretation. Returns immediately with a job (status
+// "processing" + an instant preview); the caller polls getPolicyJob until it's
+// "ready" (carrying rulebook_id) or "error". This is what keeps the customer
+// from staring at a 30-60s spinner — the slow LLM pass runs server-side in the
+// background.
+export async function startPolicyJob(
+  name: string,
+  files: File[],
+): Promise<PolicyJob> {
+  const body = new FormData();
+  body.append("name", name);
+  for (const f of files) body.append("policy_documents", f);
+
+  const res = await fetch(`${BASE}/compliance/policy/async`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to start policy job (${res.status}): ${detail}`);
+  }
+  return res.json() as Promise<PolicyJob>;
+}
+
+export async function getPolicyJob(jobId: string): Promise<PolicyJob> {
+  const res = await fetch(
+    `${BASE}/compliance/policy/jobs/${encodeURIComponent(jobId)}`,
+  );
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Failed to load policy job (${res.status}): ${detail}`);
+  }
+  return res.json() as Promise<PolicyJob>;
 }
 
 export async function listRulebooks(): Promise<RulebookSummary[]> {

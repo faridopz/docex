@@ -26,6 +26,7 @@ web/tsconfig.tsbuildinfo
 # so that (a) the dir structure stays in source (handy for fresh checkouts)
 # and (b) we can re-include specific files via !-exception below.
 rulebooks/*
+rulebook_jobs/*
 checks/*
 verifications/*
 attendance_runs/*

@@ -29,7 +29,15 @@ from typing import Annotated, Literal, Optional
 
 import pdfplumber
 from docx import Document as DocxDocument
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 
 # Same sys.path hack the rest of api/ uses to import root-level modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -166,6 +174,7 @@ def _read_files(uploads: list[UploadFile]) -> list[tuple[str, str]]:
 
 _RULEBOOK_DIR = Path(__file__).parent.parent / "rulebooks"
 _CHECK_DIR = Path(__file__).parent.parent / "checks"
+_JOB_DIR = Path(__file__).parent.parent / "rulebook_jobs"
 _ORG_PROFILE_PATH = Path(__file__).parent.parent / "org_profile.json"
 
 
@@ -460,6 +469,199 @@ async def interpret_policy_endpoint(
         rulebook.approval_workflow = list(org.default_approval_workflow)
     rulebook.org = org.name or rulebook.org
     return _save_rulebook(rulebook)
+
+
+# ─── Async policy interpretation (non-blocking) ────────────────────────────
+#
+# The synchronous /policy endpoint above blocks the caller for the full
+# 15-40s Claude interpretation — long enough to read as "stuck" and to risk a
+# proxy/load-balancer timeout. This async variant decouples the wait:
+#
+#   1. POST /policy/async   → reads text (fast), returns a job_id + an INSTANT
+#                             deterministic preview, and schedules the LLM pass
+#                             to run in the background (with one silent retry).
+#   2. GET  /policy/jobs/id → the client polls this; when status flips to
+#                             "ready" it carries a rulebook_id to navigate to.
+#
+# The customer sees confirmation in ~1s and is never blocked; the slow work
+# happens off to the side and can retry itself instead of erroring in their
+# face. Jobs are one JSON file each under rulebook_jobs/ (same file-per-record
+# pattern as rulebooks/ and checks/ — swaps to Supabase in Phase 2).
+
+
+class PolicyPreview(BaseModel):
+    """Instant, deterministic 'we read your document' feedback (no LLM)."""
+    files: list[str]
+    page_count: int
+    word_count: int
+    section_count: int
+    summary: str  # one human line, e.g. "Procurement Policy — 3 files, ~4,200 words, 6 sections"
+
+
+class PolicyJob(BaseModel):
+    """A background policy-interpretation job the frontend polls."""
+    job_id: str
+    name: str
+    status: Literal["processing", "ready", "error"]
+    preview: PolicyPreview
+    rulebook_id: Optional[str] = None
+    error: Optional[str] = None
+    attempts: int = 0
+    created_at: str
+    updated_at: str
+
+
+_HEADING_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:\d+(?:\.\d+)*\.?\s+\S)"           # "1. ", "2.3 ", numbered clauses
+    r"|(?:(?:SECTION|ARTICLE|CLAUSE|PART|POLICY)\b)"  # explicit section words
+    r"|(?:[A-Z][A-Z0-9 ,&/()\-]{5,60}$)"   # short ALL-CAPS heading line
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _policy_preview(documents: list[tuple[str, str]]) -> PolicyPreview:
+    """Build an instant preview from already-extracted text. Pure string work
+    (no tokens, no network) — this is what the customer sees in ~1s while the
+    LLM pass runs in the background."""
+    filenames = [fn for fn, _ in documents]
+    full = "\n".join(txt for _, txt in documents)
+    # Pages: our extractor inserts "=== PAGE N ===" markers; fall back to 1.
+    page_count = full.count("=== PAGE ") or (1 if full.strip() else 0)
+    word_count = len(re.findall(r"\S+", full))
+    section_count = sum(1 for ln in full.splitlines() if _HEADING_RE.match(ln))
+    parts: list[str] = [f"{len(filenames)} file" + ("s" if len(filenames) != 1 else "")]
+    if word_count:
+        parts.append(f"~{word_count:,} words")
+    if section_count:
+        parts.append(f"{section_count} section" + ("s" if section_count != 1 else ""))
+    summary = " · ".join(parts)
+    return PolicyPreview(
+        files=filenames,
+        page_count=page_count,
+        word_count=word_count,
+        section_count=section_count,
+        summary=summary,
+    )
+
+
+def _ensure_job_dir() -> None:
+    _JOB_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _job_path(job_id: str) -> Path:
+    if "/" in job_id or ".." in job_id or not job_id.strip():
+        raise HTTPException(status_code=400, detail="Invalid job id.")
+    return _JOB_DIR / f"{job_id}.json"
+
+
+def _save_job(job: PolicyJob) -> PolicyJob:
+    _ensure_job_dir()
+    job.updated_at = _now_iso()
+    _job_path(job.job_id).write_text(job.model_dump_json(indent=2))
+    return job
+
+
+def _load_job(job_id: str) -> PolicyJob:
+    path = _job_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    try:
+        return PolicyJob.model_validate_json(path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load job '{job_id}': {exc}"
+        ) from exc
+
+
+def _run_policy_job(job_id: str, documents: list[tuple[str, str]], name: str) -> None:
+    """Background worker: run the LLM interpretation and attach the rulebook to
+    the job. Retries once on failure (transient API blips are common); only
+    marks the job errored after the retry. Never raises — a background task
+    that throws would be swallowed, leaving the job stuck on 'processing'."""
+    last_error: Optional[str] = None
+    for attempt in range(2):  # initial try + one retry
+        try:
+            rulebook = interpret_policy(documents, name)
+            # Same org-alignment the synchronous endpoint applies, so async and
+            # sync rulebooks come out identical.
+            org = _load_org_profile()
+            if org.default_approval_workflow:
+                rulebook.approval_workflow = list(org.default_approval_workflow)
+            rulebook.org = org.name or rulebook.org
+            _save_rulebook(rulebook)
+            try:
+                job = _load_job(job_id)
+            except HTTPException:
+                return  # job file vanished (redeploy wiped disk) — nothing to update
+            job.status = "ready"
+            job.rulebook_id = rulebook.id
+            job.error = None
+            job.attempts = attempt + 1
+            _save_job(job)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            try:
+                job = _load_job(job_id)
+                job.attempts = attempt + 1
+                job.error = last_error
+                _save_job(job)  # keep status 'processing' between attempts
+            except HTTPException:
+                return
+    # Both attempts failed — surface it.
+    try:
+        job = _load_job(job_id)
+        job.status = "error"
+        job.error = last_error
+        _save_job(job)
+    except HTTPException:
+        return
+
+
+@router.post("/policy/async", response_model=PolicyJob)
+async def interpret_policy_async_endpoint(
+    background_tasks: BackgroundTasks,
+    policy_documents: Annotated[
+        list[UploadFile],
+        File(description="Policy document(s) to interpret — PDF, DOCX, or TXT"),
+    ],
+    name: Annotated[
+        str,
+        Form(description="Human-readable name, e.g. 'TA Connect Procurement Policy 2025'"),
+    ],
+) -> PolicyJob:
+    """Start a policy interpretation WITHOUT blocking the caller.
+
+    Reads the document text (fast, deterministic), returns immediately with a
+    job id + an instant preview, and runs the slow LLM extraction in the
+    background. The client polls GET /policy/jobs/{id} until it's ready.
+    """
+    if not name.strip():
+        raise HTTPException(status_code=422, detail="Rulebook name is required.")
+    # Read text now — UploadFile streams can't be read once the request returns,
+    # and we need the text both for the preview and for the background task.
+    docs = _read_files(policy_documents)
+    now = _now_iso()
+    job = PolicyJob(
+        job_id=f"job-{uuid.uuid4().hex[:10]}",
+        name=name.strip(),
+        status="processing",
+        preview=_policy_preview(docs),
+        created_at=now,
+        updated_at=now,
+    )
+    _save_job(job)
+    background_tasks.add_task(_run_policy_job, job.job_id, docs, name.strip())
+    return job
+
+
+@router.get("/policy/jobs/{job_id}", response_model=PolicyJob)
+async def get_policy_job_endpoint(job_id: str) -> PolicyJob:
+    """Poll a policy-interpretation job. status is 'processing' until the
+    background LLM pass finishes, then 'ready' (with rulebook_id) or 'error'."""
+    return _load_job(job_id)
 
 
 # ─── Organisation profile (the per-org config layer) ───────────────────────

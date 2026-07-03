@@ -181,6 +181,31 @@ export interface RulebookListResponse {
   rulebooks: RulebookSummary[];
 }
 
+// Instant, deterministic "we read your document" feedback shown the moment a
+// policy is uploaded — no LLM, so it returns in ~1s.
+export interface PolicyPreview {
+  files: string[];
+  page_count: number;
+  word_count: number;
+  section_count: number;
+  summary: string;
+}
+
+// A background policy-interpretation job. Upload returns one of these
+// immediately (status "processing" + preview); the client polls until it's
+// "ready" (carrying rulebook_id) or "error".
+export interface PolicyJob {
+  job_id: string;
+  name: string;
+  status: "processing" | "ready" | "error";
+  preview: PolicyPreview;
+  rulebook_id: string | null;
+  error: string | null;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type RuleVerdict =
   | "pass"
   | "flag"
