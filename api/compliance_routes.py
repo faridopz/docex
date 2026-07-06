@@ -73,6 +73,7 @@ from notifications import (  # noqa: E402
 from approval_tokens import make_token, verify_token  # noqa: E402
 from approval_webhook import emit_approval_request, verify_callback_secret  # noqa: E402
 import fast_extract  # noqa: E402 — fast PDF text extraction (fitz-first)
+import policy_rules  # noqa: E402 — deterministic policy → rules extraction (no LLM)
 from doc_completeness import check_completeness  # noqa: E402 — deterministic doc-presence
 from .schemas import (  # noqa: E402
     CheckListResponse,
@@ -552,46 +553,125 @@ def _load_job(job_id: str) -> PolicyJob:
         ) from exc
 
 
+def _log_job(job_id: str, msg: str) -> None:
+    """Write a job progress line to stderr so it shows up in Railway logs —
+    the engine's real work is otherwise invisible. Flushed immediately."""
+    try:
+        sys.stderr.write(f"[policy-job {job_id}] {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+# A policy with at least this many code-extracted rules is treated as fully
+# handled by the deterministic pass — the LLM fallback only runs for sparse or
+# unusually-worded policies where code found little.
+_MIN_CODE_RULES = 3
+
+
+def _apply_org_workflow(rulebook: PolicyRulebook) -> PolicyRulebook:
+    """Align a freshly-built rulebook with THIS org's approval chain + name,
+    exactly as the synchronous /policy endpoint does."""
+    org = _load_org_profile()
+    if org.default_approval_workflow:
+        rulebook.approval_workflow = list(org.default_approval_workflow)
+    rulebook.org = org.name or rulebook.org
+    return rulebook
+
+
+def _rulebook_from_rules(name, documents, rules, note):
+    """Build a PolicyRulebook from an already-extracted rule list."""
+    return PolicyRulebook(
+        id=f"rb-{uuid.uuid4().hex[:8]}",
+        name=name,
+        source_documents=[fn for fn, _ in documents],
+        rules=rules,
+        interpretation_notes=note,
+        approval_workflow=["Compliance Check", "Review", "Approval"],
+    )
+
+
+def _mark_job_ready(job_id, rulebook, started, how) -> None:
+    _save_rulebook(rulebook)
+    try:
+        job = _load_job(job_id)
+    except HTTPException:
+        return  # job file vanished (redeploy wiped disk) — nothing to update
+    job.status = "ready"
+    job.rulebook_id = rulebook.id
+    job.error = None
+    _save_job(job)
+    secs = (dt.datetime.now(dt.timezone.utc) - started).total_seconds()
+    _log_job(job_id, f"ready in {secs:.1f}s via {how} — {len(rulebook.rules)} rules → {rulebook.id}")
+
+
 def _run_policy_job(job_id: str, documents: list[tuple[str, str]], name: str) -> None:
-    """Background worker: run the LLM interpretation and attach the rulebook to
-    the job. Retries once on failure (transient API blips are common); only
-    marks the job errored after the retry. Never raises — a background task
-    that throws would be swallowed, leaving the job stuck on 'processing'."""
+    """Background worker — code-first, AI-fallback, graceful-degradation.
+
+    1. Deterministic extraction (policy_rules): instant, no tokens. If it finds
+       enough rules, we're done — no LLM call at all.
+    2. Only if code found too little do we fall back to Claude (with one retry).
+    3. If Claude also fails but code found *something*, ship the code rules
+       rather than error. We only hard-fail when nothing produced any rules.
+
+    Never raises — a background task that throws would leave the job stuck on
+    'processing' (the stale-guard in the poll endpoint would still rescue it,
+    but we handle it cleanly here)."""
+    started = dt.datetime.now(dt.timezone.utc)
+    _log_job(job_id, f"starting: {len(documents)} document(s) for '{name}'")
+
+    # Pass 1 — deterministic code extraction (no LLM).
+    try:
+        code_rules = policy_rules.extract_rules(documents)
+    except Exception as exc:  # noqa: BLE001
+        code_rules = []
+        _log_job(job_id, f"deterministic pass error (continuing): {exc}")
+
+    if len(code_rules) >= _MIN_CODE_RULES:
+        rb = _apply_org_workflow(_rulebook_from_rules(
+            name, documents, code_rules,
+            "Rules extracted deterministically from the policy text (no AI). "
+            "Each rule cites the exact clause it came from — review and edit as needed.",
+        ))
+        _mark_job_ready(job_id, rb, started, "deterministic")
+        return
+
+    # Pass 2 — LLM fallback, only for sparse/unusual policies.
+    _log_job(job_id, f"deterministic found {len(code_rules)} (<{_MIN_CODE_RULES}); trying AI")
     last_error: Optional[str] = None
-    for attempt in range(2):  # initial try + one retry
+    for attempt in range(2):
         try:
-            rulebook = interpret_policy(documents, name)
-            # Same org-alignment the synchronous endpoint applies, so async and
-            # sync rulebooks come out identical.
-            org = _load_org_profile()
-            if org.default_approval_workflow:
-                rulebook.approval_workflow = list(org.default_approval_workflow)
-            rulebook.org = org.name or rulebook.org
-            _save_rulebook(rulebook)
-            try:
-                job = _load_job(job_id)
-            except HTTPException:
-                return  # job file vanished (redeploy wiped disk) — nothing to update
-            job.status = "ready"
-            job.rulebook_id = rulebook.id
-            job.error = None
-            job.attempts = attempt + 1
-            _save_job(job)
+            rulebook = _apply_org_workflow(interpret_policy(documents, name))
+            _mark_job_ready(job_id, rulebook, started, "AI")
             return
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
+            _log_job(job_id, f"AI attempt {attempt + 1} failed: {last_error}")
             try:
                 job = _load_job(job_id)
                 job.attempts = attempt + 1
                 job.error = last_error
-                _save_job(job)  # keep status 'processing' between attempts
+                _save_job(job)
             except HTTPException:
                 return
-    # Both attempts failed — surface it.
+
+    # Pass 3 — AI failed. If code found anything at all, ship it (don't error).
+    if code_rules:
+        rb = _apply_org_workflow(_rulebook_from_rules(
+            name, documents, code_rules,
+            "The AI pass was unavailable, so these rules were extracted "
+            "deterministically. Review carefully — some nuanced clauses may be "
+            "missing.",
+        ))
+        _mark_job_ready(job_id, rb, started, "deterministic (AI fallback failed)")
+        return
+
+    # Nothing produced any rules — surface an honest error.
+    _log_job(job_id, f"giving up: {last_error}")
     try:
         job = _load_job(job_id)
         job.status = "error"
-        job.error = last_error
+        job.error = last_error or "No rules could be extracted from the policy."
         _save_job(job)
     except HTTPException:
         return
@@ -634,11 +714,49 @@ async def interpret_policy_async_endpoint(
     return job
 
 
+# A job still "processing" after this long is treated as dead: the background
+# worker either hung on the AI call or was killed (e.g. container restart). We
+# surface an honest error instead of letting the UI spin forever — the whole
+# point of not lying to the user about progress.
+_JOB_STALE_SECONDS = 150
+
+
+def _job_is_stale(job: PolicyJob) -> bool:
+    if job.status != "processing":
+        return False
+    try:
+        started = dt.datetime.fromisoformat(job.created_at)
+    except Exception:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - started).total_seconds()
+    return age > _JOB_STALE_SECONDS
+
+
 @router.get("/policy/jobs/{job_id}", response_model=PolicyJob)
 async def get_policy_job_endpoint(job_id: str) -> PolicyJob:
     """Poll a policy-interpretation job. status is 'processing' until the
-    background LLM pass finishes, then 'ready' (with rulebook_id) or 'error'."""
-    return _load_job(job_id)
+    background LLM pass finishes, then 'ready' (with rulebook_id) or 'error'.
+
+    If a job has been 'processing' past the stale threshold, we flip it to
+    'error' here — a stuck background worker (hung AI call, killed container)
+    must never leave the UI spinning indefinitely.
+    """
+    job = _load_job(job_id)
+    if _job_is_stale(job):
+        job.status = "error"
+        job.error = (
+            "Rule generation didn't finish in time. The AI service may be "
+            "unreachable or ANTHROPIC_API_KEY may be missing on the server. "
+            "Please try again — if it keeps happening, check the backend logs."
+        )
+        try:
+            _save_job(job)
+        except Exception:  # noqa: BLE001
+            pass
+        _log_job(job_id, "marked stale (processing exceeded threshold)")
+    return job
 
 
 # ─── Organisation profile (the per-org config layer) ───────────────────────
