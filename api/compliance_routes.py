@@ -22,6 +22,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -93,71 +94,47 @@ router = APIRouter(prefix="/compliance", tags=["compliance"])
 # local avoids touching the working extraction flow.
 
 def _extract_text(upload: UploadFile) -> str:
-    """Extract plain text from a PDF, DOCX, or TXT upload."""
-    raw = upload.file.read()
-    name = (upload.filename or "").lower()
-
-    if name.endswith(".pdf"):
-        # Fast path: PyMuPDF (fitz) — ~5-10x pdfplumber — with automatic
-        # pdfplumber fallback if fitz isn't installed. Same "=== PAGE N ==="
-        # markers, so source-page citations are unaffected.
-        return fast_extract.extract_text(upload.filename or "", raw).strip()
-
-    if name.endswith(".docx"):
-        doc = DocxDocument(io.BytesIO(raw))
-        return _docx_to_text(doc).strip()
-
-    try:
-        return raw.decode("utf-8").strip()
-    except UnicodeDecodeError:
-        return raw.decode("latin-1").strip()
-
-
-def _docx_to_text(doc: DocxDocument) -> str:
-    """Flatten a docx into plain text including table cells.
-
-    Iterates the body in document order so paragraphs and tables appear in
-    the right sequence — important when answers depend on the table that
-    immediately follows a heading.
-    """
-    from docx.oxml.ns import qn
-
-    parts: list[str] = []
-    body = doc.element.body
-    for child in body.iterchildren():
-        tag = child.tag
-        if tag == qn("w:p"):
-            text = "".join(t.text or "" for t in child.iter(qn("w:t")))
-            if text.strip():
-                parts.append(text)
-        elif tag == qn("w:tbl"):
-            for row in child.iter(qn("w:tr")):
-                cells: list[str] = []
-                for cell in row.iter(qn("w:tc")):
-                    cell_text = "".join(t.text or "" for t in cell.iter(qn("w:t")))
-                    cells.append(cell_text.strip())
-                if any(cells):
-                    parts.append(" | ".join(cells))
-            parts.append("")
-    return "\n".join(parts)
+    """Extract plain text from a single upload via the shared fast_extract layer
+    (identical PDF/DOCX/TXT handling to every other DOCex engine)."""
+    return fast_extract.extract_text(upload.filename or "", upload.file.read()).strip()
 
 
 def _read_files(uploads: list[UploadFile]) -> list[tuple[str, str]]:
-    """Extract text from uploaded files into (filename, text) tuples.
+    """Extract text from uploaded files into (filename, text) tuples, IN PARALLEL.
 
-    Skips files that fail to parse individually (logs a warning), but raises
-    a 422 if NO files yielded text — there's nothing to work with downstream.
+    Reads bytes (quick sequential I/O) then fans parsing out across a thread
+    pool. Skips files that yield no text, but raises a 422 if NO file did — and
+    when the reason is that the uploads were scanned images with no text layer,
+    it says so explicitly so the officer knows to OCR them, rather than a
+    generic 'no text' message they can't act on.
     """
-    out: list[tuple[str, str]] = []
+    named_bytes: list[tuple[str, bytes]] = []
     for upload in uploads:
         filename = upload.filename or f"file_{uuid.uuid4().hex[:6]}"
         try:
-            text = _extract_text(upload)
-            if text:
-                out.append((filename, text))
+            named_bytes.append((filename, upload.file.read()))
         except Exception as exc:
-            print(f"Warning: could not extract text from '{filename}': {exc}")
+            print(f"Warning: could not read '{filename}': {exc}")
+
+    out: list[tuple[str, str]] = []
+    scanned: list[str] = []
+    for filename, text, is_scanned in fast_extract.extract_many_detailed(named_bytes):
+        if text:
+            out.append((filename, text))
+        elif is_scanned:
+            scanned.append(filename)
+
     if not out:
+        if scanned:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "These files look like scanned images with no text layer, so "
+                    "there is nothing to read: "
+                    + ", ".join(scanned)
+                    + ". Please upload a text-based PDF/DOCX, or a copy run through OCR."
+                ),
+            )
         raise HTTPException(
             status_code=422,
             detail="No text could be extracted from the uploaded documents. "
@@ -693,10 +670,8 @@ async def precheck_endpoint(
         (t for t in org.payment_types if t.name.strip().lower() == want), None
     )
     required = pt.required_documents if pt else []
-    files: list[tuple[str, str]] = []
-    for u in payment_documents:
-        raw = u.file.read()
-        files.append((u.filename or "file", fast_extract.extract_text(u.filename or "", raw)))
+    named_bytes = [(u.filename or "file", u.file.read()) for u in payment_documents]
+    files = fast_extract.extract_many(named_bytes)
     result = check_completeness(required, files)
     return PrecheckOut(checklist=required, **result)
 

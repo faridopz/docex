@@ -17,6 +17,10 @@ dockerfilePath = "api/Dockerfile"
 [deploy]
 # Railway provides $PORT at runtime; the Dockerfile CMD already respects it.
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+# Cold boot imports heavy libs (PyMuPDF, pdfplumber, anthropic) before uvicorn
+# can answer /health. 30s was tight enough that a slow cold start could miss the
+# window and get rolled back; 300s gives ample margin without masking a real
+# crash (a crashed process still fails fast — this only helps genuine slow boots).
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

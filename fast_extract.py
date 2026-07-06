@@ -3,7 +3,10 @@ Fast text extraction — code, not LLM.
 
 Pulling raw text out of a document is a solved, deterministic problem: a good
 parser does it in milliseconds. DOCex reserves LLM tokens for *understanding*
-text, never for extracting it.
+text, never for extracting it. This module is the SINGLE shared extraction
+layer — every engine (screening, compliance, knowledge) routes uploads through
+here so they all get the same speed, the same fallbacks, and the same handling
+of scans.
 
 PDF strategy:
   1. PyMuPDF (``fitz``) when available — the fastest text extractor by a wide
@@ -12,12 +15,30 @@ PDF strategy:
   3. Empty string when a PDF has no text layer (a scan) — the caller can then
      decide to OCR, rather than silently returning nothing useful.
 
+DOCX strategy:
+  Walk the document body IN ORDER, capturing both paragraphs and table cells,
+  so a table that answers a heading stays next to that heading. NGO reports put
+  much of the substance (indicator tables, target-vs-actual, financials) in
+  tables — paragraph-only extraction silently drops most of it.
+
 Page markers ("=== PAGE N ===") are preserved so downstream citations can still
 report a source page.
+
+Batch helpers:
+  ``extract_many`` parses a list of files IN PARALLEL (a thread pool). fitz and
+  pdfplumber release the GIL during page work, so ingesting many docs — the
+  screening "5-8 files per applicant" case — is meaningfully faster than the
+  old file-by-file loop, while preserving input order.
 """
 from __future__ import annotations
 
 import io
+from concurrent.futures import ThreadPoolExecutor
+
+# Parsing is I/O + C-extension heavy (fitz/pdfplumber release the GIL), so a
+# modest thread pool overlaps the work. Capped so a huge batch can't spawn an
+# unbounded number of threads.
+_MAX_WORKERS = 8
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -35,6 +56,65 @@ def extract_text(filename: str, data: bytes) -> str:
         return data.decode("utf-8", errors="ignore")
     except Exception:
         return ""
+
+
+def extract_detail(filename: str, data: bytes) -> tuple[str, bool]:
+    """Like ``extract_text`` but also reports whether the file looks scanned.
+
+    Returns ``(text, scanned)`` where ``scanned`` is True for a PDF that yielded
+    no text layer (an image/scan that would need OCR). Surfacing this lets a
+    caller warn "this file is a scan we couldn't read" instead of silently
+    dropping it — the difference between a confusing empty result and a clear
+    one. Single parse pass; no double work.
+    """
+    text = extract_text(filename, data)
+    scanned = (not text.strip()) and (filename or "").lower().endswith(".pdf")
+    return text, scanned
+
+
+def extract_many(
+    files: list[tuple[str, bytes]],
+    max_workers: int = _MAX_WORKERS,
+) -> list[tuple[str, str]]:
+    """Extract text from many files IN PARALLEL, preserving input order.
+
+    files: list of (filename, raw_bytes)
+    Returns: list of (filename, text) in the same order as the input. Files that
+    fail to parse come back with "" (never dropped here — the caller decides
+    whether an empty result should be skipped or surfaced).
+    """
+    if not files:
+        return []
+    # One file: skip the pool overhead entirely.
+    if len(files) == 1:
+        fn, data = files[0]
+        return [(fn, extract_text(fn, data))]
+    workers = max(1, min(max_workers, len(files)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # executor.map preserves order, so results line up with `files`.
+        texts = list(pool.map(lambda f: extract_text(f[0], f[1]), files))
+    return [(files[i][0], texts[i]) for i in range(len(files))]
+
+
+def extract_many_detailed(
+    files: list[tuple[str, bytes]],
+    max_workers: int = _MAX_WORKERS,
+) -> list[tuple[str, str, bool]]:
+    """Parallel variant that also returns the scanned flag per file.
+
+    Returns: list of (filename, text, scanned) in input order. Use this when the
+    engine wants to tell the user which uploads were unreadable scans.
+    """
+    if not files:
+        return []
+    if len(files) == 1:
+        fn, data = files[0]
+        text, scanned = extract_detail(fn, data)
+        return [(fn, text, scanned)]
+    workers = max(1, min(max_workers, len(files)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        details = list(pool.map(lambda f: extract_detail(f[0], f[1]), files))
+    return [(files[i][0], details[i][0], details[i][1]) for i in range(len(files))]
 
 
 def is_probably_scanned(filename: str, data: bytes) -> bool:
@@ -81,17 +161,34 @@ def _extract_pdf(data: bytes) -> str:
 
 
 def _extract_docx(data: bytes) -> str:
+    """Flatten a docx into plain text including table cells, in document order.
+
+    Iterates the body element in order so paragraphs and tables appear in the
+    right sequence — important when an answer depends on the table that
+    immediately follows a heading.
+    """
     try:
         from docx import Document
+        from docx.oxml.ns import qn
 
         doc = Document(io.BytesIO(data))
-        lines = [p.text for p in doc.paragraphs if p.text.strip()]
-        # Tables often hold the real data (line items, amounts) — include them.
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                if cells:
-                    lines.append(" | ".join(cells))
-        return "\n".join(lines)
+        parts: list[str] = []
+        body = doc.element.body
+        for child in body.iterchildren():
+            tag = child.tag
+            if tag == qn("w:p"):
+                text = "".join(t.text or "" for t in child.iter(qn("w:t")))
+                if text.strip():
+                    parts.append(text)
+            elif tag == qn("w:tbl"):
+                for row in child.iter(qn("w:tr")):
+                    cells: list[str] = []
+                    for cell in row.iter(qn("w:tc")):
+                        cell_text = "".join(t.text or "" for t in cell.iter(qn("w:t")))
+                        cells.append(cell_text.strip())
+                    if any(cells):
+                        parts.append(" | ".join(cells))
+                parts.append("")  # blank line after each table
+        return "\n".join(parts)
     except Exception:
         return ""

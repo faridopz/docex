@@ -247,62 +247,13 @@ app.include_router(knowledge_router)
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _extract_text(upload: UploadFile) -> str:
-    """Extract plain text from a PDF, DOCX, or TXT upload."""
-    raw = upload.file.read()
-    name = (upload.filename or "").lower()
+    """Extract plain text from a single PDF, DOCX, or TXT upload.
 
-    if name.endswith(".pdf"):
-        # Fast path: PyMuPDF (fitz) — ~5-10x pdfplumber — with pdfplumber
-        # fallback if fitz isn't installed. Same "=== PAGE N ===" markers.
-        return fast_extract.extract_text(upload.filename or "", raw).strip()
-
-    if name.endswith(".docx"):
-        # Walk the document body in order, capturing both paragraphs AND
-        # table cell text. NGO reports put a lot of the substance (indicator
-        # tables, target-vs-actual tables, financial summaries) in tables —
-        # paragraph-only extraction silently drops most of it.
-        doc = DocxDocument(io.BytesIO(raw))
-        return _docx_to_text(doc).strip()
-
-    try:
-        return raw.decode("utf-8").strip()
-    except UnicodeDecodeError:
-        return raw.decode("latin-1").strip()
-
-
-def _docx_to_text(doc: DocxDocument) -> str:
+    Thin wrapper over the shared fast_extract layer so screening, compliance,
+    and knowledge all parse documents identically (same fitz→pdfplumber PDF
+    path, same order-preserving DOCX walk, same fallbacks).
     """
-    Flatten a docx into plain text including table cells.
-
-    Iterates the body element in document order so paragraphs and tables
-    appear in the right sequence — important when answers depend on the
-    table that immediately follows a heading.
-    """
-    from docx.oxml.ns import qn  # local import keeps top of file clean
-
-    parts: list[str] = []
-    body = doc.element.body
-
-    for child in body.iterchildren():
-        tag = child.tag
-        if tag == qn("w:p"):
-            # Paragraph — read its text
-            text = "".join(t.text or "" for t in child.iter(qn("w:t")))
-            if text.strip():
-                parts.append(text)
-        elif tag == qn("w:tbl"):
-            # Table — read each row as a pipe-separated line so structure
-            # is preserved enough for Claude to recognise tabular data.
-            for row in child.iter(qn("w:tr")):
-                cells: list[str] = []
-                for cell in row.iter(qn("w:tc")):
-                    cell_text = "".join(t.text or "" for t in cell.iter(qn("w:t")))
-                    cells.append(cell_text.strip())
-                if any(cells):
-                    parts.append(" | ".join(cells))
-            parts.append("")  # blank line after each table
-
-    return "\n".join(parts)
+    return fast_extract.extract_text(upload.filename or "", upload.file.read()).strip()
 
 
 def _parse_questions(questions_json: str) -> list[Question]:
@@ -321,20 +272,27 @@ def _parse_questions(questions_json: str) -> list[Question]:
 
 def _read_uploads(uploads: list[UploadFile]) -> dict[str, tuple[str, str]]:
     """
-    Extract text from every uploaded file.
+    Extract text from every uploaded file, IN PARALLEL.
     Returns a dict of {filename: (filename, text)}.
-    Files that fail to parse are silently skipped — the caller decides
-    whether to raise or continue.
+
+    Reading the bytes is quick sequential I/O; the slow part is parsing, which
+    fast_extract.extract_many fans out across a thread pool. For an applicant
+    with 5-8 documents this turns a serial parse into a concurrent one.
+    Files that yield no text are skipped — the caller decides whether to raise
+    or continue.
     """
-    result: dict[str, tuple[str, str]] = {}
+    named_bytes: list[tuple[str, bytes]] = []
     for upload in uploads:
         filename = upload.filename or f"file_{uuid.uuid4().hex[:6]}"
         try:
-            text = _extract_text(upload)
-            if text:
-                result[filename] = (filename, text)
+            named_bytes.append((filename, upload.file.read()))
         except Exception as exc:
-            print(f"Warning: could not extract text from '{filename}': {exc}")
+            print(f"Warning: could not read '{filename}': {exc}")
+
+    result: dict[str, tuple[str, str]] = {}
+    for filename, text in fast_extract.extract_many(named_bytes):
+        if text:
+            result[filename] = (filename, text)
     return result
 
 
