@@ -1240,6 +1240,90 @@ def _resolve_reference_lookup(
     }
 
 
+def _try_load_rulebook(rulebook_id: Optional[str]) -> Optional[PolicyRulebook]:
+    """Non-raising rulebook load — a stale/missing id resolves to None so the
+    form flow can self-heal instead of 404-ing."""
+    if not (rulebook_id or "").strip():
+        return None
+    try:
+        return _load_rulebook(rulebook_id.strip())
+    except HTTPException:
+        return None
+
+
+def _starter_kind_for_type(name: str) -> Optional[str]:
+    """Map a payment-type name to a deterministic starter template kind."""
+    n = (name or "").lower()
+    if "vendor" in n:
+        return "vendor_payment"
+    if "retire" in n or "retirement" in n:
+        return "travel_retirement"
+    if "advance" in n or "travel" in n:
+        return "travel_advance"
+    return None
+
+
+def _seed_starter_rulebook(kind: str, org: OrgProfile) -> PolicyRulebook:
+    """Create + persist a deterministic starter rulebook (no AI, no cost)."""
+    default_name, rules_factory = _STARTER_RULEBOOK_TEMPLATES[kind]
+    return _save_rulebook(PolicyRulebook(
+        id=f"rb-{uuid.uuid4().hex[:8]}",
+        name=default_name,
+        source_documents=[],
+        rules=rules_factory(),
+        org=org.name or None,
+        approval_workflow=(
+            list(org.default_approval_workflow)
+            if org.default_approval_workflow else ["Approval"]
+        ),
+    ))
+
+
+def _resolve_form_rulebook(
+    payment_type: PaymentType,
+    rulebook_id: Optional[str],
+    docs: list[tuple[str, str]],
+    org: OrgProfile,
+) -> Optional[PolicyRulebook]:
+    """Resolve the rulebook to check a form/hybrid submission against — and
+    SELF-HEAL a stale reference.
+
+    Ephemeral storage means a payment type's configured default_rulebook_id can
+    point at a rulebook that was wiped on redeploy. Rather than 404 (which broke
+    the requisition form), we fall back: seed a deterministic starter rulebook
+    for this payment type, re-point the payment type at it, and persist — so the
+    next submission is instant and stable.
+    Order: explicit override → existing default → seeded starter → auto-route.
+    """
+    if rulebook_id:
+        return _load_rulebook(rulebook_id)  # explicit override must exist
+
+    existing = _try_load_rulebook(payment_type.default_rulebook_id)
+    if existing is not None:
+        return existing
+
+    kind = _starter_kind_for_type(payment_type.name)
+    if kind:
+        seeded = _seed_starter_rulebook(kind, org)
+        # Re-point the payment type so we don't reseed on every submit.
+        payment_type.default_rulebook_id = seeded.id
+        try:
+            _save_org_profile(org)
+        except Exception:  # noqa: BLE001 — never let a config write break a check
+            pass
+        return seeded
+
+    if docs:
+        import compliance_router  # local import — keeps module load light
+
+        text = "\n\n".join(t for _, t in docs)
+        suggestions = compliance_router.rank_rulebooks(text, _list_rulebooks())
+        strong = [s for s in suggestions if s.confidence in ("high", "medium")]
+        if strong:
+            return _load_rulebook(strong[0].rulebook_id)
+    return None
+
+
 @router.post("/check/form", response_model=ComplianceCheckResult)
 async def check_form_endpoint(
     payment_type_name: Annotated[
@@ -1295,28 +1379,16 @@ async def check_form_endpoint(
 
     docs = _read_files(payment_documents) if payment_documents else []
 
-    rulebook: Optional[PolicyRulebook] = None
-    if rulebook_id:
-        rulebook = _load_rulebook(rulebook_id)
-    elif payment_type.default_rulebook_id:
-        rulebook = _load_rulebook(payment_type.default_rulebook_id)
-    elif docs:
-        import compliance_router  # local import — keeps module load light
-
-        text = "\n\n".join(fn_text for _, fn_text in docs)
-        suggestions = compliance_router.rank_rulebooks(text, _list_rulebooks())
-        strong = [s for s in suggestions if s.confidence in ("high", "medium")]
-        if strong:
-            rulebook = _load_rulebook(strong[0].rulebook_id)
-
+    # Self-healing resolution: an existing rulebook, else a seeded deterministic
+    # starter for this payment type, else auto-route from any attached docs.
+    rulebook = _resolve_form_rulebook(payment_type, rulebook_id, docs, org)
     if rulebook is None:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"No rulebook configured for '{payment_type_name}'. Set "
-                "default_rulebook_id on this payment type in the org profile, "
-                "pass rulebook_id explicitly, or attach documents so DOCex "
-                "can auto-route."
+                f"No rulebook could be resolved for '{payment_type_name}'. Attach "
+                "supporting documents so DOCex can auto-route, or set "
+                "default_rulebook_id on this payment type in the org profile."
             ),
         )
 
