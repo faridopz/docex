@@ -50,6 +50,8 @@ def extract_text(filename: str, data: bytes) -> str:
             return _extract_pdf(data)
         if name.endswith(".docx"):
             return _extract_docx(data)
+        if name.endswith((".xlsx", ".xlsm")):
+            return _extract_xlsx(data)
         if name.endswith((".txt", ".text", ".md", ".csv", ".tsv")):
             return data.decode("utf-8", errors="ignore")
         # Unknown extension — best-effort decode (covers stray text files).
@@ -158,6 +160,66 @@ def _extract_pdf(data: bytes) -> str:
         return "\n".join(parts)
     except Exception:
         return ""
+
+
+def _cell_to_str(value) -> str:
+    """Render an Excel cell value as clean text. Numbers avoid scientific
+    notation (so ₦1,250,000 stays readable), integers drop the '.0', and
+    dates/datetimes stringify to an ISO-ish form the date regex can read."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value).strip()
+
+
+def _extract_xlsx(data: bytes) -> str:
+    """Extract a spreadsheet (.xlsx/.xlsm) into text — for payment vouchers,
+    schedules, and any table-shaped document.
+
+    Rendering is tuned so the downstream field extractors still work: a
+    two-column row (the classic 'Label | Value' voucher layout) is rendered as
+    'Label: Value' so labelled-regex extraction ('Invoice No: ...', 'Total: ...')
+    fires exactly as it does on a PDF; wider rows (line items, headers) are
+    pipe-joined. Uses data_only so computed cells return their VALUE, not the
+    formula, and read_only for speed on large sheets.
+    """
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        return ""
+
+    parts: list[str] = []
+    try:
+        for ws in wb.worksheets:
+            rows_out: list[str] = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= 5000:  # guard against runaway sheets
+                    break
+                cells = [_cell_to_str(c) for c in row]
+                cells = [c for c in cells if c]
+                if not cells:
+                    continue
+                if len(cells) == 2:
+                    rows_out.append(f"{cells[0]}: {cells[1]}")
+                else:
+                    rows_out.append(" | ".join(cells))
+            if rows_out:
+                # Sheet marker mirrors the "=== PAGE N ===" markers so downstream
+                # citation/structure handling stays consistent.
+                parts.append(f"=== SHEET: {ws.title} ===\n" + "\n".join(rows_out))
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return "\n\n".join(parts)
 
 
 def _extract_docx(data: bytes) -> str:

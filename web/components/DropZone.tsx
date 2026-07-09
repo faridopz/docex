@@ -13,8 +13,8 @@ import { detectQuarter } from "@/lib/quarter-detect";
  * (Compliance check flow) can share it without duplication.
  *
  * Behaviour:
- *   - Accepts PDF, DOCX, TXT. Anything else is silently rejected with a
- *     dismissable amber notice — never a hard error, never a popup.
+ *   - Accepts PDF, DOCX, XLSX, CSV, TXT. Anything else is silently rejected
+ *     with a dismissable amber notice — never a hard error, never a popup.
  *   - Deduplicates by (filename, size) so re-dragging the same file is
  *     a no-op instead of doubling up.
  *   - Detects quarter labels from filenames (Q3-2024 etc.) and shows a
@@ -24,8 +24,8 @@ import { detectQuarter } from "@/lib/quarter-detect";
  * Visual rule: never red, never alarming. Files are tools, not threats.
  */
 
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
-const ACCEPTED_LABEL = "PDF, DOCX, or TXT";
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".xlsx", ".xlsm", ".csv", ".txt"];
+const ACCEPTED_LABEL = "PDF, DOCX, Excel, CSV, or TXT";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
