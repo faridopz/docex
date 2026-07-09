@@ -58,6 +58,7 @@ from models import (  # noqa: E402
     PaymentType,
     PolicyRulebook,
     RiskEntry,
+    RuleResult,
     default_travel_advance_rules,
     default_travel_retirement_rules,
     default_vendor_payment_rules,
@@ -74,6 +75,7 @@ from approval_tokens import make_token, verify_token  # noqa: E402
 from approval_webhook import emit_approval_request, verify_callback_secret  # noqa: E402
 import fast_extract  # noqa: E402 — fast PDF text extraction (fitz-first)
 import policy_rules  # noqa: E402 — deterministic policy → rules extraction (no LLM)
+import payment_checks  # noqa: E402 — deterministic AP controls (three-way match, duplicates)
 from doc_completeness import check_completeness  # noqa: E402 — deterministic doc-presence
 from .schemas import (  # noqa: E402
     CheckListResponse,
@@ -1047,6 +1049,30 @@ async def route_payment_endpoint(
     ]
 
 
+def _prior_invoice_numbers() -> list[str]:
+    """Invoice numbers from previously-saved checks — the duplicate-payment
+    history. Reads the same check files the audit log uses."""
+    out: list[str] = []
+    for c in _list_checks():
+        num = getattr(c, "invoice_number", None)
+        if num and str(num).strip():
+            out.append(str(num).strip())
+    return out
+
+
+def _run_ap_controls(docs: list[tuple[str, str]]) -> tuple[list[RuleResult], Optional[str]]:
+    """Run the deterministic AP controls (three-way match + duplicate detection)
+    over a payment's documents. Fail-safe: any error yields empty findings so
+    the LLM check still runs. Returns (findings, this-payment invoice number)."""
+    try:
+        priors = _prior_invoice_numbers()
+        findings = payment_checks.run_document_checks(docs, prior_invoice_numbers=priors)
+        return findings, payment_checks.primary_invoice_number(docs)
+    except Exception as exc:  # noqa: BLE001 — never let the fast path break a check
+        print(f"Warning: deterministic AP controls failed (continuing): {exc}")
+        return [], None
+
+
 @router.post("/check/single", response_model=ComplianceCheckResult)
 async def check_single_endpoint(
     payment_documents: Annotated[
@@ -1083,7 +1109,15 @@ async def check_single_endpoint(
     """
     rulebook = _load_rulebook(rulebook_id)
     docs = _read_files(payment_documents)
-    result = check_payment_safe(docs, rulebook, payment_label)
+    # Deterministic AP controls first (instant, no tokens): three-way match +
+    # duplicate detection. Fail-safe — a bug in the fast path must never break
+    # the check; we just fall back to the LLM-only result.
+    ap_findings, this_invoice = _run_ap_controls(docs)
+    result = check_payment_safe(
+        docs, rulebook, payment_label, document_findings=ap_findings
+    )
+    if this_invoice:
+        result.invoice_number = this_invoice
     # Apply requisition context straight from form fields — replaces the
     # old "hope the LLM extracts this from an uploaded PDF" path with direct
     # structured capture. Blank/whitespace-only values are skipped.
@@ -1399,11 +1433,16 @@ async def check_form_endpoint(
 
     prior_open = _gather_prior_open_submissions(rulebook, form_data)
     referenced = _resolve_reference_lookup(rulebook, form_data)
+    # Deterministic AP controls on any attached documents (hybrid types upload
+    # receipts/invoices) — same fail-safe fast path as /check/single.
+    ap_findings, this_invoice = _run_ap_controls(docs) if docs else ([], None)
     result = check_payment_safe(
         docs, rulebook, payment_label,
         form_data=form_data, prior_open_submissions=prior_open,
-        referenced_submission=referenced,
+        referenced_submission=referenced, document_findings=ap_findings,
     )
+    if this_invoice:
+        result.invoice_number = this_invoice
     result.form_data = form_data
     try:
         _save_check(result, rulebook)

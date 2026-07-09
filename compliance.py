@@ -412,6 +412,7 @@ def check_payment(
     form_data: Optional[dict[str, str]] = None,
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
+    document_findings: Optional[list[RuleResult]] = None,
 ) -> ComplianceCheckResult:
     """
     Evaluate a payment request bundle against a PolicyRulebook.
@@ -468,13 +469,19 @@ def check_payment(
         else []
     )
 
+    # Deterministic AP controls (three-way match, duplicate detection) computed
+    # by the caller from the documents themselves — no rule/form needed. They
+    # merge into the results exactly like form-field deterministic rules, and a
+    # block from them wins the verdict the same way.
+    document_findings = list(document_findings or [])
+
     filenames = [fn for fn, _ in payment_documents]
 
     # Nothing for Claude to do — either every active rule is deterministic
     # (a pure-form payment type), or there's no LLM-evaluable evidence
     # (no documents) to hand it. Skip the API call entirely.
     if not llm_rules or not payment_documents:
-        results = list(deterministic_results)
+        results = document_findings + list(deterministic_results)
         if llm_rules and not payment_documents:
             # There ARE llm rules but nothing to evaluate them against — make
             # that explicit per rule rather than silently dropping them.
@@ -547,13 +554,14 @@ payment text verbatim."""
     # returned something weird, derive the verdict from the rule outcomes —
     # now including the deterministic results, since both count toward the
     # final verdict.
-    all_results = deterministic_results + parsed.results
+    code_results = document_findings + deterministic_results
+    all_results = code_results + parsed.results
     verdict = parsed.overall_verdict.lower().strip()
     if verdict not in {"approved", "flagged", "blocked"}:
         verdict = _derive_overall_verdict(all_results)
-    elif deterministic_results and _derive_overall_verdict(deterministic_results) == "blocked":
+    elif code_results and _derive_overall_verdict(code_results) == "blocked":
         # The model only ever saw llm_rules, so it can't know a deterministic
-        # rule blocked the payment. A deterministic block always wins.
+        # rule or AP control blocked the payment. A code-level block always wins.
         verdict = "blocked"
 
     return ComplianceCheckResult(
@@ -575,6 +583,7 @@ def check_payment_safe(
     form_data: Optional[dict[str, str]] = None,
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
+    document_findings: Optional[list[RuleResult]] = None,
 ) -> ComplianceCheckResult:
     """
     Error-wrapped single check. A failure on one payment never breaks a batch.
@@ -588,6 +597,7 @@ def check_payment_safe(
             payment_documents, rulebook, payment_label,
             form_data=form_data, prior_open_submissions=prior_open_submissions,
             referenced_submission=referenced_submission,
+            document_findings=document_findings,
         )
     except Exception as exc:
         logger.error(

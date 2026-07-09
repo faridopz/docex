@@ -503,6 +503,11 @@ class ComplianceCheckResult(BaseModel):
     overall_summary: str                      # 1-2 sentence executive summary
     results: list[RuleResult]
     error: Optional[str] = None
+    # Invoice number extracted deterministically at check time (fast_fields).
+    # Stored so future checks can detect duplicate payments against it — the
+    # basis of payment_checks.duplicate_invoice. Optional/None for payments
+    # with no readable invoice.
+    invoice_number: Optional[str] = None
     # ─── Persistence + audit metadata ──────────────────────────────────
     # The engine produces transient results; the storage layer in
     # api/compliance_routes.py decides when to commit them to disk. These

@@ -194,6 +194,17 @@ def duplicate_invoice(
     )
 
 
+def primary_invoice_number(documents: list[tuple[str, str]]) -> Optional[str]:
+    """The invoice number on the payment's invoice, if readable — stored on the
+    check so later payments can be tested against it for duplicates."""
+    for p in _profiles(documents):
+        if "invoice" in p["cats"]:
+            num = _field(p, "invoice_number")
+            if num:
+                return num
+    return None
+
+
 def run_document_checks(
     documents: list[tuple[str, str]],
     *,
