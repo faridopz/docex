@@ -57,6 +57,7 @@ from models import (  # noqa: E402
     OrgProfile,
     PaymentType,
     PolicyRulebook,
+    ReceiptItem,
     RiskEntry,
     RuleResult,
     default_travel_advance_rules,
@@ -74,8 +75,10 @@ from notifications import (  # noqa: E402
 from approval_tokens import make_token, verify_token  # noqa: E402
 from approval_webhook import emit_approval_request, verify_callback_secret  # noqa: E402
 import fast_extract  # noqa: E402 — fast PDF text extraction (fitz-first)
+import fast_fields  # noqa: E402 — deterministic labelled-field extraction (no LLM)
 import policy_rules  # noqa: E402 — deterministic policy → rules extraction (no LLM)
 import payment_checks  # noqa: E402 — deterministic AP controls (three-way match, duplicates)
+import receipts as receipts_engine  # noqa: E402 — deterministic retirement reconciliation
 from doc_completeness import check_completeness  # noqa: E402 — deterministic doc-presence
 from .schemas import (  # noqa: E402
     CheckListResponse,
@@ -1150,6 +1153,199 @@ async def check_single_endpoint(
             )
     except Exception as exc:
         print(f"Warning: notification send failed for {result.payment_id}: {exc}")
+    return result
+
+
+# ─── Travel retirement (receipts → reconciliation, no OCR) ──────────────────
+
+_DIGITAL_RECEIPT_EXT = (".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".csv", ".tsv")
+
+
+def _money(value) -> Optional[float]:
+    """Parse a currency-ish value to a float, tolerating ₦, commas, spaces."""
+    if value is None:
+        return None
+    cleaned = re.sub(r"[^0-9.]", "", str(value))
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def _resolve_advance_amount(reference: Optional[str]) -> tuple[Optional[float], bool]:
+    """Look up the advance a retirement closes out. Returns (advance_amount,
+    reference_resolved). No reference → (None, False), which reconcile() treats
+    as 'paid out of pocket'."""
+    ref = (reference or "").strip()
+    if not ref:
+        return None, False
+    check = _try_load_check(ref)
+    if check is None:
+        return None, False
+    fd = check.form_data or {}
+    for key in ("amount", "amount_requested", "advance_amount"):
+        amt = _money(fd.get(key))
+        if amt is not None:
+            return amt, True
+    return None, True  # reference resolved, but no amount recorded on it
+
+
+def _assemble_receipts(
+    entered: list[ReceiptItem],
+    named_files: list[tuple[str, bytes]],
+) -> list[ReceiptItem]:
+    """Combine entered receipt lines with uploaded files — no OCR.
+
+      - a file whose name matches an entered line is that line's photo proof
+        (skip; already counted);
+      - a DIGITAL receipt (PDF/DOCX/XLSX/TXT) with a text layer is auto-read
+        for free via fast_fields;
+      - anything else (a photo, or a scanned PDF with no text layer) is added
+        as an unreadable line, so reconcile() flags it for a manual amount
+        rather than silently dropping it.
+    """
+    entered_names = {(r.filename or "").strip().lower() for r in entered if r.filename}
+    out: list[ReceiptItem] = list(entered)
+    for fn, data in named_files:
+        low = (fn or "").strip().lower()
+        if low in entered_names:
+            continue
+        if low.endswith(_DIGITAL_RECEIPT_EXT):
+            text = fast_extract.extract_text(fn, data)
+            if text.strip():
+                fields = fast_fields.extract_fields(text).get("fields", {})
+                amt = fields.get("total_amount", {}).get("value")
+                dt_val = fields.get("date", {}).get("value")
+                out.append(ReceiptItem(
+                    filename=fn,
+                    amount=_money(amt) if amt is not None else None,
+                    date=str(dt_val) if dt_val else None,
+                ))
+                continue
+        out.append(ReceiptItem(filename=fn, amount=None))
+    return out
+
+
+def _build_retirement(
+    *,
+    requester_name: str,
+    advance_reference: Optional[str],
+    advance_amount: Optional[float],
+    reference_resolved: bool,
+    receipts: list[ReceiptItem],
+    trip_start: Optional[str],
+    trip_end: Optional[str],
+) -> ComplianceCheckResult:
+    """Pure builder: reconcile the receipts, add an invalid-reference flag if
+    needed, and assemble a ComplianceCheckResult so retirements flow through the
+    same pipeline + audit trail as every other check. No I/O — unit-testable."""
+    rec = receipts_engine.reconcile(
+        advance_amount, receipts, trip_start=trip_start, trip_end=trip_end,
+    )
+    flags = list(rec.flags)
+    if (advance_reference or "").strip() and not reference_resolved:
+        flags.insert(0, RuleResult(
+            rule_id="advance-reference-not-found",
+            rule_description="A retirement must reference a real outstanding advance.",
+            verdict="block",
+            reasoning=f"No matching advance found for reference '{advance_reference}'.",
+            confidence="found",
+        ))
+    rec.flags = flags
+
+    verdicts = {f.verdict for f in flags}
+    if "block" in verdicts:
+        overall = "blocked"
+    elif verdicts & {"flag", "insufficient_evidence"}:
+        overall = "flagged"
+    else:
+        overall = "approved"
+
+    label = (
+        f"Travel Retirement — {requester_name.strip()}"
+        if requester_name.strip() else "Travel Retirement"
+    )
+    return ComplianceCheckResult(
+        payment_id=f"ret-{uuid.uuid4().hex[:8]}",
+        payment_label=label,
+        documents=[r.filename for r in receipts if r.filename],
+        rulebook_id="",
+        rulebook_name="Travel Retirement",
+        overall_verdict=overall,
+        overall_summary=rec.summary,
+        results=flags,
+        reconciliation=rec,
+        form_data={
+            "advance_reference": (advance_reference or "").strip(),
+            "requester_name": requester_name.strip(),
+        },
+    )
+
+
+@router.post("/retire", response_model=ComplianceCheckResult)
+async def retire_endpoint(
+    requester_name: Annotated[str, Form(description="Who is retiring the advance")] = "",
+    advance_reference: Annotated[
+        Optional[str],
+        Form(description="Reference of the Travel Advance being closed out (optional)"),
+    ] = None,
+    trip_start: Annotated[Optional[str], Form(description="Trip start date, ISO")] = None,
+    trip_end: Annotated[Optional[str], Form(description="Trip end date, ISO")] = None,
+    receipts_json: Annotated[
+        str,
+        Form(description="JSON array of entered receipt lines: {amount, category, date, vendor, filename}"),
+    ] = "[]",
+    receipt_files: Annotated[
+        list[UploadFile],
+        File(description="Receipt photos/PDFs — evidence; digital ones are auto-read"),
+    ] = [],
+) -> ComplianceCheckResult:
+    """Retire a travel advance from itemised receipts — deterministic, no OCR.
+
+    The traveller enters each receipt amount (or drops a digital receipt we read
+    for free) and attaches photos as proof; DOCex reconciles the total against
+    the advance instantly and flags problems. Saved like any other check so it
+    flows through the pipeline and audit trail.
+    """
+    try:
+        parsed = json.loads(receipts_json) if receipts_json else []
+        if not isinstance(parsed, list):
+            raise ValueError("receipts_json must be a JSON array")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid receipts_json: {exc}") from exc
+
+    entered: list[ReceiptItem] = []
+    for row in parsed:
+        if not isinstance(row, dict):
+            continue
+        entered.append(ReceiptItem(
+            filename=str(row.get("filename") or "").strip(),
+            amount=_money(row.get("amount")),
+            date=(str(row.get("date")).strip() or None) if row.get("date") else None,
+            vendor=(str(row.get("vendor")).strip() or None) if row.get("vendor") else None,
+            category=(str(row.get("category")).strip() or None) if row.get("category") else None,
+        ))
+
+    named_files = [(u.filename or "receipt", u.file.read()) for u in receipt_files]
+    receipts = _assemble_receipts(entered, named_files)
+
+    advance_amount, reference_resolved = _resolve_advance_amount(advance_reference)
+    result = _build_retirement(
+        requester_name=requester_name,
+        advance_reference=advance_reference,
+        advance_amount=advance_amount,
+        reference_resolved=reference_resolved,
+        receipts=receipts,
+        trip_start=trip_start,
+        trip_end=trip_end,
+    )
+    try:
+        _save_check(
+            result,
+            PolicyRulebook(id="", name="Travel Retirement", source_documents=[], rules=[]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: failed to persist retirement {result.payment_id}: {exc}")
     return result
 
 

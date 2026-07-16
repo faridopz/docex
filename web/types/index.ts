@@ -227,6 +227,41 @@ export interface RuleResult {
   confidence: Confidence;
 }
 
+// Travel-retirement reconciliation (receipts vs advance).
+export interface ReceiptItem {
+  filename: string;
+  amount: number | null;
+  date: string | null;
+  vendor: string | null;
+  category: string | null;
+}
+
+export type ReconciliationDirection =
+  | "recover"
+  | "reimburse"
+  | "settled"
+  | "out_of_pocket";
+
+export interface Reconciliation {
+  advance_amount: number | null;
+  total_spent: number;
+  balance: number | null;
+  direction: ReconciliationDirection;
+  receipt_count: number;
+  readable_count: number;
+  flags: RuleResult[];
+  summary: string;
+}
+
+// One entered receipt line from the retirement form.
+export interface ReceiptInput {
+  amount: number | null;
+  category?: string;
+  date?: string;
+  vendor?: string;
+  filename?: string;
+}
+
 export interface ComplianceCheckResult {
   payment_id: string;
   payment_label: string;
@@ -237,6 +272,8 @@ export interface ComplianceCheckResult {
   overall_summary: string;
   results: RuleResult[];
   error?: string | null;
+  invoice_number?: string | null;
+  reconciliation?: Reconciliation | null;
   // Persistence + audit metadata — populated server-side on save
   created_at?: string | null;
   approved?: boolean;

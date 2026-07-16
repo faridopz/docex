@@ -22,6 +22,7 @@ import type {
   PolicyJob,
   PolicyRule,
   PolicyRulebook,
+  ReceiptInput,
   Question,
   RateCard,
   RateLine,
@@ -472,6 +473,30 @@ export async function checkPaymentForm(
     const detail = await res.text();
     throw new Error(`Form check failed (${res.status}): ${detail}`);
   }
+  return res.json() as Promise<ComplianceCheckResult>;
+}
+
+// Retire a travel advance from itemised receipts — deterministic reconciliation,
+// no OCR. Entered lines carry the amounts; digital receipts (PDFs) are read
+// server-side for free; photos ride along as evidence.
+export async function retireTravel(input: {
+  requesterName: string;
+  advanceReference?: string;
+  tripStart?: string;
+  tripEnd?: string;
+  receipts: ReceiptInput[];
+  files?: File[];
+}): Promise<ComplianceCheckResult> {
+  const body = new FormData();
+  body.append("requester_name", input.requesterName);
+  if (input.advanceReference) body.append("advance_reference", input.advanceReference);
+  if (input.tripStart) body.append("trip_start", input.tripStart);
+  if (input.tripEnd) body.append("trip_end", input.tripEnd);
+  body.append("receipts_json", JSON.stringify(input.receipts));
+  for (const f of input.files ?? []) body.append("receipt_files", f);
+
+  const res = await fetch(`${BASE}/compliance/retire`, { method: "POST", body });
+  if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<ComplianceCheckResult>;
 }
 

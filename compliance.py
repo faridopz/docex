@@ -477,6 +477,25 @@ def check_payment(
 
     filenames = [fn for fn, _ in payment_documents]
 
+    # Fast path: if the instant deterministic controls (AP three-way match /
+    # duplicate detection, or a hard deterministic rule) already BLOCK the
+    # payment, the LLM can't salvage the verdict — a code-level block always
+    # wins. Skip the expensive model call entirely and return now. This is the
+    # biggest speed win on exactly the payments you most want caught fast (the
+    # bad ones), and it costs zero tokens.
+    early_code_results = document_findings + deterministic_results
+    if early_code_results and _derive_overall_verdict(early_code_results) == "blocked":
+        return ComplianceCheckResult(
+            payment_id=f"pay-{uuid.uuid4().hex[:8]}",
+            payment_label=payment_label,
+            documents=filenames,
+            rulebook_id=rulebook.id,
+            rulebook_name=rulebook.name,
+            overall_verdict="blocked",
+            overall_summary=_summarize_results(early_code_results),
+            results=early_code_results,
+        )
+
     # Nothing for Claude to do — either every active rule is deterministic
     # (a pure-form payment type), or there's no LLM-evaluable evidence
     # (no documents) to hand it. Skip the API call entirely.

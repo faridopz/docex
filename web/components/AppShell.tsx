@@ -16,6 +16,7 @@ import {
   Send,
   Settings,
   ShieldCheck,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,7 @@ export type NavSection =
   | "templates"
   | "knowledge"
   | "submit"
+  | "retire"
   | "compliance"
   | "verify"
   | "attendance";
@@ -63,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Compliance & Finance",
     items: [
       { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
+      { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"] },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
       { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"] },

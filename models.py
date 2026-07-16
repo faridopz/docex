@@ -464,6 +464,36 @@ class RuleResult(BaseModel):
     confidence: Literal["found", "inferred", "not_found"]
 
 
+# ─── Travel retirement (receipts → reconciliation) ──────────────────────────
+# A traveller retires an advance by submitting receipts; finance reconciles what
+# was actually spent against the advance. ReceiptItem is one parsed receipt (the
+# amount is captured at entry or read from a digital receipt — never requires
+# OCR of a photo); Reconciliation is the deterministic result (see receipts.py).
+
+class ReceiptItem(BaseModel):
+    """One receipt line — captured at entry or auto-read from a digital receipt.
+    Any field may be None if unknown; reconcile() surfaces gaps as flags."""
+    filename: str = ""
+    amount: Optional[float] = None
+    date: Optional[str] = None       # ISO 8601 "YYYY-MM-DD"
+    vendor: Optional[str] = None
+    category: Optional[str] = None   # "lodging" | "meals" | "transport" | "other"
+
+
+class Reconciliation(BaseModel):
+    """Deterministic outcome of reconciling receipts against a travel advance."""
+    advance_amount: Optional[float] = None
+    total_spent: float = 0.0
+    balance: Optional[float] = None                   # advance - spent
+    # "recover" (unspent returned) | "reimburse" (overspend owed to traveller)
+    # | "settled" (equal) | "out_of_pocket" (no advance; org owes full)
+    direction: Literal["recover", "reimburse", "settled", "out_of_pocket"] = "settled"
+    receipt_count: int = 0
+    readable_count: int = 0
+    flags: list[RuleResult] = []
+    summary: str = ""
+
+
 RiskSeverity = Literal["high", "medium", "low"]
 RiskStatus = Literal["open", "in_progress", "resolved"]
 
@@ -508,6 +538,10 @@ class ComplianceCheckResult(BaseModel):
     # basis of payment_checks.duplicate_invoice. Optional/None for payments
     # with no readable invoice.
     invoice_number: Optional[str] = None
+    # Populated for Travel Retirement checks — the deterministic reconciliation
+    # of submitted receipts against the advance (see receipts.py). None for
+    # ordinary payment checks.
+    reconciliation: Optional[Reconciliation] = None
     # ─── Persistence + audit metadata ──────────────────────────────────
     # The engine produces transient results; the storage layer in
     # api/compliance_routes.py decides when to commit them to disk. These
