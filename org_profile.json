@@ -86,8 +86,7 @@
   "payment_subject": "Payment requisition",
   "enabled_modules": [
     "compliance",
-    "screening",
-    "knowledge"
+    "screening"
   ],
   "updated_at": "2026-07-02T21:26:16+00:00"
 }

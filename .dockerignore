@@ -6,6 +6,7 @@ web/
 
 # Python
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -32,9 +33,19 @@ docexassets/
 DOCex_overview.pdf
 docker-compose.yml
 
-# Persistent data — must come from a mounted volume, not the image
+# Persistent data / scratch dirs — recreated at boot; never ship into the image
 rulebooks/
 checks/
+verifications/
+attendance_runs/
+rate_cards/
+decks/
+diagnostics/
+demov2/
+terraform/
+deploy/
+portfolio/
+brand-kit/
 
 # Build artifacts
 build/
