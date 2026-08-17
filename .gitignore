@@ -45,6 +45,20 @@ analytics/*
 # Logs — runtime log files are noise, never source.
 *.log
 
+# ERP runtime data — created at runtime, ephemeral on Render, never source.
+transactions/
+notifications/
+users/
+vouchers/
+
+# Auth / signing secrets — MUST never be committed.
+.auth_secret
+.approval_secret
+
+# Virtualenvs (both names seen in this repo) — never source.
+venv/
+.venv/
+
 # OS
 .DS_Store
 Thumbs.db

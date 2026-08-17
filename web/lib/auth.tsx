@@ -7,36 +7,34 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { login as apiLogin } from "@/lib/erpApi";
+import {
+  apiFetch,
+  clearSession,
+  getStoredUser,
+  getToken,
+  setSession,
+} from "@/lib/session";
+import type { AuthUser } from "@/types/erp";
 
 /**
- * Lightweight DEMO authentication — a front door, NOT real auth.
+ * DOCex authentication — real, backend-backed.
  *
- * This gates the in-product UI behind a sign-in screen so the app looks
- * access-controlled during a demo. It is purely client-side: credentials are
- * checked against the hardcoded list below and a session flag is kept in
- * localStorage. There is NO backend, NO database, and NO per-user data
- * isolation — everyone who signs in sees the same single instance.
+ * Sign-in calls POST /auth/login (auth.py), which returns an HMAC-signed
+ * bearer token + the user (with department + role). We keep both in
+ * localStorage (see lib/session.ts) and attach the token to every workflow
+ * request. On mount we restore the stored session and revalidate it against
+ * /auth/me, clearing it if the token has expired or the user is gone.
  *
- * Real authentication (Supabase auth + org_id isolation) is the Phase 2
- * "Trust" build and will replace this file. Do not mistake this for security.
- *
- * To add or change accounts, edit DEMO_ACCOUNTS and redeploy.
+ * The exported shape (ready / user / signIn / signOut) is unchanged from the
+ * previous demo provider, so existing pages (AppShell, login) keep working —
+ * `user` now additionally carries `department` and `role`.
  */
 
-export type DemoUser = { email: string; name: string };
-
-type Account = { email: string; password: string; name: string };
-
-const DEMO_ACCOUNTS: Account[] = [
-  { email: "demo@docex.app", password: "docex-demo", name: "Demo User" },
-];
-
-const STORAGE_KEY = "docex.demo.session";
-
 type AuthState = {
-  ready: boolean; // true once we've read localStorage (prevents redirect flash)
-  user: DemoUser | null;
-  signIn: (email: string, password: string) => { ok: boolean; error?: string };
+  ready: boolean;
+  user: AuthUser | null;
+  signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   signOut: () => void;
 };
 
@@ -44,44 +42,43 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [user, setUser] = useState<DemoUser | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as DemoUser;
-        if (parsed?.email) setUser(parsed);
+    // Restore optimistically from storage to avoid a redirect flash, then
+    // revalidate against the server.
+    const stored = getStoredUser();
+    if (stored && getToken()) setUser(stored);
+
+    (async () => {
+      if (getToken()) {
+        try {
+          const me = await apiFetch<AuthUser>("/auth/me");
+          setUser(me);
+        } catch {
+          // Token invalid/expired → session already cleared by apiFetch on 401.
+          clearSession();
+          setUser(null);
+        }
       }
-    } catch {
-      /* corrupt/unavailable storage — treat as signed out */
-    }
-    setReady(true);
+      setReady(true);
+    })();
   }, []);
 
-  function signIn(email: string, password: string) {
-    const e = email.trim().toLowerCase();
-    const match = DEMO_ACCOUNTS.find(
-      (a) => a.email.toLowerCase() === e && a.password === password,
-    );
-    if (!match) return { ok: false, error: "Incorrect email or password." };
-    const u: DemoUser = { email: match.email, name: match.name };
-    setUser(u);
+  async function signIn(email: string, password: string) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
-    } catch {
-      /* storage unavailable — session lasts for this tab only */
+      const { token, user: u } = await apiLogin(email.trim(), password);
+      setSession(token, u);
+      setUser(u);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "Sign in failed." };
     }
-    return { ok: true };
   }
 
   function signOut() {
+    clearSession();
     setUser(null);
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
   }
 
   return (
@@ -96,6 +93,3 @@ export function useAuth(): AuthState {
   if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
   return ctx;
 }
-
-/** First demo account — used by the login screen's "Use demo account" helper. */
-export const DEMO_LOGIN_HINT = { email: DEMO_ACCOUNTS[0].email, password: DEMO_ACCOUNTS[0].password };

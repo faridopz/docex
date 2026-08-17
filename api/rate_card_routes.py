@@ -98,6 +98,12 @@ class RateCardCreate(BaseModel):
     default_rate_per_day: float
     roles: list[RateLine] = []
     currency: str = "NGN"
+    # Per-diem policy — the day-component split + advance fraction TA Connect
+    # finance configures. Optional; defaults reproduce the 75%-on-food rule.
+    lodging_weight: float = 0.50
+    meals_weight: float = 0.25
+    incidentals_weight: float = 0.25
+    advance_fraction: float = 1.0
 
 
 class RateCardUpdate(BaseModel):
@@ -105,6 +111,10 @@ class RateCardUpdate(BaseModel):
     default_rate_per_day: float
     roles: list[RateLine] = []
     currency: str = "NGN"
+    lodging_weight: float = 0.50
+    meals_weight: float = 0.25
+    incidentals_weight: float = 0.25
+    advance_fraction: float = 1.0
 
 
 # ─── Routes ─────────────────────────────────────────────────────────────────
@@ -134,6 +144,10 @@ def create_card(body: RateCardCreate) -> RateCard:
         default_rate_per_day=float(body.default_rate_per_day),
         roles=body.roles,
         currency=body.currency or "NGN",
+        lodging_weight=body.lodging_weight,
+        meals_weight=body.meals_weight,
+        incidentals_weight=body.incidentals_weight,
+        advance_fraction=body.advance_fraction,
     )
     return _save(card)
 
@@ -145,6 +159,10 @@ def update_card(card_id: str, body: RateCardUpdate) -> RateCard:
     existing.default_rate_per_day = float(body.default_rate_per_day)
     existing.roles = body.roles
     existing.currency = body.currency or existing.currency
+    existing.lodging_weight = body.lodging_weight
+    existing.meals_weight = body.meals_weight
+    existing.incidentals_weight = body.incidentals_weight
+    existing.advance_fraction = body.advance_fraction
     return _save(existing)
 
 

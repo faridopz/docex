@@ -29,6 +29,7 @@ import uuid
 from typing import Literal, Optional
 
 import anthropic
+import payment_checks
 from ai_config import COMPLIANCE_MODEL
 from deterministic_checks import evaluate_deterministic_rules
 from models import (
@@ -45,6 +46,135 @@ logger = logging.getLogger(__name__)
 # so a small thread pool is plenty. Adjust downward if rate limits bite
 # on big batches.
 _BATCH_MAX_PARALLEL = 5
+
+# Output-token ceiling for the compliance call. Lowered from 16384 after the
+# lean-output + collapsed-receipt schema (see _LeanCheckResponse): the model now
+# returns ONE object per receipt-rule with a compact receipts[] array instead of
+# one verbose object per (rule × receipt), so even a 50-receipt bundle fits well
+# under this. Kept as a named constant so it's easy to tune against benchmarks.
+_CHECK_MAX_TOKENS = 8192
+
+# Valid verdicts + a verdict → confidence map, used to normalise the compact
+# model output back into the public RuleResult schema.
+_VALID_VERDICTS = {"pass", "flag", "block", "not_applicable", "insufficient_evidence"}
+_VERDICT_CONFIDENCE = {
+    "pass": "found",
+    "flag": "found",
+    "block": "found",
+    "not_applicable": "inferred",
+    "insufficient_evidence": "not_found",
+}
+
+
+def _norm_verdict(v: str) -> str:
+    """Coerce a model-returned verdict string to the valid set; anything
+    unrecognised is treated as insufficient_evidence (safe — never a silent
+    pass)."""
+    v = (v or "").strip().lower()
+    return v if v in _VALID_VERDICTS else "insufficient_evidence"
+
+
+# ─── Lean LLM output schema (server rehydrates the rest) ─────────────────────
+# The model returns DECISIONS + compact evidence pointers only. It does NOT
+# regenerate rule_description or policy_citation — the server owns those via
+# rule_id → rulebook rule. Receipt-category rules return ONE object with a
+# receipts[] array (one verdict per receipt) instead of one object per
+# (rule × receipt), which removes the output-token explosion. _lean_to_public()
+# expands this back into the existing public RuleResult shape, so the API and
+# frontend are unchanged.
+
+
+class _LlmReceiptVerdict(anthropic.BaseModel):
+    document_id: str                       # receipt filename
+    verdict: str
+    evidence_ref: Optional[str] = None     # short verbatim snippet / locator
+    short_reason: Optional[str] = None
+
+
+class _LlmRuleResult(anthropic.BaseModel):
+    rule_id: str
+    verdict: str
+    short_reason: Optional[str] = None
+    evidence_ref: Optional[str] = None
+    missing: list[str] = []                # for insufficient_evidence
+
+
+class _LlmReceiptRuleResult(anthropic.BaseModel):
+    rule_id: str
+    receipts: list[_LlmReceiptVerdict] = []
+
+
+class _LeanCheckResponse(anthropic.BaseModel):
+    overall_verdict: str
+    overall_summary: str
+    results: list[_LlmRuleResult] = []              # payment-level rules
+    receipt_results: list[_LlmReceiptRuleResult] = []  # receipt-level rules
+
+
+def _lean_to_public(
+    parsed: "_LeanCheckResponse",
+    rules_by_id: dict[str, PolicyRule],
+) -> list[RuleResult]:
+    """Expand the compact model output into the public RuleResult list — one
+    RuleResult per payment-level rule and one per (receipt-rule × receipt), with
+    rule_description + policy_citation rehydrated authoritatively from the
+    rulebook (never from the model). This preserves full auditability and the
+    existing API shape while the model's own output stays tiny."""
+
+    def rehydrate(rule_id: str) -> tuple[str, Optional[str]]:
+        r = rules_by_id.get(rule_id)
+        if r is None:
+            # The model referenced an id we don't have — keep the id as the
+            # description so the row is still traceable, no policy citation.
+            return rule_id, None
+        return r.description, (r.source_quote or r.clause_reference)
+
+    out: list[RuleResult] = []
+
+    for lr in parsed.results:
+        desc, citation = rehydrate(lr.rule_id)
+        verdict = _norm_verdict(lr.verdict)
+        out.append(RuleResult(
+            rule_id=lr.rule_id,
+            rule_description=desc,
+            verdict=verdict,
+            reasoning=lr.short_reason or "",
+            policy_citation=citation,
+            payment_evidence=lr.evidence_ref,
+            missing_evidence=lr.missing,
+            applied_to_document=None,
+            confidence=_VERDICT_CONFIDENCE.get(verdict, "found"),
+        ))
+
+    for rr in parsed.receipt_results:
+        desc, citation = rehydrate(rr.rule_id)
+        if not rr.receipts:
+            # A receipts-category rule with no receipts to evaluate against.
+            out.append(RuleResult(
+                rule_id=rr.rule_id,
+                rule_description=desc,
+                verdict="insufficient_evidence",
+                reasoning="No receipts in the bundle to evaluate this rule.",
+                policy_citation=citation,
+                missing_evidence=["original receipts to verify expense"],
+                applied_to_document=None,
+                confidence="not_found",
+            ))
+            continue
+        for rc in rr.receipts:
+            verdict = _norm_verdict(rc.verdict)
+            out.append(RuleResult(
+                rule_id=rr.rule_id,
+                rule_description=desc,
+                verdict=verdict,
+                reasoning=rc.short_reason or "",
+                policy_citation=citation,
+                payment_evidence=rc.evidence_ref,
+                applied_to_document=rc.document_id,
+                confidence=_VERDICT_CONFIDENCE.get(verdict, "found"),
+            ))
+
+    return out
 
 _client: anthropic.Anthropic | None = None
 
@@ -169,78 +299,53 @@ mismatch:
 A rule whose required supporting document is simply absent from the bundle is
 "insufficient_evidence" (list exactly what's missing), not "pass".
 
-- Payment-level rules (categories: procurement, approvals, vendor, advance,
-  retirement, documentation, general) are evaluated against the bundle
-  as a whole. Return one RuleResult per such rule with
-  applied_to_document = null.
+## What to return — COMPACT (the server owns the rest)
+Do NOT restate rule text or policy text. The server already has the rulebook and
+fills in each rule's description and policy citation from `rule_id`. Return only
+the DECISION and a compact pointer to the evidence, in two lists:
 
-- Receipt-level rules (category: receipts) are evaluated against EACH
-  individual receipt in the bundle. Return one RuleResult per
-  (rule × receipt) pair, with applied_to_document set to the exact
-  filename of that receipt.
+1. `results` — one entry per PAYMENT-LEVEL rule (categories: procurement,
+   approvals, vendor, advance, retirement, documentation, general), evaluated
+   against the bundle as a whole. Each entry:
+     { "rule_id", "verdict", "short_reason", "evidence_ref" }
 
-If the bundle has no receipts and a receipts-category rule exists, return
-one RuleResult per such rule with verdict "insufficient_evidence",
-applied_to_document = null, and missing_evidence listing what is missing
-(e.g. ["original receipts to verify expense"]).
+2. `receipt_results` — one entry per RECEIPT-LEVEL rule (category: receipts).
+   Evaluate the rule against EVERY receipt, but return it ONCE with a receipts
+   array — one element per receipt:
+     { "rule_id", "receipts": [ { "document_id", "verdict", "evidence_ref", "short_reason" }, ... ] }
+   `document_id` is the receipt's exact filename. Every receipt still gets its
+   own verdict — you are collapsing the OUTPUT SHAPE, not skipping any receipt.
+   If the bundle has no receipts but a receipts-category rule exists, return that
+   rule in `receipt_results` with an empty `receipts` list.
 
-## Verdict per rule
-- "pass" — the payment satisfies the rule. payment_evidence quotes the
-  supporting text from the payment bundle verbatim. policy_citation
-  quotes the rule's source from the policy.
-- "flag" — borderline or partial compliance. A human needs to judge.
-  Use this when something is technically met but suspicious (e.g. all 3
-  quotes are from companies with the same address, or a receipt is
-  legible but missing a non-critical field).
-- "block" — the payment clearly violates the rule. Specific evidence of
-  the violation MUST be quoted in payment_evidence.
-- "not_applicable" — the rule's condition does not apply to this payment
-  (e.g. a > NGN 500k rule when the payment is NGN 50k). Set reasoning
-  to a short explanation; payment_evidence and policy_citation may be
-  null.
-- "insufficient_evidence" — the payment bundle does not contain enough
-  information to evaluate this rule. Populate missing_evidence with a
-  specific list of what is missing (e.g. ["original invoice",
-  "Director's signature on approval form"]).
+`evidence_ref`: a SHORT verbatim snippet or precise locator from the payment that
+proves the verdict — e.g. "Voucher total ₦850,000", "receipt r04: ₦12,000 taxi",
+"PO-3391 amount 2,900,000". Keep it under ~12 words. NEVER paste whole documents.
+`short_reason`: ONE decisive clause (≤ 15 words), leading with the fact that
+drives the verdict — not a recap of the rule. Omit it on a clean pass where the
+evidence_ref already speaks for itself.
 
-## Overall verdict
-- "approved" — every active rule resolved to pass or not_applicable.
-- "flagged"  — at least one flag or insufficient_evidence, but no blocks.
-- "blocked"  — at least one block.
+## Verdict values (per rule and per receipt)
+- "pass" — satisfies the rule; evidence_ref points at the supporting fact.
+- "flag" — borderline/partial compliance; a human must judge.
+- "block" — clearly violates the rule; evidence_ref MUST point at the violation.
+- "not_applicable" — the rule's condition does not apply to this payment.
+- "insufficient_evidence" — the bundle lacks enough info to evaluate; put what's
+  missing in `missing` (payment rules) or `short_reason` (receipts), e.g.
+  "missing: Director's signature".
 
-## Writing the per-rule `reasoning` — be concise and decision-oriented
-Each rule's `reasoning` is ONE short, decisive sentence (aim for ≤ 20 words).
-Lead with the decision and the specific fact that drives it — not a recap of
-the rule. The officer should read it and know the next action instantly.
-  GOOD (block): "No third quotation attached — only 2 of the required 3."
-  GOOD (pass):  "PO #3391, invoice and GRN all reconcile at ₦2.9m."
-  BAD:          "This rule requires that for procurements in this threshold
-                 band, at least three quotations be obtained, and upon review
-                 of the documents provided it appears that..."
-Do not restate the rule text; the rule is shown next to your reasoning.
+## Overall
+- overall_verdict: "approved" (all pass/not_applicable), "flagged" (≥1 flag or
+  insufficient_evidence, no blocks), "blocked" (≥1 block).
+- overall_summary: 1-2 sentences, bottom line first ("Approved.",
+  "Flagged for 2 issues.", "Blocked — vendor not pre-approved.").
 
-## Overall summary
-1-2 sentences for a busy officer. Lead with the bottom line ("Approved.",
-"Flagged for 2 issues.", "Blocked — vendor not pre-approved."), then the
-most material reason if not approved.
-
-## Rules — absolute
-- Cite verbatim. policy_citation must be word-for-word from the rule's
-  source_quote in the rulebook. payment_evidence must be word-for-word
-  from a document in the bundle.
-- For receipts-category rules with multiple receipts, return one
-  RuleResult per (rule × receipt) pair. applied_to_document must match
-  the receipt's exact filename.
-- If a rule is marked inactive in the rulebook (it will not appear in
-  the list of active rules you receive), skip it entirely.
+## Absolute
 - Never use outside knowledge. Never invent policy clauses. Never assume
-  a payment is compliant if the evidence is not in the documents.
-- Confidence per rule: "found" if the rule was met or violated
-  explicitly with a direct quote; "inferred" if the verdict required
-  reasoning from context; "not_found" if relevant info isn't in the
-  bundle (paired with verdict "insufficient_evidence").
-- rule_description must be copied from the rule in the rulebook so the
-  output is self-contained for downstream display."""
+  compliance if the evidence is not in the documents.
+- `evidence_ref` must be grounded in the actual document text (a verbatim snippet
+  or a precise locator) — it is the audit anchor the server expands.
+- Skip inactive rules (they will not appear in the active list you receive)."""
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -413,9 +518,14 @@ def check_payment(
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
     document_findings: Optional[list[RuleResult]] = None,
+    metrics: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
     Evaluate a payment request bundle against a PolicyRulebook.
+
+    metrics: optional dict the caller passes in to receive LLM instrumentation
+    (llm_calls, llm_ms, input_tokens, output_tokens, model, cache_* ) for
+    benchmarking. Inert by default (None) — production behaviour is unchanged.
 
     The system prompt AND the rulebook are both cached, so batch checks
     (many payments against the same rulebook) only pay full price for the
@@ -439,13 +549,11 @@ def check_payment(
         to produce parsable output.
     """
 
-    # Inner response class. overall_verdict is intentionally typed as str
-    # (not the strict Literal) so a model slip on casing or phrasing doesn't
-    # crash the parse — we normalise below.
-    class _CheckResponse(anthropic.BaseModel):
-        overall_verdict: str
-        overall_summary: str
-        results: list[RuleResult]
+    # Default metrics for the paths that skip the model, so a benchmark caller
+    # always gets a consistent shape back.
+    if metrics is not None:
+        metrics.setdefault("llm_calls", 0)
+        metrics.setdefault("model", None)
 
     active_rules = [r for r in rulebook.rules if r.active]
     if not active_rules:
@@ -532,15 +640,16 @@ def check_payment(
     user_message = f"""PAYMENT REQUEST BUNDLE — {payment_label}:
 {doc_block}
 
-Evaluate this payment against every active rule in the rulebook (provided
-in the system message). For receipts-category rules, evaluate each receipt
-in the bundle separately and return one RuleResult per (rule × receipt).
-For all other rules, return one RuleResult per rule. Cite policy and
-payment text verbatim."""
+Evaluate this payment against every active rule in the rulebook (provided in the
+system message). Return the COMPACT structure described there: payment-level
+rules in `results`, receipt-level rules in `receipt_results` (one object per
+rule with a `receipts` array, `document_id` = the receipt's filename). Return
+decisions + short evidence pointers only — do NOT restate rule or policy text."""
 
+    _t0 = time.perf_counter()
     response = _get_client().messages.parse(
         model=COMPLIANCE_MODEL,
-        max_tokens=16384,
+        max_tokens=_CHECK_MAX_TOKENS,
         system=[
             {
                 "type": "text",
@@ -557,8 +666,19 @@ payment text verbatim."""
             },
         ],
         messages=[{"role": "user", "content": user_message}],
-        output_format=_CheckResponse,
+        output_format=_LeanCheckResponse,
     )
+    _llm_ms = (time.perf_counter() - _t0) * 1000.0
+
+    if metrics is not None:
+        usage = getattr(response, "usage", None)
+        metrics["llm_calls"] = 1
+        metrics["llm_ms"] = round(_llm_ms, 1)
+        metrics["model"] = COMPLIANCE_MODEL
+        metrics["input_tokens"] = getattr(usage, "input_tokens", None)
+        metrics["output_tokens"] = getattr(usage, "output_tokens", None)
+        metrics["cache_read_tokens"] = getattr(usage, "cache_read_input_tokens", None)
+        metrics["cache_creation_tokens"] = getattr(usage, "cache_creation_input_tokens", None)
 
     if response.parsed_output is None:
         raise ValueError(
@@ -569,12 +689,18 @@ payment text verbatim."""
 
     parsed = response.parsed_output
 
+    # Expand the compact model output into the public RuleResult shape,
+    # rehydrating rule_description + policy_citation authoritatively from the
+    # rulebook (keyed by rule_id) — never from the model.
+    rules_by_id = {r.id: r for r in active_rules}
+    llm_results = _lean_to_public(parsed, rules_by_id)
+
     # Normalise overall_verdict to the expected literal set. If the model
     # returned something weird, derive the verdict from the rule outcomes —
     # now including the deterministic results, since both count toward the
     # final verdict.
     code_results = document_findings + deterministic_results
-    all_results = code_results + parsed.results
+    all_results = code_results + llm_results
     verdict = parsed.overall_verdict.lower().strip()
     if verdict not in {"approved", "flagged", "blocked"}:
         verdict = _derive_overall_verdict(all_results)
@@ -603,6 +729,7 @@ def check_payment_safe(
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
     document_findings: Optional[list[RuleResult]] = None,
+    metrics: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
     Error-wrapped single check. A failure on one payment never breaks a batch.
@@ -617,6 +744,7 @@ def check_payment_safe(
             form_data=form_data, prior_open_submissions=prior_open_submissions,
             referenced_submission=referenced_submission,
             document_findings=document_findings,
+            metrics=metrics,
         )
     except Exception as exc:
         logger.error(
@@ -651,6 +779,7 @@ def check_payment_safe(
 def check_payment_batch(
     payments: list[dict],  # each: {"label": str, "documents": [(filename, text)]}
     rulebook: PolicyRulebook,
+    prior_invoice_numbers: Optional[list[str]] = None,
 ) -> ComplianceCheckBatchResult:
     """
     Check many payment requests against one rulebook.
@@ -663,6 +792,14 @@ def check_payment_batch(
         all benefit from the cached system + rulebook, so each call only
         pays for its own payment-bundle tokens AND completes much faster.
 
+    Deterministic AP controls (three-way match + duplicate detection) run in
+    the SAME engine as the single-payment endpoint: a sequential pre-pass
+    computes each payment's document_findings and detects duplicate invoice
+    numbers WITHIN the batch (in input order) as well as against any
+    `prior_invoice_numbers` from history. Because those findings are passed into
+    check_payment, a deterministic BLOCK still short-circuits the LLM per payment
+    — the batch gets the same fast-exit and the same code-block-wins guarantee.
+
     Output order matches input order. The batch never raises — individual
     failures show up as error fields on the affected ComplianceCheckResult.
     """
@@ -671,16 +808,43 @@ def check_payment_batch(
             total=0, approved=0, flagged=0, blocked=0, checks=[]
         )
 
-    def _run(p: dict) -> ComplianceCheckResult:
+    # ── Deterministic AP pre-pass (sequential, fast, code-only) ──────────────
+    # Runs three-way match + duplicate detection over each payment's documents,
+    # accumulating invoice numbers so an invoice repeated later in the SAME
+    # batch is caught deterministically (never by the LLM). Fail-safe: any error
+    # yields empty findings so the LLM check still runs.
+    seen_invoices: list[str] = list(prior_invoice_numbers or [])
+    findings_by_index: list[list[RuleResult]] = []
+    for p in payments:
+        docs = p.get("documents", [])
+        try:
+            findings = payment_checks.run_document_checks(
+                docs, prior_invoice_numbers=seen_invoices
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[DOCex] AP controls failed for '{p.get('label')}': {exc}", flush=True)
+            findings = []
+        findings_by_index.append(findings)
+        try:
+            inv = payment_checks.primary_invoice_number(docs)
+            if inv:
+                seen_invoices.append(inv)
+        except Exception:
+            pass
+
+    def _run(item: tuple[int, dict]) -> ComplianceCheckResult:
+        idx, p = item
         return check_payment_safe(
             payment_documents=p["documents"],
             rulebook=rulebook,
             payment_label=p.get("label", "Payment Request"),
+            document_findings=findings_by_index[idx],
         )
 
+    indexed = list(enumerate(payments))
     n = len(payments)
     if n == 1:
-        checks = [_run(payments[0])]
+        checks = [_run(indexed[0])]
     else:
         parallel_workers = min(_BATCH_MAX_PARALLEL, n - 1)
         print(
@@ -689,7 +853,7 @@ def check_payment_batch(
             flush=True,
         )
         started = time.monotonic()
-        first = _run(payments[0])
+        first = _run(indexed[0])
         print(
             f"[DOCex] Warmup done in {time.monotonic() - started:.1f}s. "
             f"Fanning out the remaining {n - 1}...",
@@ -697,7 +861,7 @@ def check_payment_batch(
         )
         fanout_started = time.monotonic()
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_workers) as ex:
-            rest = list(ex.map(_run, payments[1:]))
+            rest = list(ex.map(_run, indexed[1:]))
         print(
             f"[DOCex] Compliance batch complete: {n} payments in "
             f"{time.monotonic() - started:.1f}s "

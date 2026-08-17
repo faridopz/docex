@@ -1717,17 +1717,22 @@ async def check_batch_endpoint(
             detail=f"Invalid payments JSON: {exc}",
         ) from exc
 
-    # Extract text from every uploaded file, keyed by filename so each
-    # payment can pluck its specific files out by name.
-    file_texts: dict[str, tuple[str, str]] = {}
+    # Extract text from every uploaded file IN PARALLEL (same shared extractor
+    # as the single-payment path), keyed by filename so each payment can pluck
+    # its specific files out by name. Sequential per-file extraction was a real
+    # bottleneck on large receipt bundles.
+    named_bytes: list[tuple[str, bytes]] = []
     for upload in documents:
         filename = upload.filename or f"file_{uuid.uuid4().hex[:6]}"
         try:
-            text = _extract_text(upload)
-            if text:
-                file_texts[filename] = (filename, text)
+            named_bytes.append((filename, upload.file.read()))
         except Exception as exc:
-            print(f"Warning: could not extract text from '{filename}': {exc}")
+            print(f"Warning: could not read '{filename}': {exc}")
+
+    file_texts: dict[str, tuple[str, str]] = {}
+    for filename, text, _is_scanned in fast_extract.extract_many_detailed(named_bytes):
+        if text:
+            file_texts[filename] = (filename, text)
 
     if not file_texts:
         raise HTTPException(
@@ -1735,47 +1740,74 @@ async def check_batch_endpoint(
             detail="No text could be extracted from any uploaded file.",
         )
 
-    # Build the payment list, catching missing files loudly so the user knows
-    # whether they forgot to upload a receipt rather than getting a silent
-    # "no readable docs" downstream.
-    payment_jobs: list[dict] = []
+    # Build the payment list. A payment whose files are missing/unreadable is
+    # ISOLATED as a processing error — it does NOT 422 the whole batch. `slots`
+    # preserves input order: ("ok", index-into-ok-jobs) or ("err", result).
+    ok_jobs: list[dict] = []
+    slots: list[tuple[str, object]] = []
     for p in payments_raw:
         label = p.get("label", "Payment Request")
         requested = p.get("filenames", [])
-
         missing = [fn for fn in requested if fn not in file_texts]
-        if missing:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Payment '{label}': these filenames were listed but not uploaded: {missing}. "
-                       f"Uploaded files are: {list(file_texts.keys())}",
-            )
-
         docs = [file_texts[fn] for fn in requested if fn in file_texts]
+
         if not docs:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Payment '{label}' has no readable documents.",
+            err = ComplianceCheckResult(
+                payment_id=f"pay-{uuid.uuid4().hex[:8]}",
+                payment_label=label,
+                documents=list(requested),
+                rulebook_id=rulebook.id,
+                rulebook_name=rulebook.name,
+                # Safe default: surface as flagged (never a silent approve) and
+                # carry the reason in `error` so the officer can act.
+                overall_verdict="flagged",
+                overall_summary="Could not process — missing or unreadable documents.",
+                results=[],
+                error=(
+                    f"Missing/unreadable files: {missing}"
+                    if missing else "No readable documents for this payment."
+                ),
             )
+            slots.append(("err", err))
+            continue
 
-        payment_jobs.append({"label": label, "documents": docs})
+        slots.append(("ok", len(ok_jobs)))
+        ok_jobs.append({"label": label, "documents": docs})
 
-    batch = check_payment_batch(payment_jobs, rulebook)
+    # Run the deterministic-first engine on the processable payments. Passing
+    # historical invoice numbers preserves cross-check duplicate detection; the
+    # batch engine also detects duplicates WITHIN this batch.
+    batch = check_payment_batch(
+        ok_jobs, rulebook, prior_invoice_numbers=_prior_invoice_numbers()
+    )
+
+    # Re-assemble results in original payment order, splicing in the isolated
+    # error payments, then re-aggregate the counts over everything.
+    checks: list[ComplianceCheckResult] = []
+    for kind, val in slots:
+        checks.append(batch.checks[val] if kind == "ok" else val)  # type: ignore[index,arg-type]
+
+    approved = sum(1 for c in checks if c.overall_verdict == "approved" and not c.error)
+    flagged = sum(1 for c in checks if c.overall_verdict == "flagged" and not c.error)
+    blocked = sum(1 for c in checks if c.overall_verdict == "blocked" and not c.error)
+    result = ComplianceCheckBatchResult(
+        total=len(checks), approved=approved, flagged=flagged, blocked=blocked,
+        checks=checks,
+    )
+
     # Auto-persist every check in the batch — same audit story as single.
-    for c in batch.checks:
+    for c in result.checks:
         try:
             _save_check(c, rulebook)
         except Exception as exc:
             print(f"Warning: failed to persist check {c.payment_id}: {exc}")
     # Send one notification per check that matches the rulebook trigger.
-    # For large batches with notification enabled, this could be N emails.
-    # Acceptable for v1 — if it becomes annoying, a digest email is easy.
-    for c in batch.checks:
+    for c in result.checks:
         try:
             send_check_notification(c, rulebook)
         except Exception as exc:
             print(f"Warning: notification send failed for {c.payment_id}: {exc}")
-    return batch
+    return result
 
 
 # ─── Check CRUD + approval ─────────────────────────────────────────────────

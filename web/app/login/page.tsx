@@ -3,12 +3,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Lock, ShieldCheck } from "lucide-react";
-import { useAuth, DEMO_LOGIN_HINT } from "@/lib/auth";
+import { useAuth } from "@/lib/auth";
 
 /**
- * /login — the demo front door. Validates against the client-side demo
- * accounts in lib/auth.tsx and redirects to /home on success. If a user is
- * already signed in, bounce them straight to /home.
+ * /login — the real sign-in screen. Authenticates against POST /auth/login,
+ * stores the session token, and routes to /dashboard. If a user is already
+ * signed in, bounce them straight there.
  */
 export default function LoginPage() {
   const router = useRouter();
@@ -19,26 +19,20 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (ready && user) router.replace("/home");
+    if (ready && user) router.replace("/dashboard");
   }, [ready, user, router]);
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
-    const res = signIn(email, password);
+    const res = await signIn(email, password);
     if (!res.ok) {
       setError(res.error ?? "Sign in failed.");
       setBusy(false);
       return;
     }
-    router.push("/home");
-  }
-
-  function fillDemo() {
-    setEmail(DEMO_LOGIN_HINT.email);
-    setPassword(DEMO_LOGIN_HINT.password);
-    setError(null);
+    router.push("/dashboard");
   }
 
   return (
@@ -60,7 +54,7 @@ export default function LoginPage() {
             </span>
             <div>
               <h1 className="text-base font-semibold text-gray-900">Sign in</h1>
-              <p className="text-xs text-gray-500">Enter your demo credentials</p>
+              <p className="text-xs text-gray-500">Access your department workspace</p>
             </div>
           </div>
 
@@ -109,18 +103,10 @@ export default function LoginPage() {
               Sign in
             </button>
           </form>
-
-          <button
-            type="button"
-            onClick={fillDemo}
-            className="mt-3 w-full rounded-lg border border-dashed border-gray-300 px-4 py-2 text-xs font-medium text-gray-600 transition hover:border-brand-300 hover:text-brand-700"
-          >
-            Use demo account
-          </button>
         </div>
 
         <p className="mt-4 text-center text-[11px] text-gray-400">
-          Demo environment · access is shared, not per-user
+          Signed in per user · your department decides what you see
         </p>
       </div>
     </div>

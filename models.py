@@ -1022,6 +1022,18 @@ class RateCard(BaseModel):
     # Optional: which currency / display label. Defaults to NGN; not used
     # for math, just display on the schedule and review pages.
     currency: str = "NGN"
+    # ─── Per-diem policy (set by TA Connect finance) ────────────────────
+    # How a day's per-diem splits across components. Weights should sum to
+    # 1.0. Defaults encode the common NGO split where meals are a quarter of
+    # the day — so "org covers food" lands on the 75% rule. Finance edits
+    # these in the rate-card screen; the per_diem engine reads them.
+    lodging_weight: float = 0.50
+    meals_weight: float = 0.25
+    incidentals_weight: float = 0.25
+    # Fraction of the entitlement paid up front as an advance (1.0 = pay full
+    # entitlement now, reconcile with receipts later). Cash-flow policy, not a
+    # coverage deduction.
+    advance_fraction: float = 1.0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -1209,3 +1221,228 @@ class PublicCollectionInfo(BaseModel):
     event_name: str
     day_labels: list[str]
     already_submitted: int  # how many have checked in so far (social proof)
+
+
+# ─── Transaction backbone (cross-department workflow spine) ─────────────────
+#
+# A Transaction is the unifying reference every work item gets — a compliance
+# check, a payment run, a voucher — so the whole org can talk about "C24" and
+# see one status trail across departments. It does NOT replace the per-check
+# approval logic (ComplianceCheckResult.decision_log, pending_with); it wraps
+# and links to it, giving a single human reference + a cross-department state
+# machine that notifications and dashboards read from.
+#
+# Persisted as JSON under {root}/transactions/{id}.json (see transactions.py),
+# same file-based pattern as rulebooks / checks / runs.
+
+# The departments that own workflow stages. Kept small and concrete; adding
+# one later is safe (older records keep validating).
+Department = Literal["compliance", "finance", "program", "management"]
+
+# What kind of work a transaction tracks. The prefix on its human reference is
+# derived from this (compliance_check -> "C", payment_run -> "P", ...).
+TxnKind = Literal["compliance_check", "payment_run", "voucher", "travel_claim"]
+
+# The workflow states. Linear happy path is:
+#   submitted -> intake -> compliance_review -> finance_review -> approval -> paid
+# with `returned` as the "sent back for fixes" side-state reachable from any
+# review stage. Allowed transitions are enforced in transactions.py.
+TxnState = Literal[
+    "submitted",
+    "intake",
+    "compliance_review",
+    "finance_review",
+    "approval",
+    "paid",
+    "returned",
+]
+
+TxnEventType = Literal[
+    "created",         # transaction opened
+    "state_changed",   # moved between workflow states
+    "viewed",          # a department opened/looked at it (the "viewed by compliance" signal)
+    "noted",           # a free-text note was added
+    "returned",        # sent back for fixes
+    "approved",        # an approval stage signed off
+    "paid",            # marked paid / disbursed
+    "linked",          # linked to a source item (check/run/voucher id)
+]
+
+
+class TxnEvent(BaseModel):
+    """One append-only entry in a transaction's history. Never mutated."""
+    type: TxnEventType
+    timestamp: str                            # ISO 8601
+    actor: Optional[str] = None               # who acted (None until auth)
+    department: Optional[Department] = None    # acting department
+    from_state: Optional[TxnState] = None
+    to_state: Optional[TxnState] = None
+    note: Optional[str] = None
+
+
+class Transaction(BaseModel):
+    """A cross-department work item with a human reference and status trail."""
+    id: str                                   # internal uuid (never shown in links as the ref)
+    ref: str                                  # human reference, e.g. "C24"
+    kind: TxnKind
+    title: str                                # e.g. "Voucher — Q3 Workshop (42 participants)"
+    state: TxnState = "submitted"
+    owner_department: Optional[Department] = None   # who the ball is with right now
+    # Link to the underlying item this transaction tracks (a check id, run id,
+    # voucher id). Optional so a transaction can be opened before its source
+    # exists, then linked.
+    source_kind: Optional[TxnKind] = None
+    source_id: Optional[str] = None
+    # Money context for dashboards / summaries. Optional; not all kinds carry it.
+    amount: Optional[float] = None
+    currency: str = "NGN"
+    # Which departments/actors have viewed it (dedup list) — powers the
+    # "viewed by compliance" indicator without scanning the whole history.
+    viewed_by: list[str] = []
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    history: list[TxnEvent] = []
+
+
+class TransactionSummary(BaseModel):
+    """Lightweight row for lists / dashboards."""
+    ref: str
+    kind: TxnKind
+    title: str
+    state: TxnState
+    owner_department: Optional[Department] = None
+    amount: Optional[float] = None
+    currency: str = "NGN"
+    updated_at: Optional[str] = None
+
+
+# ─── In-app notifications (cross-department, event-driven) ──────────────────
+#
+# Every meaningful transaction event fans out to the department that now needs
+# to act (compliance approves -> finance is notified). Notifications are the
+# read model behind the "Uber-style" live status feed. Persisted per-id under
+# {root}/notifications/{id}.json.
+
+NotificationKind = Literal[
+    "assigned",        # the ball moved to your department
+    "returned",        # something you touched was sent back
+    "approved",        # an item you're watching was approved
+    "paid",            # an item you're watching was paid
+    "mention",         # generic info
+]
+
+
+class Notification(BaseModel):
+    id: str
+    txn_ref: str                              # which transaction it's about
+    to_department: Department                 # who should see it
+    kind: NotificationKind
+    title: str                                # short headline
+    body: str = ""                            # one-line detail
+    read: bool = False
+    actor: Optional[str] = None               # who caused it
+    created_at: Optional[str] = None
+
+
+# ─── Payment voucher (consolidated participant payables) ────────────────────
+#
+# A voucher rolls many participants' payables into one payment document — the
+# thing finance raises for a whole event and routes for approval. Each line is
+# a snapshot (not a live reference) so the voucher stays defensible even if the
+# underlying per-diem policy is edited later — same defensive snapshot pattern
+# as ComplianceCheckResult.rulebook_snapshot_rules. Built by vouchers.py from
+# per_diem.ParticipantPayable objects; the workflow status lives on the linked
+# Transaction, not here.
+
+
+class VoucherLine(BaseModel):
+    """One participant's payable, flattened onto a voucher."""
+    participant_name: str
+    role: Optional[str] = None
+    days: int = 0
+    per_diem_entitlement: float = 0.0
+    reimbursable_total: float = 0.0
+    amount: float = 0.0                        # per_diem + reimbursables
+    flag_count: int = 0                        # unresolved review flags on this line
+    summary: str = ""
+
+
+class Voucher(BaseModel):
+    id: str
+    event_name: str
+    lines: list[VoucherLine] = []
+    total: float = 0.0
+    currency: str = "NGN"
+    participant_count: int = 0
+    flagged_count: int = 0                     # lines carrying ≥1 flag
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    # Link to the workflow transaction once the voucher is submitted for
+    # approval. Null while still a draft. The Transaction owns the status.
+    txn_id: Optional[str] = None
+    txn_ref: Optional[str] = None
+
+
+class VoucherSummary(BaseModel):
+    id: str
+    event_name: str
+    total: float
+    currency: str = "NGN"
+    participant_count: int
+    flagged_count: int
+    txn_ref: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+# ─── Users, departments & roles (auth / RBAC) ───────────────────────────────
+#
+# Each user belongs to ONE department (compliance / finance / program /
+# management) and has ONE role that grades what they can do within it. Auth is
+# handled in auth.py: salted PBKDF2 password hashes + HMAC-signed session
+# tokens. The password hash NEVER leaves the server — API responses use
+# UserPublic, which omits it.
+
+# viewer  — read-only within their department
+# reviewer — can act on items (transition, note, view)
+# approver — can approve/return at their stage
+# admin    — can manage users + all of the above
+Role = Literal["viewer", "reviewer", "approver", "admin"]
+
+
+class User(BaseModel):
+    """Full user record as persisted (includes the password hash — server-only)."""
+    id: str
+    email: str
+    name: str
+    department: Department
+    role: Role = "reviewer"
+    password_hash: str                        # pbkdf2 hex digest
+    password_salt: str                        # hex salt
+    active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class UserPublic(BaseModel):
+    """Safe user view returned by the API — no credential material."""
+    id: str
+    email: str
+    name: str
+    department: Department
+    role: Role
+    active: bool = True
+    created_at: Optional[str] = None
+
+
+class DashboardSummary(BaseModel):
+    """Everything a department's dashboard needs in one call."""
+    department: Department
+    unread_notifications: int = 0
+    # Work owned by this department right now, bucketed by state.
+    pending_on_me: int = 0
+    counts_by_state: dict[str, int] = {}
+    total_value_pending: float = 0.0
+    currency: str = "NGN"
+    recent: list[TransactionSummary] = []

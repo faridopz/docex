@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { getOrgProfile } from "@/lib/api";
+import { NotificationBell } from "@/components/erp/NotificationBell";
 
 /**
  * AppShell — the canonical in-product layout: a persistent left sidebar +
@@ -36,6 +37,8 @@ import { getOrgProfile } from "@/lib/api";
  */
 
 export type NavSection =
+  | "dashboard"
+  | "vouchers"
   | "extract"
   | "templates"
   | "knowledge"
@@ -64,6 +67,8 @@ const NAV_GROUPS: NavGroup[] = [
     module: "compliance",
     label: "Compliance & Finance",
     items: [
+      { section: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutGrid, match: ["/dashboard", "/transactions"] },
+      { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"] },
       { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
       { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"] },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
@@ -253,6 +258,7 @@ export function AppShell({
           </div>
           <div className="flex h-14 items-center justify-end gap-2 px-4 md:px-8">
             {actions}
+            <NotificationBell department={user.department} />
           </div>
           {/* Mobile horizontal nav */}
           <nav className="flex items-center gap-1 overflow-x-auto border-t border-gray-100 px-3 py-2 md:hidden">

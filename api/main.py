@@ -84,7 +84,11 @@ from .attendance_collection_routes import router as attendance_collection_router
 from .bank_verify_routes import router as bank_verify_router  # noqa: E402
 from .compliance_routes import router as compliance_router  # noqa: E402
 from .knowledge_routes import router as knowledge_router  # noqa: E402
+from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
+from .auth_routes import router as auth_router  # noqa: E402
+from .transaction_routes import router as transaction_router  # noqa: E402
+from .voucher_routes import router as voucher_router  # noqa: E402
 from .self_check_routes import router as self_check_router  # noqa: E402
 from .schemas import (  # noqa: E402
     BatchExtractionResponse,
@@ -227,6 +231,23 @@ app.include_router(attendance_collection_router)
 # Payment Agent and (later) any other agent that needs to compute payment
 # amounts. See api/rate_card_routes.py.
 app.include_router(rate_card_router)
+
+# Per-diem — computes one participant's payable from a rate card's per-diem
+# policy + the days/coverage/receipts a worker submits. See api/per_diem_routes.py.
+app.include_router(per_diem_router)
+
+# Transactions + notifications — the cross-department workflow spine. Every work
+# item gets a reference (C24) and a status trail; state changes fan out in-app
+# notifications to the department that must act next. See api/transaction_routes.py.
+app.include_router(transaction_router)
+
+# Vouchers — consolidate participant payables into one payment voucher and
+# submit it into the approval workflow. See api/voucher_routes.py.
+app.include_router(voucher_router)
+
+# Auth + dashboards — per-department logins, roles/RBAC, and the per-department
+# dashboard aggregation. See api/auth_routes.py.
+app.include_router(auth_router)
 
 # Self-Check Agent — runtime diagnostic that exercises every primitive and
 # reports health. V1 of the longer-term Self-Improvement Agent (observe →
