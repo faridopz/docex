@@ -2,8 +2,10 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Loader2, Lock, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { getAuthStatus } from "@/lib/erpApi";
 
 /**
  * /login — the real sign-in screen. Authenticates against POST /auth/login,
@@ -21,6 +23,19 @@ export default function LoginPage() {
   useEffect(() => {
     if (ready && user) router.replace("/dashboard");
   }, [ready, user, router]);
+
+  // A brand-new instance has no accounts yet — send the first person to setup
+  // rather than a sign-in form they could never pass.
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await getAuthStatus();
+        if (s.needs_setup) router.replace("/setup");
+      } catch {
+        /* offline/unreachable API — leave the form up */
+      }
+    })();
+  }, [router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -107,6 +122,9 @@ export default function LoginPage() {
 
         <p className="mt-4 text-center text-[11px] text-gray-400">
           Signed in per user · your department decides what you see
+          <br />
+          Setting up a new workspace?{" "}
+          <Link href="/setup" className="text-brand-600">Start here</Link>
         </p>
       </div>
     </div>

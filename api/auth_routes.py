@@ -85,6 +85,18 @@ class LoginResponse(BaseModel):
 # ─── routes ─────────────────────────────────────────────────────────────────
 
 
+@router.get("/auth/status", response_model=dict)
+def auth_status() -> dict:
+    """Public: has this instance been set up yet?
+
+    Deliberately unauthenticated and deliberately minimal — it reveals only
+    whether an admin account exists, which the sign-in screen needs to know so
+    a brand-new install can send the first person to /setup instead of a login
+    form they can never pass. No user data is exposed.
+    """
+    return {"needs_setup": not auth_mod.list_public()}
+
+
 @router.post("/auth/register", response_model=UserPublic)
 def register(body: RegisterRequest, authorization: Optional[str] = Header(default=None)) -> UserPublic:
     first_user = not auth_mod.list_public()

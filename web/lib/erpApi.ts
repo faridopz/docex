@@ -24,6 +24,11 @@ export async function login(email: string, password: string): Promise<{ token: s
   });
 }
 
+/** Public: does this instance still need its first admin account? */
+export async function getAuthStatus(): Promise<{ needs_setup: boolean }> {
+  return apiFetch("/auth/status", { auth: false });
+}
+
 export async function registerUser(
   body: { email: string; name: string; password: string; department: Department; role?: string },
   adminToken?: string,
