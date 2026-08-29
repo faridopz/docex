@@ -87,6 +87,7 @@ from .knowledge_routes import router as knowledge_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
+from .department_routes import router as department_router  # noqa: E402
 from .transaction_routes import router as transaction_router  # noqa: E402
 from .voucher_routes import router as voucher_router  # noqa: E402
 from .self_check_routes import router as self_check_router  # noqa: E402
@@ -248,6 +249,10 @@ app.include_router(voucher_router)
 # Auth + dashboards — per-department logins, roles/RBAC, and the per-department
 # dashboard aggregation. See api/auth_routes.py.
 app.include_router(auth_router)
+
+# Departments — each org defines its own departments + which one owns each
+# workflow state. See api/department_routes.py.
+app.include_router(department_router)
 
 # Self-Check Agent — runtime diagnostic that exercises every primitive and
 # reports health. V1 of the longer-term Self-Improvement Agent (observe →

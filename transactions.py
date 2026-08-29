@@ -35,6 +35,7 @@ try:
 except Exception:  # pragma: no cover - non-POSIX fallback
     fcntl = None  # type: ignore
 
+import departments
 from models import (
     Department,
     Transaction,
@@ -69,17 +70,19 @@ _TRANSITIONS: dict[str, set[str]] = {
     "returned": {"submitted", "intake", "compliance_review", "finance_review"},
 }
 
-# Which department owns each state (the ball is with them). `returned` has no
-# fixed owner — the return event names who must fix it.
-_STATE_OWNER: dict[str, Optional[Department]] = {
-    "submitted": "program",
-    "intake": "program",
-    "compliance_review": "compliance",
-    "finance_review": "finance",
-    "approval": "management",
-    "paid": "finance",
-    "returned": None,
-}
+# Which department owns each state (the ball is with them). This is now DATA,
+# not code: it comes from the org's departments registry so each organisation
+# routes its own workflow (EVA sends `approval` to "ed"; the default install
+# sends it to "management"). `returned` has no fixed owner — the return event
+# names who must fix it. _state_owner() never raises: an unmapped state simply
+# has no owner, which the UI renders as "Unassigned".
+
+
+def _state_owner(state: str) -> Optional[Department]:
+    try:
+        return departments.state_owner(state)
+    except Exception:  # pragma: no cover - registry unreadable; stay functional
+        return None
 
 
 class TransactionError(ValueError):
@@ -224,7 +227,7 @@ def create(
         kind=kind,
         title=title.strip() or "Untitled",
         state=initial_state,
-        owner_department=_STATE_OWNER.get(initial_state),
+        owner_department=_state_owner(initial_state),
         source_kind=source_kind,
         source_id=source_id,
         amount=amount,
@@ -233,7 +236,7 @@ def create(
         created_at=now,
         updated_at=now,
         history=[TxnEvent(type="created", timestamp=now, actor=created_by,
-                          department=_STATE_OWNER.get(initial_state),
+                          department=_state_owner(initial_state),
                           to_state=initial_state)],
     )
     if source_id:
@@ -281,7 +284,7 @@ def transition(
         department=department, from_state=current, to_state=to_state, note=note,
     ))
     txn.state = to_state
-    txn.owner_department = _STATE_OWNER.get(to_state)
+    txn.owner_department = _state_owner(to_state)
     return save(txn)
 
 

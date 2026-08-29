@@ -36,6 +36,61 @@ export async function registerUser(
   });
 }
 
+export async function listUsers(): Promise<AuthUser[]> {
+  const r = await apiFetch<{ users: AuthUser[] }>("/auth/users");
+  return r.users;
+}
+
+// ─── departments (org-defined) ──────────────────────────────────────────────
+
+export interface DepartmentDef {
+  key: string;
+  name: string;
+  description: string;
+  order: number;
+  is_final_authority: boolean;
+}
+
+export async function listDepartments(): Promise<{
+  departments: DepartmentDef[];
+  state_owners: Record<string, string>;
+}> {
+  return apiFetch("/departments");
+}
+
+export async function createDepartment(body: {
+  name: string;
+  description?: string;
+  order?: number;
+  is_final_authority?: boolean;
+}): Promise<DepartmentDef> {
+  return apiFetch("/departments", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateDepartment(
+  key: string,
+  body: { name?: string; description?: string; order?: number; is_final_authority?: boolean },
+): Promise<DepartmentDef> {
+  return apiFetch(`/departments/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteDepartment(key: string): Promise<void> {
+  await apiFetch(`/departments/${encodeURIComponent(key)}`, { method: "DELETE" });
+}
+
+export async function setStateOwner(
+  state: string,
+  department: string | null,
+): Promise<{ state_owners: Record<string, string> }> {
+  return apiFetch(`/departments/routing/${encodeURIComponent(state)}`, {
+    method: "PUT",
+    body: JSON.stringify({ department }),
+  });
+}
+
 // ─── dashboard ──────────────────────────────────────────────────────────────
 
 export async function getDashboard(department?: Department): Promise<DashboardSummary> {

@@ -4,7 +4,11 @@
  * Kept in a dedicated file so the large types/index.ts stays focused.
  */
 
-export type Department = "compliance" | "finance" | "program" | "management";
+// A department KEY. Organisations define their own departments (see the
+// departments registry / admin screen), so this is a plain string rather than a
+// fixed union — EVA's Program/Compliance/Finance/TLFA/ED differ from the
+// defaults. Use deptLabel() in lib/erpFormat for display names.
+export type Department = string;
 export type Role = "viewer" | "reviewer" | "approver" | "admin";
 
 export type TxnKind =

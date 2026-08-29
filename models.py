@@ -1235,9 +1235,35 @@ class PublicCollectionInfo(BaseModel):
 # Persisted as JSON under {root}/transactions/{id}.json (see transactions.py),
 # same file-based pattern as rulebooks / checks / runs.
 
-# The departments that own workflow stages. Kept small and concrete; adding
-# one later is safe (older records keep validating).
-Department = Literal["compliance", "finance", "program", "management"]
+# A department is identified by its KEY (lowercase slug, e.g. "compliance",
+# "finance", "tlfa", "ed"). Deliberately a plain string, NOT a fixed Literal:
+# every organisation defines its own departments (TA Connect's differ from EVA's
+# Program/Compliance/Finance/TLFA/ED). The authoritative list lives in the
+# departments registry (departments.py) and is validated there at write time —
+# so old records keep loading and new orgs aren't boxed into someone else's org
+# chart.
+Department = str
+
+
+class DepartmentDef(BaseModel):
+    """One department in an organisation's registry."""
+    key: str                                  # stable slug used on records, e.g. "finance"
+    name: str                                 # display label, e.g. "Finance"
+    description: str = ""
+    order: int = 100                          # sort order in nav/lists
+    # Marks the department whose members may give final authorisation (e.g.
+    # EVA's ED). Purely advisory today; the approval gate uses roles.
+    is_final_authority: bool = False
+
+
+class DepartmentRegistry(BaseModel):
+    """The organisation's departments + which department owns each workflow
+    state. Persisted as a single JSON document (departments.py)."""
+    departments: list[DepartmentDef] = []
+    # state key -> department key. Lets an org route its own workflow (EVA sends
+    # approval to "ed"; another org might send it to "management").
+    state_owners: dict[str, str] = {}
+    updated_at: Optional[str] = None
 
 # What kind of work a transaction tracks. The prefix on its human reference is
 # derived from this (compliance_check -> "C", payment_run -> "P", ...).

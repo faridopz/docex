@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,9 +39,17 @@ from models import (  # noqa: E402
     TransactionSummary,
     TxnKind,
     TxnState,
+    User,
 )
 
+from .auth_routes import current_user  # noqa: E402
+
 router = APIRouter(tags=["transactions"])
+
+# The states that constitute AUTHORISING money: sending an item for final
+# approval, and marking it paid. Restricted to approver/admin so a reviewer
+# can move work forward but cannot authorise payment on their own.
+_AUTHORISING_STATES = {"approval", "paid"}
 
 
 # ─── request bodies ─────────────────────────────────────────────────────────
@@ -117,12 +125,45 @@ def next_states(ref: str) -> dict:
 
 
 @router.post("/transactions/{ref}/transition", response_model=Transaction)
-def transition_transaction(ref: str, body: TransitionRequest) -> Transaction:
+def transition_transaction(
+    ref: str,
+    body: TransitionRequest,
+    user: User = Depends(current_user),
+) -> Transaction:
+    """Move a transaction through the workflow — the IN-APP approval path.
+
+    Approvals happen here, inside the product: the approver opens the item from
+    their department queue / notification and acts. (The emailed magic-link
+    remains only as a fallback for people without an account.)
+
+    Permissions:
+      - viewers cannot move work at all;
+      - the authorisation gates ('approval' and 'paid') require an approver or
+        admin — a reviewer can progress work but cannot self-authorise payment.
+    Actor + department are taken from the SIGNED-IN USER, never from the request
+    body, so the audit trail can't be spoofed by the client.
+    """
+    if user.role == "viewer":
+        raise HTTPException(
+            status_code=403,
+            detail="Viewers can't action items. Ask an admin for reviewer access.",
+        )
+    if body.to_state in _AUTHORISING_STATES and user.role not in ("approver", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Only an approver can move an item to '{body.to_state}'. "
+                "Your role is " + user.role + "."
+            ),
+        )
+
     txn = _load_or_404(ref)
     try:
         txn = tx.transition(
             txn, body.to_state,
-            actor=body.actor, department=body.department, note=body.note,
+            actor=user.name or user.email,
+            department=user.department,
+            note=body.note,
         )
     except tx.TransactionError as exc:
         # Illegal move / terminal state → 409 Conflict, not a 500.

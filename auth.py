@@ -175,6 +175,15 @@ def create_user(
         raise AuthError("A valid email is required.")
     if get_by_email(email):
         raise AuthError("A user with that email already exists.")
+    # Departments are org-defined data (departments.py) — reject a typo/unknown
+    # key rather than creating a user nobody's queue will ever show.
+    try:
+        import departments as _departments
+        _departments.require(department)
+    except ImportError:  # pragma: no cover - registry optional
+        pass
+    except Exception as exc:
+        raise AuthError(str(exc)) from exc
     pw_hash, pw_salt = hash_password(password)
     user = User(
         id=uuid.uuid4().hex,

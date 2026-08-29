@@ -1,6 +1,28 @@
 # DOCex — Project Memory
 
 ## What We Are Building
+
+DOCex has grown from a document-extraction tool into an **AI-native finance &
+compliance platform** for donor-funded organisations. Two layers:
+
+1. **Document intelligence** (original): extract answers from bulk documents;
+   check payments against an org's policy rulebook.
+2. **Finance workflow** (ERP layer): payments move through a cross-department
+   approval pipeline — each work item has a reference (C24), a status trail,
+   in-app notifications to the next department, per-department dashboards, and
+   in-app approvals with role enforcement.
+
+**Founding principle — DETERMINISTIC-FIRST.** Code owns every number: amounts,
+deductions, allocations, thresholds, matching, duplicates, reconciliation. The
+LLM only reads messy documents and judges genuinely semantic policy questions.
+A code-level BLOCK always overrides the model.
+
+**Organisations:** TA Connect (pilot — screening + event payments) and
+**EVA / Education as a Vaccine** (second org — internal finance ops, payroll,
+grants; see `EVA_BUILD_PLAN.md`). Decision: **separate instances, shared engine
+core** — never fork the codebase.
+
+### Original description (still accurate for the extraction layer)
 DOCex is an AI-powered document extraction tool.
 A sub-award team receives hundreds of applications. Each applicant
 submits multiple files — registration certificate, financials,
@@ -64,8 +86,25 @@ BatchExtractionResult: total, succeeded, failed, applicants[]
 - Excel export: SheetJS (xlsx) on frontend
 
 ## Infrastructure & Deployment (CURRENT — read before any deploy/infra change)
-DOCex is LIVE on AWS (region eu-west-1), not Railway/Vercel. (A Vercel demo
-still exists, but AWS is the real deployment.)
+
+> ⚠️ **DEPLOYMENT TRUTH (confirmed by Farid, Aug 2026): the LIVE demo runs on
+> RENDER (free tier) + VERCEL — NOT AWS.**
+> - **API:** Render free tier — see `render.yaml` (`plan: free`, Docker, branch
+>   `demo-release`, `autoDeploy: true`, health check `/health`). Sleeps after
+>   ~15 min idle → **30–50s cold start** (mitigated by the keep-warm workflow).
+> - **Frontend:** Vercel (`.vercel/`), talks to the API via `NEXT_PUBLIC_API_URL`
+>   (baked at BUILD time).
+> - **Data is EPHEMERAL:** local-disk JSON stores (`checks/`, `rulebooks/`,
+>   `transactions/`, `notifications/`, `users/`, `vouchers/`, `departments.json`)
+>   RESET on redeploy. Durable storage is the top infra priority.
+>
+> The AWS/Terraform description below is **historical/aspirational** — the
+> `/terraform` and `/deploy` directories exist, but the live demo is Render.
+> Verify before acting on anything in this section.
+
+### Historical AWS description (NOT the live demo — verify first)
+DOCex was described as LIVE on AWS (region eu-west-1). (A Vercel demo
+still exists, but AWS was called the real deployment.)
 - **Runs on:** AWS ECS Fargate — two services, `docex-web` (Next.js) and
   `docex-api` (FastAPI), each behind its own Application Load Balancer, inside
   the default VPC. Images live in ECR; logs in CloudWatch.
@@ -92,14 +131,38 @@ still exists, but AWS is the real deployment.)
   infra history and the running decision log.
 
 ## Project Structure
-/ngo_screener   — Python extraction engine
-  models.py     — Pydantic models: Question, ExtractionAnswer, etc.
-  screener.py   — Core Claude API extraction logic
-  main.py       — CLI interface
-/api            — FastAPI wrapper
-/web            — Next.js frontend
-CLAUDE.md       — This file
-SOUL.md         — Project soul and values
+
+Engines live at the repo ROOT (not in /ngo_screener — that layout was never built).
+
+**Deterministic core (code owns numbers — never the LLM):**
+  `fast_extract.py`      — parallel text extraction (PyMuPDF→pdfplumber, DOCX, XLSX)
+  `fast_fields.py`       — labelled-regex field extraction (invoice/PO/GRN no., totals, TIN)
+  `payment_checks.py`    — AP controls: three-way match, duplicate invoice
+  `deterministic_checks.py` — form/threshold/date/reference rule engine
+  `receipts.py`          — advance-retirement reconciliation
+  `per_diem.py`          — per-diem entitlement + participant payable
+  `doc_completeness.py`  — document classification + required-doc presence
+
+**Workflow layer:**
+  `transactions.py`      — reference + state machine + append-only audit
+  `departments.py`       — org-defined departments + stage routing
+  `notification_center.py` — in-app cross-department notifications
+  `auth.py`              — users, roles, sessions (PBKDF2 + HMAC)
+  `vouchers.py`          — payables → voucher → routed transaction
+
+**AI-assisted:**
+  `compliance.py`        — rulebook-driven semantic checks (lean output schema)
+  `screener.py`          — extraction engine
+  `knowledge.py`, `assistant.py`, `policy_rules.py`
+
+`/api`   — FastAPI routers (one per feature; all registered in api/main.py)
+`/web`   — Next.js frontend
+`/bench` — benchmark harness
+`test_*.py` (repo root) — 9 test suites, all green; run with `python test_x.py`
+
+**Key docs:** `CLAUDE.md` (this) · `SOUL.md` · `PERFORMANCE_AUDIT.md` ·
+`BATCH_PERFORMANCE_AUDIT.md` · `ERP_ARCHITECTURE.md` · `EVA_BUILD_SPEC.md` ·
+`EVA_BUILD_PLAN.md`
 
 ## Design System
 - Font: Geist (Next.js default)
@@ -120,34 +183,66 @@ SOUL.md         — Project soul and values
 
 ## Build Phases
 
-### Phase 1 — Core extraction (current)
-- [x] Landing page (DOCex branded)
-- [x] Next.js scaffold with Tailwind + shadcn
-- [ ] models.py — extraction data models
-- [ ] screener.py — extraction logic (combine docs, answer questions)
-- [ ] api/schemas.py — extraction API schemas
-- [ ] api/main.py — /extract/single and /extract/batch endpoints
-- [ ] web/types/index.ts — extraction types
-- [ ] web/lib/api.ts — API calls + Excel export
-- [ ] QuestionBuilder component
-- [ ] ApplicantUpload component
-- [ ] ExtractionTable component
-- [ ] App wizard page (3-step: questions → applicants → results)
+### Phase 1 — Core extraction ✅ SHIPPED
+Extraction engine, rulebooks, compliance checking, Bank Verify, Attendance
+Payment Agent, Knowledge Hub, rate cards, self-check diagnostics — all live.
 
-### Phase 2 — Persistence + auth
-- [ ] Supabase auth (login/signup with org creation)
-- [ ] Questions saved as reusable templates
-- [ ] Extraction sessions saved to database
-- [ ] Session history page
-- [ ] Real-time progress during batch extraction
-- [ ] PDF export of results
+### Phase 2 — ERP workflow layer ✅ SHIPPED
+DOCex is no longer only a document checker; it runs cross-department finance
+workflow. All tested (9 suites green, `test_*.py` in repo root):
+- [x] `per_diem.py` — per-diem entitlement (coverage-weighted: org covers food →
+      pay 75%); combined with reimbursable receipts into one payable.
+      Policy is data on the **rate card**, not code.
+- [x] `transactions.py` — human reference (C24 / V7), workflow state machine
+      (`submitted → intake → compliance_review → finance_review → approval →
+      paid`, plus `returned`), append-only audit history, locked monotonic
+      counter.
+- [x] `departments.py` — **org-defined departments** + which department owns
+      each workflow stage. NOT hard-coded: EVA runs Program/Compliance/Finance/
+      TLFA/ED. Defaults reproduce the original four.
+- [x] `notification_center.py` — in-app cross-department feed; every state
+      change notifies the department that must act next.
+- [x] `auth.py` — users, departments, roles (viewer/reviewer/approver/admin),
+      PBKDF2 password hashing + HMAC session tokens, first-user bootstrap.
+- [x] `vouchers.py` — consolidate participant payables → voucher → submit,
+      which opens a routed transaction.
+- [x] **In-app approvals** — transitions are authenticated + role-gated;
+      actor/department come from the signed-in user (not the request body).
+      Reviewers can progress work but cannot self-authorise payment.
+- [x] Frontend: real auth (`lib/auth.tsx` → `/auth/login`), per-department
+      dashboard (`/dashboard`), transaction detail + status timeline,
+      notification bell, voucher builder, admin screen
+      (`/settings/departments`).
 
-### Phase 3 — Scale
-- [ ] Multi-tenant with row level security
-- [ ] Subscription billing via Paystack
-- [ ] Applicant submission portal
-- [ ] Team member invites
-- [ ] Deploy to Vercel + Railway
+### Phase 3 — Compliance performance ✅ SHIPPED
+See `PERFORMANCE_AUDIT.md` + `BATCH_PERFORMANCE_AUDIT.md` for the evidence.
+- [x] **Lean LLM output schema** — the model returns decisions + compact evidence
+      refs; the server rehydrates `rule_description`/`policy_citation` from the
+      rulebook by `rule_id`. Public `RuleResult` API is unchanged.
+- [x] **Collapsed receipt fan-out** — one model object per receipt-rule with a
+      `receipts[]` array instead of one per (rule × receipt). A 50-receipt bundle
+      went from ~321 objects (~64k tokens — exceeded the ceiling and FAILED) to
+      ~7. `max_tokens` 16384 → 8192 (`_CHECK_MAX_TOKENS`).
+- [x] **Batch fixed** — batch now runs the same deterministic AP controls as
+      single (three-way match + duplicate detection were previously SKIPPED in
+      batch), detects duplicate invoices *within* a batch, extracts in parallel,
+      and isolates a failed payment instead of 422-ing the whole run.
+- [x] `bench/bench_check.py` — stage-timing benchmark harness (runs non-LLM
+      stages without an API key; never invents numbers).
+- [x] Keep-warm workflow (`.github/workflows/keep-warm.yml`) pings `/health`
+      every 10 min so the free instance stops sleeping. **Needs repo variable
+      `DOCEX_API_URL` set, or it no-ops.**
+
+### Phase 4 — Next (not started)
+- [ ] Measure the LLM leg with a real key (`bench/bench_check.py --llm`) to get
+      true before/after numbers — currently unmeasured, do NOT quote figures.
+- [ ] Haiku-first + conservative Sonnet escalation (benchmark against
+      Sonnet-only before trusting it).
+- [ ] **Durable storage** — Postgres + object store. Local disk is ephemeral, so
+      transactions/users/departments reset on redeploy. Blocks real operational
+      use.
+- [ ] Async batch (`batch_id`, progressive results), retries, idempotency.
+- [ ] Multi-org tenancy (`org_id` scoping) — currently ONE org per instance.
 
 ## Business Model
 Pricing happens per-pilot in conversation — NOT on the landing, NOT

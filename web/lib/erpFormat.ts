@@ -27,12 +27,38 @@ export const STATE_STYLE: Record<TxnState, string> = {
   returned: "bg-red-50 text-red-700 ring-red-200",
 };
 
-export const DEPT_LABEL: Record<Department, string> = {
+/**
+ * Department display names.
+ *
+ * Departments are org-defined data now, so we can't hard-code the list. The
+ * app calls cacheDepartmentLabels() once it has loaded /departments; until
+ * then (and for any key we don't know) deptLabel() prettifies the key itself —
+ * so the UI never renders a blank or crashes on an unknown department.
+ */
+const _deptLabels: Record<string, string> = {
   compliance: "Compliance",
   finance: "Finance",
   program: "Program / M&E",
   management: "Management",
 };
+
+export function cacheDepartmentLabels(defs: { key: string; name: string }[]): void {
+  for (const d of defs) _deptLabels[d.key] = d.name;
+}
+
+export function deptLabel(key?: Department | null): string {
+  if (!key) return "Unassigned";
+  if (_deptLabels[key]) return _deptLabels[key];
+  return key
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** @deprecated use deptLabel() — kept so existing call sites keep compiling. */
+export const DEPT_LABEL = new Proxy({} as Record<string, string>, {
+  get: (_t, prop: string) => deptLabel(prop),
+});
 
 /** The happy-path order, for rendering a progress stepper. */
 export const PIPELINE: TxnState[] = [

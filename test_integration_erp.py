@@ -97,12 +97,19 @@ client.post(f"/transactions/{ref}/view", json={"department": "compliance"})
 r = client.get(f"/transactions/{ref}")
 check("viewed_by records compliance", "compliance" in r.json()["viewed_by"])
 
-r = client.post(f"/transactions/{ref}/transition", json={
-    "to_state": "finance_review", "department": "compliance"})
-check("moved to finance_review", r.json()["state"] == "finance_review")
+# Transitions are now the IN-APP approval path: authenticated + role-gated.
+check("transition requires auth (401)",
+      client.post(f"/transactions/{ref}/transition",
+                  json={"to_state": "finance_review"}).status_code == 401)
 
-# Illegal jump is a 409.
-r = client.post(f"/transactions/{ref}/transition", json={"to_state": "paid"})
+r = client.post(f"/transactions/{ref}/transition", headers=ah,
+                json={"to_state": "finance_review"})
+check("moved to finance_review", r.json()["state"] == "finance_review")
+check("actor recorded from signed-in user, not the body",
+      r.json()["history"][-1]["actor"] == "Admin")
+
+# Illegal jump is a 409 (admin passes the role gate, so we reach the state machine).
+r = client.post(f"/transactions/{ref}/transition", headers=ah, json={"to_state": "paid"})
 check("illegal transition rejected (409)", r.status_code == 409)
 
 # 4. Finance dashboard reflects the pending item + its value.
