@@ -76,6 +76,29 @@ for _dirname in ("rulebooks", "checks", "verifications",
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# ─── Storage initialization ──────────────────────────────────────────────────
+# Wire up durable SQL storage if DOCEX_DB is set; otherwise use JSON files.
+# This must happen before any routes are imported, so all engines see the
+# correct store immediately.
+try:
+    import store
+    import store_sql
+
+    _db_path = os.environ.get("DOCEX_DB")
+    if _db_path:
+        # Production/cloud: use SQLite at a persistent path (requires mounted volume)
+        print(f"[DOCex] Initializing SQLite storage at {_db_path}", flush=True)
+        store.set_store(store_sql.SqliteStore(_db_path))
+    else:
+        # Development: use JSON file store (backward compatible)
+        from pathlib import Path as PathlibPath
+        _json_root = PathlibPath(__file__).parent.parent / "data"
+        print(f"[DOCex] Using JSON file store at {_json_root} (set DOCEX_DB for SQLite)", flush=True)
+        store.set_store(store.JsonFileStore(_json_root))
+except Exception as _store_err:
+    print(f"[DOCex] WARNING: failed to initialize store: {_store_err}", flush=True)
+    raise
+
 from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402
 from .assistant_routes import router as assistant_router  # noqa: E402

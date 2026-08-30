@@ -55,6 +55,7 @@ _PREFIX: dict[str, str] = {
     "payment_run": "P",
     "voucher": "V",
     "travel_claim": "T",
+    "payroll_run": "PR",
 }
 
 # Legal state transitions. Any move not listed is rejected. `returned` is the

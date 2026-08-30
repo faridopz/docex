@@ -1267,7 +1267,9 @@ class DepartmentRegistry(BaseModel):
 
 # What kind of work a transaction tracks. The prefix on its human reference is
 # derived from this (compliance_check -> "C", payment_run -> "P", ...).
-TxnKind = Literal["compliance_check", "payment_run", "voucher", "travel_claim"]
+TxnKind = Literal[
+    "compliance_check", "payment_run", "voucher", "travel_claim", "payroll_run",
+]
 
 # The workflow states. Linear happy path is:
 #   submitted -> intake -> compliance_review -> finance_review -> approval -> paid

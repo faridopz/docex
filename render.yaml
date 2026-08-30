@@ -1,24 +1,29 @@
-# Render Blueprint for the DOCex API (free tier).
+# Render Blueprint for the DOCex API.
 #
 # One-time setup:
 #   1. Push this file to the `demo-release` branch on GitHub.
 #   2. Render dashboard → New → Blueprint → connect the docex repo.
 #   3. Render reads this file and creates the `docex-api` web service.
-#   4. Set the two secret env vars below in the dashboard (they are sync:false
+#   4. Set the required secret env vars below in the dashboard (they are sync:false
 #      so they are NOT stored in git):
 #        - ANTHROPIC_API_KEY : your Claude API key
 #        - ALLOWED_ORIGINS   : your Vercel frontend URL,
 #                              e.g. https://docex.vercel.app
-#      (ALLOWED_ORIGINS can be added after Vercel gives you the URL — just
-#       redeploy the service once it is set.)
+#        - DOCEX_DATABASE_URL (optional): Postgres connection string for durable cloud storage.
+#                              If not set, data persists in SQLite at /data/docex.db
+#                              (requires persistent disk or paid tier).
 #
 # Notes:
+#   - DURABLE STORAGE CHOICE:
+#     * SQLite (default, DOCEX_DB=/data/docex.db): requires persistent disk on Render
+#       (free tier loses data on redeploy; upgrade to start: $7/mo for persistence).
+#     * Postgres (DOCEX_DATABASE_URL=postgres://...): managed cloud database
+#       (use Render Postgres, Railway, or other managed provider for ~$5-15/mo).
+#     If neither is set, storage falls back to JSON files and resets on redeploy.
 #   - Free web services sleep after ~15 min idle and cold-start in ~30-50s.
-#     That is fine for a demo. No card required.
+#     The keep-warm workflow (.github/workflows/keep-warm.yml) mitigates this.
 #   - The Dockerfile already respects $PORT (Render injects it) and exposes
 #     /health, so no start command is needed here.
-#   - Free tier has no persistent disk: local files (checks/, rulebooks/…)
-#     reset on redeploy. Durable storage comes later on Azure.
 
 services:
   - type: web
