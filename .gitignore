@@ -68,3 +68,7 @@ Thumbs.db
 .idea/
 *.swp
 .vercel
+
+# Local JSON store (store.py JsonFileStore default root). Runtime data —
+# recreated on demand, and never something that should reach the repo.
+/data/

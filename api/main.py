@@ -113,6 +113,8 @@ from .auth_routes import router as auth_router  # noqa: E402
 from .department_routes import router as department_router  # noqa: E402
 from .transaction_routes import router as transaction_router  # noqa: E402
 from .voucher_routes import router as voucher_router  # noqa: E402
+from .field_receipt_routes import router as field_receipt_router  # noqa: E402
+from .requisition_routes import router as requisition_router  # noqa: E402
 from .self_check_routes import router as self_check_router  # noqa: E402
 from .schemas import (  # noqa: E402
     BatchExtractionResponse,
@@ -268,6 +270,19 @@ app.include_router(transaction_router)
 # Vouchers — consolidate participant payables into one payment voucher and
 # submit it into the approval workflow. See api/voucher_routes.py.
 app.include_router(voucher_router)
+
+# Field Receipts — real-time receipt capture, OCR extraction, and policy
+# validation for field-based NGOs. Fieldworkers upload receipts, system
+# auto-validates and flags issues. See api/field_receipt_routes.py.
+app.include_router(field_receipt_router)
+
+# Requisitions — the universal department→payment spine. Any department raises a
+# payment request; deterministic policy checks run immediately; the org's own
+# approval chain routes it; a failing check can only be released by an
+# authorised approver with a written reason; every decision lands in an
+# append-only, hash-chained audit log; final approval freezes an immutable
+# transaction record. See api/requisition_routes.py.
+app.include_router(requisition_router)
 
 # Auth + dashboards — per-department logins, roles/RBAC, and the per-department
 # dashboard aggregation. See api/auth_routes.py.
