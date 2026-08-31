@@ -40,38 +40,190 @@ from concurrent.futures import ThreadPoolExecutor
 # unbounded number of threads.
 _MAX_WORKERS = 8
 
+# OCR is orders of magnitude slower than a text layer (~1-3s per page vs
+# milliseconds). Cap it so one 200-page scan can't hold a request open; a
+# receipt or invoice — the realistic field case — is one or two pages.
+_OCR_MAX_PAGES = 10
+
 
 def extract_text(filename: str, data: bytes) -> str:
-    """Extract text from a PDF, DOCX, or plain-text file. Never raises — returns
-    "" on failure so a single bad file can't break a batch."""
+    """Extract text from a PDF, DOCX, spreadsheet, image, or plain-text file.
+
+    Never raises — returns "" on failure so a single bad file can't break a
+    batch. An empty return means "no text recovered"; use ``extract_detail``
+    when you need to know *why*, because the difference between a scan, a
+    corrupt file and an unsupported one changes what you tell the user.
+    """
+    return _extract(filename, data)[0]
+
+
+# Magic bytes, checked before the extension. A fieldworker's phone happily
+# produces "receipt.pdf" that is actually a JPEG, and Kobo attachments arrive
+# with whatever name the device gave them. Sniffing the content means we route
+# on what the file *is*, not what it claims to be.
+_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"%PDF", "pdf"),
+    (b"\x89PNG\r\n\x1a\n", "image"),
+    (b"\xff\xd8\xff", "image"),           # JPEG
+    (b"GIF87a", "image"),
+    (b"GIF89a", "image"),
+    (b"BM", "image"),                     # BMP
+    (b"II*\x00", "image"),                # TIFF little-endian
+    (b"MM\x00*", "image"),                # TIFF big-endian
+)
+
+_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic")
+_TEXT_EXT = (".txt", ".text", ".md", ".csv", ".tsv", ".json", ".log")
+
+
+def _sniff(filename: str, data: bytes) -> str:
+    """Classify a file as pdf | image | docx | xlsx | text | unknown.
+
+    Content beats the extension in BOTH directions, which matters because
+    filenames in this domain are routinely wrong:
+
+      * A phone photo saved as "receipt.pdf" must not go to the PDF parser.
+      * A plain-text receipt exported as "receipt.pdf" — common from Kobo
+        attachments and email gateways — must still be read, not rejected as
+        a damaged PDF.
+
+    Every format we parse as a document is binary (PDF, and the ZIP-based
+    Office formats). So if the bytes are readable text and carry no binary
+    signature, it is text, whatever the name claims.
+    """
+    head = data[:16] if data else b""
+    for sig, kind in _SIGNATURES:
+        if head.startswith(sig):
+            return kind
+    # RIFF....WEBP
+    if head.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image"
+
     name = (filename or "").lower()
-    try:
-        if name.endswith(".pdf"):
-            return _extract_pdf(data)
+
+    # OOXML (.docx/.xlsx) is a ZIP. The signature tells us it's an Office file;
+    # only the extension can say which parser to use.
+    if head.startswith(b"PK\x03\x04"):
         if name.endswith(".docx"):
-            return _extract_docx(data)
+            return "docx"
         if name.endswith((".xlsx", ".xlsm")):
-            return _extract_xlsx(data)
-        if name.endswith((".txt", ".text", ".md", ".csv", ".tsv")):
-            return data.decode("utf-8", errors="ignore")
-        # Unknown extension — best-effort decode (covers stray text files).
-        return data.decode("utf-8", errors="ignore")
+            return "xlsx"
+        return "unknown"
+
+    # No binary signature. If it reads as text, it IS text — a mislabelled
+    # extension shouldn't cost us a perfectly readable receipt.
+    if not _looks_binary(data):
+        return "text"
+
+    # Binary, but unrecognised. Fall back to what the name claims so a valid
+    # file in a format we didn't sniff still reaches the right parser.
+    if name.endswith(".docx"):
+        return "docx"
+    if name.endswith((".xlsx", ".xlsm")):
+        return "xlsx"
+    if name.endswith(".pdf"):
+        return "pdf"
+    if name.endswith(_IMAGE_EXT):
+        return "image"
+    return "unknown"
+
+
+def _looks_binary(data: bytes) -> bool:
+    """True if these bytes are clearly not human-readable text.
+
+    Guards the last-resort decode. Without this, a PNG fell through to
+    ``decode(errors="ignore")`` and returned several kilobytes of mangled
+    bytes as "text" — which downstream is far worse than returning nothing,
+    because the vendor heuristic then reported a receipt from a supplier
+    called "PNG" and the amount regex was free to match random digits.
+    """
+    if not data:
+        return False
+    sample = data[:2048]
+    if b"\x00" in sample:
+        return True
+    # Bytes that aren't tab/newline/carriage-return and aren't printable ASCII
+    # or valid UTF-8 continuation. A real text file is overwhelmingly these.
+    printable = sum(1 for b in sample if b in (9, 10, 13) or 32 <= b < 127 or b >= 128)
+    return (printable / len(sample)) < 0.85
+
+
+def _extract(filename: str, data: bytes) -> tuple[str, str]:
+    """Core routing. Returns ``(text, status)``.
+
+    status is one of:
+      ok          — text recovered from a real text layer
+      ocr         — text recovered by OCR from a scan or photo. Same content,
+                    lower trust: it is a machine reading pixels, so a caller
+                    handling money should confirm figures with a human rather
+                    than post them straight through.
+      scanned     — a PDF or image with no readable text (OCR unavailable/failed)
+      unreadable  — the bytes are damaged or not a document we can parse
+      empty       — the file parsed fine but genuinely contains no text
+    """
+    if not data:
+        return "", "unreadable"
+
+    kind = _sniff(filename, data)
+    try:
+        if kind == "pdf":
+            text = _extract_pdf(data)
+            if text.strip():
+                return text, "ok"
+            # No text layer. Either a scan, or a damaged file that no parser
+            # could open. Telling these apart matters: one is worth OCRing,
+            # the other needs re-uploading.
+            if not _pdf_is_parseable(data):
+                return "", "unreadable"
+            ocr = _ocr(data, is_pdf=True)
+            return (ocr, "ocr") if ocr.strip() else ("", "scanned")
+
+        if kind == "image":
+            ocr = _ocr(data, is_pdf=False)
+            return (ocr, "ocr") if ocr.strip() else ("", "scanned")
+
+        if kind == "docx":
+            return _extract_docx(data), "ok"
+
+        if kind == "xlsx":
+            return _extract_xlsx(data), "ok"
+
+        if kind == "text":
+            if _looks_binary(data):
+                return "", "unreadable"
+            return data.decode("utf-8", errors="ignore"), "ok"
+
+        # Unknown extension and no recognised signature. Decode only if the
+        # bytes actually look like text.
+        if _looks_binary(data):
+            return "", "unreadable"
+        decoded = data.decode("utf-8", errors="ignore")
+        return (decoded, "ok") if decoded.strip() else ("", "empty")
     except Exception:
-        return ""
+        return "", "unreadable"
 
 
 def extract_detail(filename: str, data: bytes) -> tuple[str, bool]:
     """Like ``extract_text`` but also reports whether the file looks scanned.
 
-    Returns ``(text, scanned)`` where ``scanned`` is True for a PDF that yielded
-    no text layer (an image/scan that would need OCR). Surfacing this lets a
-    caller warn "this file is a scan we couldn't read" instead of silently
-    dropping it — the difference between a confusing empty result and a clear
-    one. Single parse pass; no double work.
+    Returns ``(text, scanned)``. Kept for the existing callers; prefer
+    ``extract_status`` in new code, which distinguishes a scan from a damaged
+    file. Single parse pass; no double work.
     """
-    text = extract_text(filename, data)
-    scanned = (not text.strip()) and (filename or "").lower().endswith(".pdf")
-    return text, scanned
+    text, status = _extract(filename, data)
+    return text, status == "scanned"
+
+
+def extract_status(filename: str, data: bytes) -> tuple[str, str]:
+    """Extract, and say what happened.
+
+    Returns ``(text, status)`` with status in ``ok | scanned | unreadable |
+    empty``. The distinction is the point: "we couldn't read this scan, please
+    type the amount" and "this file is damaged, please upload it again" are
+    different instructions, and a reviewer who is told the wrong one wastes
+    their time. Both used to surface identically as an empty result.
+    """
+    return _extract(filename, data)
 
 
 def extract_many(
@@ -120,11 +272,101 @@ def extract_many_detailed(
 
 
 def is_probably_scanned(filename: str, data: bytes) -> bool:
-    """True if a PDF has no extractable text layer (i.e. it's an image/scan and
-    would need OCR). Cheap heuristic used to route scans separately."""
-    if not (filename or "").lower().endswith(".pdf"):
+    """True if a file has no extractable text layer and would need OCR.
+
+    Now covers photographs as well as scanned PDFs — for field operations a
+    phone photo is the normal input, and it is just as much a "scan" as a
+    flatbed output. A damaged file returns False: it is not a scan, and
+    routing it to OCR would only fail slowly.
+    """
+    return _extract(filename, data)[1] == "scanned"
+
+
+def _pdf_is_parseable(data: bytes) -> bool:
+    """Can any parser open this PDF at all?
+
+    Separates "a scan with no text layer" (worth OCRing, worth telling the user
+    to expect manual entry) from "these bytes are damaged" (needs re-uploading).
+    Both previously reported as ``scanned``, which sent broken files down an OCR
+    path that could only fail.
+    """
+    try:
+        import fitz
+
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            return doc.page_count > 0
+    except ImportError:
+        pass
+    except Exception:
         return False
-    return not _extract_pdf(data).strip()
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            return len(pdf.pages) > 0
+    except Exception:
+        return False
+
+
+def ocr_available() -> bool:
+    """True if OCR can actually run. Both the Python wrapper and the tesseract
+    binary must be present — pytesseract alone does nothing."""
+    try:
+        import pytesseract
+        from PIL import Image  # noqa: F401
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def _ocr(data: bytes, is_pdf: bool) -> str:
+    """Read text off a scan or photo.
+
+    This is the field case: a receipt photographed on a phone in a market has
+    no text layer at all, and for NEEM-style operations it is the *normal*
+    input, not an edge case. Degrades silently to "" when OCR isn't installed,
+    so the caller reports "couldn't read this" rather than crashing.
+
+    OCR output is deliberately treated as lower-trust than a text layer —
+    field_receipts flags it for human confirmation rather than trusting the
+    amount, because a misread digit in a financial system is worse than a gap.
+    """
+    if not ocr_available():
+        return ""
+    try:
+        import pytesseract
+        from PIL import Image
+
+        images: list = []
+        if is_pdf:
+            try:
+                import fitz
+
+                with fitz.open(stream=data, filetype="pdf") as doc:
+                    for page in doc:
+                        # 200 dpi: enough for receipt print, cheap enough for
+                        # a phone photo of a page.
+                        pix = page.get_pixmap(dpi=200)
+                        images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
+            except ImportError:
+                # Without fitz we cannot rasterise a PDF; pdfplumber has no
+                # equivalent. Report nothing rather than guess.
+                return ""
+        else:
+            images.append(Image.open(io.BytesIO(data)))
+
+        parts = []
+        for i, img in enumerate(images[:_OCR_MAX_PAGES]):
+            if img.mode not in ("L", "RGB"):
+                img = img.convert("RGB")
+            txt = pytesseract.image_to_string(img) or ""
+            if txt.strip():
+                parts.append(f"=== PAGE {i + 1} ===\n{txt}" if is_pdf else txt)
+        return "\n".join(parts)
+    except Exception:
+        return ""
 
 
 def _extract_pdf(data: bytes) -> str:

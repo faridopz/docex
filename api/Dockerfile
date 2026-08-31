@@ -10,8 +10,17 @@ FROM python:3.12-slim
 
 # pdfplumber needs poppler-utils for layout extraction on some PDFs;
 # python-docx and python-pptx are pure Python and need nothing extra.
+#
+# tesseract-ocr is what makes a photographed receipt readable. For field
+# operations a phone photo is the normal input, not an edge case, so without
+# this binary the OCR path silently returns nothing and every field receipt
+# arrives blank for manual entry. pytesseract is only a wrapper — installing
+# the Python package without the binary does nothing at all.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
+    && apt-get install -y --no-install-recommends \
+        poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

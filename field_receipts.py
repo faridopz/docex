@@ -61,6 +61,10 @@ class ReceiptFlagType(str, Enum):
     UNAUTHORIZED_VENDOR = "unauthorized_vendor"
     UNSUPPORTED_CATEGORY = "unsupported_category"
     POLICY_VIOLATION = "policy_violation"
+    # Not a fault in the receipt — a statement about how we read it. Set when
+    # the figures came from OCR of a photo or scan, so a human confirms them
+    # before the amount becomes a payment.
+    NEEDS_REVIEW = "needs_review"
 
 
 # ─── models ─────────────────────────────────────────────────────────────────
@@ -205,18 +209,22 @@ def upload_receipt(
     # looks "missing" and the reviewer is told the vendor is absent when the
     # truth is that the FILE was unreadable — two very different problems.
     # So: fall back to plain text, and remember whether we read anything at all.
+    # fast_extract now sniffs magic bytes, OCRs photos and scans, and reports
+    # WHY it came back empty. The old blind decode fallback here is gone: on a
+    # photographed receipt it returned the PNG header as text, and the vendor
+    # heuristic duly recorded a supplier called "PNG".
     extracted_text = ""
+    extract_status = "unreadable"
     try:
-        extracted_text = fast_extract.extract_text(filename, file_content).strip()
+        extracted_text, extract_status = fast_extract.extract_status(filename, file_content)
+        extracted_text = (extracted_text or "").strip()
     except Exception:
-        extracted_text = ""
+        extracted_text, extract_status = "", "unreadable"
 
-    if not extracted_text:
-        try:
-            extracted_text = file_content.decode("utf-8", errors="ignore").strip()
-        except Exception:
-            extracted_text = ""
-
+    # Text recovered by OCR is a machine's reading of a photograph, not a
+    # text layer. A misread digit in an amount is worse than a blank, so it
+    # is marked for human confirmation rather than trusted outright.
+    from_ocr = extract_status == "ocr"
     unreadable = not extracted_text
 
     # Parse amounts and dates from extracted text (simple regex patterns)
@@ -240,7 +248,13 @@ def upload_receipt(
             vendor_name=vendor_name,
             receipt_date=extracted_date,
             extracted_amount=extracted_amount,
-            confidence="medium" if extracted_amount and extracted_date else "low",
+            # OCR never earns "medium": the figures came off pixels, so a
+            # reviewer should look even when every field parsed cleanly.
+            confidence=(
+                "low" if from_ocr
+                else "medium" if extracted_amount and extracted_date
+                else "low"
+            ),
         ),
         status=ReceiptStatus.DRAFT,
         created_at=_now_iso(),
@@ -258,17 +272,50 @@ def upload_receipt(
             ReceiptFlagType.MISSING_VENDOR,
             ReceiptFlagType.MISSING_DATE,
         }]
+        # "This scan needs typing up" and "this file is damaged" call for
+        # different actions. Telling someone to re-upload a perfectly good
+        # photo, or to squint at a corrupt one, both waste their time.
+        if extract_status == "scanned":
+            if fast_extract.ocr_available():
+                message = (
+                    f"'{filename}' is a scan or photo and no text could be read from "
+                    f"it — it may be blurred, dark, or rotated. Enter the vendor, "
+                    f"date and amount below, or upload a clearer picture."
+                )
+            else:
+                message = (
+                    f"'{filename}' is a scan or photo, and text recognition is not "
+                    f"installed on this server. Enter the vendor, date and amount "
+                    f"below. (Admin: install the tesseract-ocr package.)"
+                )
+        else:
+            message = (
+                f"'{filename}' could not be read (0 bytes of text recovered from "
+                f"{len(file_content)} bytes). The file may be damaged or incomplete. "
+                f"Re-upload it, or enter the vendor, date and amount manually."
+            )
         receipt.flags.insert(0, ReceiptFlag(
             type=ReceiptFlagType.MISSING_AMOUNT,
             severity="error",
-            message=(
-                f"'{filename}' could not be read (0 bytes of text recovered from "
-                f"{len(file_content)} bytes). Re-upload the receipt, or enter the "
-                f"vendor, date and amount manually."
-            ),
+            message=message,
             timestamp=_now_iso(),
         ))
         receipt.status = ReceiptStatus.FLAGGED
+
+    elif from_ocr:
+        # Readable, but read off pixels. Surface it so the amount gets a
+        # second pair of eyes before it becomes a payment.
+        receipt.flags.append(ReceiptFlag(
+            type=ReceiptFlagType.NEEDS_REVIEW,
+            severity="warning",
+            message=(
+                f"Read from a photo or scan by text recognition. Please confirm the "
+                f"amount and date against the image before approving."
+            ),
+            timestamp=_now_iso(),
+        ))
+        if receipt.status == ReceiptStatus.VALIDATED:
+            receipt.status = ReceiptStatus.FLAGGED
 
     # Save
     store.get_store().put(org, _RECEIPTS, receipt.id, receipt.model_dump())
@@ -480,19 +527,30 @@ def _extract_amount(text: str) -> Optional[float]:
 
     # 1. Labelled amount — the reliable signal. TOTAL beats AMOUNT (a receipt
     #    often lists AMOUNT per line item but TOTAL once).
-    for label in (r"GRAND\s*TOTAL", r"TOTAL\s*DUE", r"TOTAL", r"AMOUNT\s*PAID", r"AMOUNT"):
-        m = re.search(
+    #
+    #    Two traps here, both of which under-report the payable:
+    #
+    #    * "SUBTOTAL" contains "TOTAL". Without the lookbehind, a VAT invoice
+    #      reading SUBTOTAL 375,000 / VAT 28,125 / TOTAL 403,125 returned the
+    #      SUBTOTAL — the vendor gets underpaid by exactly the tax, which is
+    #      the sort of error that surfaces as a supplier dispute months later.
+    #    * Totals sit at the BOTTOM of a document, so where a label appears
+    #      more than once we take the last occurrence, not the first.
+    for label in (r"GRAND\s*TOTAL", r"TOTAL\s*DUE", r"NET\s*PAYABLE",
+                  r"TOTAL", r"AMOUNT\s*PAID", r"AMOUNT"):
+        matches = list(re.finditer(
+            # (?<![A-Za-z]) stops SUBTOTAL matching TOTAL.
             # Thousand-separated form FIRST, and it must actually contain a
             # separator (+ not *). Regex alternation takes the first branch
             # that matches, not the longest — with `*` here, "5000" matched
             # the leading "500" and silently under-reported the amount by 10x.
-            rf"{label}\s*[:\-]?\s*(?:NGN|USD|GBP|EUR|₦|\$|£|€)?\s*"
+            rf"(?<![A-Za-z]){label}\s*[:\-]?\s*(?:NGN|USD|GBP|EUR|₦|\$|£|€)?\s*"
             r"([0-9]{1,3}(?:[,\s][0-9]{3})+(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)",
             text, re.IGNORECASE,
-        )
-        if m:
+        ))
+        if matches:
             try:
-                return float(re.sub(r"[,\s]", "", m.group(1)))
+                return float(re.sub(r"[,\s]", "", matches[-1].group(1)))
             except Exception:
                 pass
 
@@ -541,7 +599,10 @@ def _extract_vendor(text: str) -> str:
     # First try explicit "VENDOR:" pattern
     match = re.search(r"VENDOR:\s*([^\n]+)", text, re.IGNORECASE)
     if match:
-        vendor = match.group(1).strip()
+        # Strip leading punctuation. A spreadsheet with "Vendor:" in one cell
+        # and the name in the next extracts as "Vendor:: Sahel Catering", and
+        # the stray colon then travels all the way to the payment record.
+        vendor = match.group(1).strip().lstrip(":-–—").strip()
         if vendor:
             return vendor[:100]  # truncate to 100 chars
 

@@ -452,7 +452,172 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
             message="No project code. Spend cannot be allocated to a budget line without one.",
         ))
 
+    # 10. Attached receipts are real, ours, and not already claimed
+    checks.extend(_check_receipts(org, req))
+
+    # 11. Spend falls inside the grant's agreement period
+    period = _check_grant_period(org, req)
+    if period is not None:
+        checks.append(period)
+
     return checks
+
+
+def _check_receipts(org_id: str, req: Requisition) -> list[PolicyCheck]:
+    """
+    Validate the field receipts backing this requisition.
+
+    Until now `receipt_ids` was accepted and stored but never checked, which
+    left three holes — the third is the one that costs money:
+
+      * an id that matches no receipt at all;
+      * a receipt belonging to a DIFFERENT organisation;
+      * a receipt already attached to another requisition, i.e. the same
+        expense claimed and paid twice. Reimbursing one receipt through two
+        requisitions is a standard duplicate-claim pattern, and the existing
+        duplicate check cannot see it because the two requisitions may carry
+        different vendors and amounts.
+
+    Reported as a FAIL, so it blocks until someone with authority releases it
+    on the record.
+    """
+    if not req.receipt_ids:
+        return []
+
+    try:
+        import field_receipts
+    except ImportError:  # pragma: no cover - receipts module optional
+        return []
+
+    missing: list[str] = []
+    rejected: list[str] = []
+    claimed: list[str] = []
+
+    # Every other requisition in this org that already cites a receipt.
+    others = [r for r in list_requisitions(org_id) if r.id != req.id]
+    already: dict[str, str] = {}
+    for other in others:
+        if other.status == ReqStatus.DECLINED:
+            continue  # a declined request never paid, so it holds no claim
+        for rid in other.receipt_ids:
+            already.setdefault(rid, other.ref)
+
+    for rid in req.receipt_ids:
+        # get_receipt is org-scoped, so another org's receipt reads as missing
+        # — which is the correct outcome, and never leaks its existence.
+        receipt = field_receipts.get_receipt(org_id, rid)
+        if receipt is None:
+            missing.append(rid)
+            continue
+        if receipt.status == field_receipts.ReceiptStatus.REJECTED:
+            rejected.append(rid)
+        if rid in already:
+            claimed.append(f"{rid} (on {already[rid]})")
+
+    out: list[PolicyCheck] = []
+    if missing or rejected or claimed:
+        problems = []
+        if missing:
+            problems.append(f"not found: {', '.join(missing)}")
+        if rejected:
+            problems.append(f"previously rejected: {', '.join(rejected)}")
+        if claimed:
+            problems.append(f"already claimed: {', '.join(claimed)}")
+        out.append(PolicyCheck(
+            code="RECEIPTS_VALID", name="Attached receipts are valid and unclaimed",
+            result=CheckResult.FAIL,
+            actual_value="; ".join(problems),
+            message=(
+                "One or more attached receipts cannot back this payment — "
+                + "; ".join(problems) + "."
+            ),
+        ))
+    else:
+        out.append(PolicyCheck(
+            code="RECEIPTS_VALID", name="Attached receipts are valid and unclaimed",
+            result=CheckResult.PASS,
+            actual_value=f"{len(req.receipt_ids)} receipt(s)",
+            message="Every attached receipt exists and is not claimed elsewhere.",
+        ))
+    return out
+
+
+def _check_grant_period(org_id: str, req: Requisition) -> Optional[PolicyCheck]:
+    """
+    Is this cost inside the funding agreement's period?
+
+    Donor rules are explicit that a cost is only allowable if it was incurred
+    during the approved budget period (2 CFR 200 for USAID-funded work, and
+    the equivalent clause in FCDO/EU agreements). Charging a grant outside its
+    dates is one of the most common audit findings, and it is pure arithmetic
+    to catch — exactly the sort of thing code should own rather than a
+    reviewer remembering.
+
+    Returns None when there is nothing to check: no grant cited, or the
+    agreement carries no dates.
+    """
+    code = (req.grant_code or "").strip()
+    if not code:
+        return None
+
+    try:
+        import grants
+    except ImportError:  # pragma: no cover - grants module optional
+        return None
+
+    try:
+        agreements = grants.list_agreements(org_id)
+    except Exception:
+        return None
+
+    match = next(
+        (a for a in agreements
+         if (a.project_code or "").strip().lower() == code.lower()),
+        None,
+    )
+    if match is None:
+        return PolicyCheck(
+            code="GRANT_PERIOD", name="Charged within the agreement period",
+            result=CheckResult.WARNING,
+            actual_value=code,
+            message=(
+                f"No funding agreement found for grant code '{code}'. "
+                f"The charge cannot be checked against an agreement period."
+            ),
+        )
+
+    start, end = match.start_date, match.end_date
+    if not start and not end:
+        return None
+
+    # The date the cost was incurred. submitted_at is the closest thing the
+    # requisition carries; a dedicated invoice date would be better and is
+    # worth adding when the form captures one.
+    incurred = (req.submitted_at or "")[:10]
+    if not incurred:
+        return None
+
+    outside = (start and incurred < start[:10]) or (end and incurred > end[:10])
+    window = f"{start or 'open'} to {end or 'open'}"
+    if outside:
+        return PolicyCheck(
+            code="GRANT_PERIOD", name="Charged within the agreement period",
+            result=CheckResult.FAIL,
+            policy_value=window,
+            actual_value=incurred,
+            message=(
+                f"This cost falls outside the {match.donor} agreement period "
+                f"({window}). Costs incurred outside the approved period are "
+                f"not allowable against the grant."
+            ),
+        )
+    return PolicyCheck(
+        code="GRANT_PERIOD", name="Charged within the agreement period",
+        result=CheckResult.PASS,
+        policy_value=window,
+        actual_value=incurred,
+        message=f"Within the {match.donor} agreement period.",
+    )
 
 
 def _find_duplicate(org_id: str, req: Requisition, window_days: int) -> Optional[str]:
