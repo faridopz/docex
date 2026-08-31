@@ -57,7 +57,12 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const { auth = true, headers, ...rest } = init;
   const h = new Headers(headers);
-  if (!h.has("Content-Type") && rest.body) h.set("Content-Type", "application/json");
+  // FormData must set its own Content-Type: the browser appends the multipart
+  // boundary, and overriding it here would make the body unparseable.
+  const isFormData = typeof FormData !== "undefined" && rest.body instanceof FormData;
+  if (!h.has("Content-Type") && rest.body && !isFormData) {
+    h.set("Content-Type", "application/json");
+  }
   if (auth) {
     const token = getToken();
     if (token) h.set("Authorization", `Bearer ${token}`);

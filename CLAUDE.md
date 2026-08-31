@@ -144,6 +144,12 @@ Engines live at the repo ROOT (not in /ngo_screener — that layout was never bu
   `doc_completeness.py`  — document classification + required-doc presence
 
 **Workflow layer:**
+  `requisitions.py`      — UNIVERSAL department→payment spine: deterministic
+                           policy checks, org-configured approval chain,
+                           authority-checked policy OVERRIDES (written reason
+                           required), hash-chained append-only audit log,
+                           immutable frozen TransactionRecord on payment
+  `kobo_sync.py`         — KoboCollect offline field capture → receipt on sync
   `transactions.py`      — reference + state machine + append-only audit
   `departments.py`       — org-defined departments + stage routing
   `notification_center.py` — in-app cross-department notifications
@@ -233,7 +239,71 @@ See `PERFORMANCE_AUDIT.md` + `BATCH_PERFORMANCE_AUDIT.md` for the evidence.
       every 10 min so the free instance stops sleeping. **Needs repo variable
       `DOCEX_API_URL` set, or it no-ops.**
 
-### Phase 4 — Next (not started)
+### Phase 4 — Universal org flow ✅ BACKEND SHIPPED
+One flow every org runs, adapted by CONFIG not code. `requisitions.py` +
+`api/requisition_routes.py` + `test_requisitions.py` (48 checks green).
+- [x] **Payment requisitions** — any department raises a request; policy checks
+      run instantly so the submitter sees problems before an approver does.
+- [x] **Deterministic policy engine** — amount ceiling, vendor allow/block,
+      category, required documents, duplicate window, project code. Code owns
+      every number. A FAIL blocks; a WARNING informs.
+- [x] **Org-configured approval chain** — `default_workflow(size=small|medium|
+      large)` gives a working chain on day one; steps carry `min_amount`,
+      `can_override`, `override_limit`.
+- [x] **Policy override with accountability** — releasing a FAIL requires a
+      written reason AND a step that holds the authority AND an amount within
+      that step's override limit. All three are enforced, not advisory.
+- [x] **Hash-chained audit log** — append-only, HMAC-chained; `verify_audit_chain()`
+      detects tampering. Nothing is ever mutated.
+- [x] **Immutable TransactionRecord** — frozen copies of every check, approval
+      and audit line at time of payment. `locked=True`.
+- [x] **Auditor summary** — `audit_summary()` reports every exception with its
+      reason + named authority; `audit_ready` is False if any lacks a reason.
+- [x] `api/context.py` — single place resolving (user, org_id). Replaces the
+      non-existent `get_current_session()` that was breaking `api.main` import.
+- [x] **Idempotency keys** (`idempotency.py` + `test_idempotency.py`, 21 checks
+      green). `POST /requisitions` and `POST /requisitions/{id}/pay` accept an
+      `Idempotency-Key` header: a retry after a dropped connection replays the
+      original record instead of raising a duplicate requisition or freezing a
+      second transaction against one debit. Org-scoped, operation-namespaced,
+      409 on a concurrent retry, key released if the wrapped write raises.
+      Verified end-to-end through the real API (same key → REQ-0001 twice;
+      different key → REQ-0002; two records stored, not three).
+
+### Phase 4b — Requisition frontend ✅ SHIPPED
+The screens for the Phase 4 backend. `npx tsc --noEmit` clean.
+- [x] `web/types/requisition.ts` — types mirroring the route serialisers, with
+      unions (not `string`) for status/result/decision so a bad comparison on a
+      payments screen is a build error.
+- [x] `web/lib/requisitionApi.ts` — typed client for all 12 endpoints, plus
+      `newIdempotencyKey()`. Writes are multipart, matching the Form routes.
+- [x] `web/lib/session.ts` — `apiFetch` no longer forces a JSON Content-Type on
+      FormData bodies (it was overriding the multipart boundary).
+- [x] `web/lib/requisitionFormat.ts` + `components/erp/PolicyChecks.tsx` —
+      shared money/date/aging helpers and the check list. An **overridden FAIL
+      gets its own colour**: it is neither clean nor still blocking, and an
+      auditor must spot it at a glance.
+- [x] `/requisitions/new` — policy checks shown the instant it's submitted, so
+      the submitter fixes problems while the invoice is still open. The org's
+      real ceiling/categories/required documents are read from the workflow and
+      shown as guidance. Idempotency key held in a ref across retries.
+- [x] `/requisitions` — "Waiting on me" is the default tab; dense scannable
+      rows with amount, aging, and blocking/warning counts.
+- [x] `/requisitions/[id]` — checks, approval trail, hash-chained audit log
+      with a loud banner if the chain fails to verify. **Approve stays disabled
+      until every blocking check is ticked AND a written reason AND an
+      authority are supplied** — the server enforces the same rules, the UI
+      just refuses to send a request it knows is incomplete.
+- [x] `/payments` + `/payments/[id]` — the locked record: checks *as applied*,
+      not recomputed against today's policy.
+- [x] `/audit` — the verdict first (audit-ready or N unexplained), then
+      unexplained exceptions before explained ones.
+- [x] AppShell nav: Requisitions · Payments · Audit.
+
+### Phase 5 — Next (not started)
+- [ ] Onboarding wizard (5 questions → generated workflow + policy)
+- [ ] Auditor export (Excel + PDF) from `audit_summary()`
+- [ ] Fund/budget balance checks wired to `grants.py` (engine ready, not linked)
 - [ ] Measure the LLM leg with a real key (`bench/bench_check.py --llm`) to get
       true before/after numbers — currently unmeasured, do NOT quote figures.
 - [ ] Haiku-first + conservative Sonnet escalation (benchmark against

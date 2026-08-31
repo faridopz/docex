@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Banknote,
   BookOpen,
   CalendarCheck,
   FileSearch,
@@ -39,6 +40,9 @@ import { NotificationBell } from "@/components/erp/NotificationBell";
 
 export type NavSection =
   | "dashboard"
+  | "requisitions"
+  | "payments"
+  | "audit"
   | "vouchers"
   | "extract"
   | "templates"
@@ -69,6 +73,9 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Compliance & Finance",
     items: [
       { section: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutGrid, match: ["/dashboard", "/transactions"] },
+      { section: "requisitions", label: "Requisitions", href: "/requisitions", icon: Send, match: ["/requisitions"] },
+      { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] },
+      { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] },
       { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"] },
       { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
       { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"] },
