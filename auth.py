@@ -31,8 +31,30 @@ from typing import Optional
 from models import Department, Role, User, UserPublic
 
 _ROOT = Path(__file__).parent
-_USER_DIR = _ROOT / "users"
+
+# Where accounts live.
+#
+# auth.py writes user files directly rather than going through store.py, so
+# this directory is the one piece of state that isn't org-scoped. Two things
+# need to be able to redirect it, and both matter:
+#
+#   * DOCEX_USERS_DIR, for seeding a throwaway account without touching a real
+#     one (see seed_admin.py).
+#   * Assigning auth._USER_DIR directly, which the test suites do to point at
+#     a temp dir. Without that isolation a suite writes into the developer's
+#     real users/ directory, /auth/status then reports setup is already done,
+#     and the first-run screen becomes unreachable — a genuinely confusing
+#     lockout that has bitten this project already.
+#
+# So the env var is read once here to set the default, and _user_dir() reads
+# the module-level name at call time so the assignment idiom keeps working.
+_USER_DIR = Path(os.environ.get("DOCEX_USERS_DIR", "").strip() or _ROOT / "users")
 _SECRET_FILE = _ROOT / ".auth_secret"
+
+
+def _user_dir() -> Path:
+    return _USER_DIR
+
 
 _PBKDF2_ITERS = 200_000
 _TOKEN_TTL = 12 * 3600  # 12 hours
@@ -98,13 +120,13 @@ def _now_iso() -> str:
 
 
 def _ensure_dir() -> None:
-    _USER_DIR.mkdir(parents=True, exist_ok=True)
+    _user_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _path(user_id: str) -> Path:
     if not user_id or "/" in user_id or "\\" in user_id or ".." in user_id:
         raise ValueError(f"Invalid user id: {user_id!r}")
-    return _USER_DIR / f"{user_id}.json"
+    return _user_dir() / f"{user_id}.json"
 
 
 def _save(user: User) -> User:
@@ -119,7 +141,7 @@ def _save(user: User) -> User:
 def _iter_all() -> list[User]:
     _ensure_dir()
     out: list[User] = []
-    for p in _USER_DIR.glob("*.json"):
+    for p in _user_dir().glob("*.json"):
         try:
             out.append(User.model_validate_json(p.read_text()))
         except Exception as exc:

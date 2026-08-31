@@ -57,11 +57,39 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
           "Paystack rejected the request. Your secret key may be invalid — verify it at dashboard.paystack.com/#/settings/developers.",
       };
     }
+    // A rejected sign-in is a different situation from a signed-in user
+    // hitting something above their role, and telling someone standing at
+    // the login form to "sign in" is useless. The backend says "Invalid
+    // email or password" for exactly this case.
+    if (lower.includes("invalid email or password")) {
+      return {
+        status,
+        reason: "auth",
+        raw,
+        message: "That email and password don't match an account.",
+      };
+    }
+    if (lower.includes("account is disabled")) {
+      return {
+        status,
+        reason: "auth",
+        raw,
+        message: "That account has been disabled. Ask an admin to re-enable it.",
+      };
+    }
+    if (status === 401) {
+      return {
+        status,
+        reason: "auth",
+        raw,
+        message: "Your session has expired. Please sign in again.",
+      };
+    }
     return {
       status,
       reason: "auth",
       raw,
-      message: "You're not allowed to do that. Sign in or check your permissions.",
+      message: "You're not allowed to do that. Check your permissions.",
     };
   }
 
