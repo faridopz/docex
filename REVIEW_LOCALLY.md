@@ -32,9 +32,34 @@ Then open <http://localhost:3000>.
 
 ## 3. Sign in
 
-If this is a fresh `./data/`, the app will send you to `/setup` to create the
-first admin. Give yourself `department: finance` and `role: admin` so you can
-approve *and* pay.
+**One command, in a third terminal:**
+
+```bash
+cd ~/Desktop/docex
+python seed_admin.py faridkoabd76@gmail.com
+```
+
+It prompts for a password (min 6 characters), makes you `admin` in `finance` —
+which lets you approve *and* record payment, so you can walk a requisition end
+to end on your own — and tells you where to sign in.
+
+Run it again any time to reset the password; it resets rather than complains.
+
+You can also use `/setup` in the browser, which now works again (see below).
+
+### Why sign-in was failing before
+
+Not your password. The test suites — including my own end-to-end check for the
+idempotency work — were writing accounts into your real `users/` directory. The
+moment any account exists, `/auth/status` reports setup is done, so `/setup`
+stops offering to create the first admin. You were locked out by an `a@x.org`
+account my test left behind, and the error message ("You're not allowed to do
+that. Sign in or check your permissions") was useless to someone already
+standing at the login form.
+
+Fixed three ways: the stray accounts are gone, the suites now isolate to a temp
+directory (a full 16-suite run leaves `users/` empty), and a rejected sign-in
+now says "That email and password don't match an account."
 
 ## 4. What to click, in order
 
