@@ -81,14 +81,28 @@ def seed(reset: bool) -> int:
     db = store.get_store()
 
     if reset:
-        for coll in ("requisitions", "transaction_records", "receipts",
-                     "agreements", "requisition_workflow", "requisition_counter",
+        # Collection names come from the modules themselves. Hard-coding them
+        # here got "field_receipts" wrong (it was "receipts"), so receipts
+        # silently piled up on every --reset while the message claimed
+        # everything was cleared.
+        cleared = 0
+        for coll in ("requisitions", "transaction_records",
+                     fr._RECEIPTS, grants._AGREEMENTS,
                      "idempotency_keys"):
             for rec in db.list(ORG, coll):
                 rid = rec.get("id")
-                if rid:
-                    db.delete(ORG, coll, rid)
-        print("· cleared previous demo data")
+                if rid and db.delete(ORG, coll, rid):
+                    cleared += 1
+
+        # These are singletons stored under fixed record ids rather than
+        # carrying an "id" field, so the loop above cannot see them. Without
+        # this the reference counter keeps climbing and a "fresh" demo opens
+        # at REQ-0009.
+        for rid in ("requisition", "transaction"):
+            db.delete(ORG, rq._COUNTER, rid)
+        db.delete(ORG, "requisition_workflow", rq._WORKFLOW_ID)
+
+        print(f"· cleared {cleared} record(s); references restart at REQ-0001")
 
     # 1. Departments — the defaults already match the workflow below.
     known = {d.key for d in departments.list_departments()}
@@ -277,9 +291,11 @@ def main() -> int:
     print("  1. uvicorn api.main:app --reload --port 8000")
     print("  2. cd web && npm run dev")
     print(f"  3. http://localhost:3000/login  →  {DEMO_EMAIL}")
-    print("\nThe money shot: Requisitions → the ₦610,000 Northern Logistics")
-    print("row → try to Approve. The button is disabled until you tick the")
-    print("blocking checks and write a reason and an authority.")
+    print("\nThe money shot: Requisitions → the ₦140,000 Northern Logistics")
+    print("row → try to Approve. The button stays disabled until you tick the")
+    print("blocking check and write a reason and an authority.")
+    print("\nKeep every demo amount under ₦150,000 — above ₦250,000 routes to")
+    print("Executive Approval, where nobody is logged in, and it will sit there.")
     return 0
 
 

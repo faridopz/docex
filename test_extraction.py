@@ -107,6 +107,18 @@ def make_docx() -> bytes:
     return buf.getvalue()
 
 
+def reportlab_available() -> bool:
+    """reportlab only builds PDF fixtures for these tests — it is not a runtime
+    dependency, so it stays out of requirements.txt and the PDF cases skip
+    rather than fail on a machine that doesn't have it."""
+    try:
+        import reportlab  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def make_pdf() -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -148,20 +160,25 @@ def make_photo() -> bytes:
 
 def test_formats_read() -> None:
     print("\nEvery format a finance team sends is readable")
-    for name, data in [
+    cases = [
         ("voucher.xlsx", make_xlsx()),
         ("invoice.docx", make_docx()),
-        ("invoice.pdf", make_pdf()),
         ("receipts.csv", b"vendor,amount\nSahel,403125\n"),
         ("receipt.txt", b"MAMA NGOZI\nTOTAL: 47,500.00\n"),
-    ]:
+    ]
+    if reportlab_available():
+        cases.insert(2, ("invoice.pdf", make_pdf()))
+    else:
+        skip("invoice.pdf", "reportlab not installed")
+    for name, data in cases:
         text, status = fx.extract_status(name, data)
         check(f"{name} extracts text", status == "ok" and len(text.strip()) > 0)
 
     text, _ = fx.extract_status("voucher.xlsx", make_xlsx())
     check("xlsx keeps the vendor name", VENDOR.lower() in text.lower())
-    text, _ = fx.extract_status("invoice.pdf", make_pdf())
-    check("pdf keeps the total", "403,125" in text)
+    if reportlab_available():
+        text, _ = fx.extract_status("invoice.pdf", make_pdf())
+        check("pdf keeps the total", "403,125" in text)
 
 
 def test_binary_is_never_decoded_as_text() -> None:
@@ -202,11 +219,12 @@ def test_ocr_reads_a_photo() -> None:
 
 def test_subtotal_is_not_mistaken_for_total() -> None:
     print("\nSUBTOTAL is never read as TOTAL (would underpay by the tax)")
-    for name, data in [
-        ("invoice.pdf", make_pdf()),
-        ("voucher.xlsx", make_xlsx()),
-        ("invoice.docx", make_docx()),
-    ]:
+    cases = [("voucher.xlsx", make_xlsx()), ("invoice.docx", make_docx())]
+    if reportlab_available():
+        cases.insert(0, ("invoice.pdf", make_pdf()))
+    else:
+        skip("invoice.pdf SUBTOTAL case", "reportlab not installed")
+    for name, data in cases:
         r = fr.upload_receipt(
             org_id="t", uploaded_by="fw@t.org", file_content=data, filename=name,
             amount_submitted=TOTAL, project_code="P-101", category="supplies",

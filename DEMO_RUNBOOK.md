@@ -21,31 +21,43 @@ mercy of the wifi" is a completely normal thing to say.
 
 ## Setup (10 minutes, do it tonight)
 
+**Paste these one line at a time.** No trailing comments — zsh does not strip
+`#` in an interactive shell, it passes it through as an argument, which is why
+`next build # note` failed with "no such directory: web/#". And macOS has no
+bare `python`; it is `python3`.
+
 ```bash
 cd ~/Desktop/docex
-
-# 1. dependencies — pymupdf and tesseract matter for the receipt demo
-pip install -r requirements.txt
-brew install tesseract          # macOS. Without it, OCR silently does nothing.
-
-# 2. confirm OCR is actually live
-python -c "import fast_extract; print('OCR ready:', fast_extract.ocr_available())"
-
-# 3. seed the demo data + your login
-python demo_seed.py --reset
-
-# 4. build the frontend NOW, not tomorrow
-cd web && npm run build && cd ..
+```
+```bash
+pip3 install -r requirements.txt
+```
+```bash
+brew install tesseract
+```
+```bash
+python3 -c "import fast_extract; print('OCR ready:', fast_extract.ocr_available())"
+```
+```bash
+python3 demo_seed.py --reset
+```
+```bash
+cd web && npm run build
 ```
 
-Then two terminals:
+`OCR ready: True` is the one you must see. If it says False, tesseract did not
+install and the photographed-receipt demo will show nothing.
+
+Then two terminals. Terminal 1:
 
 ```bash
-# terminal 1
-uvicorn api.main:app --reload --port 8000
+cd ~/Desktop/docex && uvicorn api.main:app --reload --port 8000
+```
 
-# terminal 2
-cd web && npm run dev
+Terminal 2:
+
+```bash
+cd ~/Desktop/docex/web && npm run dev
 ```
 
 Sign in at <http://localhost:3000/login> as `demo@neem.org`.
@@ -178,9 +190,9 @@ costs vastly more than a year of this.
 **Blank screen / API errors** — check both terminals are running. The frontend
 talks to `localhost:8000`.
 
-**Can't sign in** — `python demo_seed.py` again, it resets the password.
+**Can't sign in** — `python3 demo_seed.py` again, it resets the password.
 
-**Data looks wrong after you've clicked around** — `python demo_seed.py --reset`
+**Data looks wrong after you've clicked around** — `python3 demo_seed.py --reset`
 rebuilds it in about five seconds. You can do this between meetings.
 
 **OCR shows nothing on the photo** — tesseract isn't installed. `brew install
