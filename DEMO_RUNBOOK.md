@@ -42,6 +42,9 @@ python3 -c "import fast_extract; print('OCR ready:', fast_extract.ocr_available(
 python3 demo_seed.py --reset
 ```
 ```bash
+python3 make_demo_docs.py
+```
+```bash
 cd web && npm run build
 ```
 
@@ -78,6 +81,21 @@ tomorrow be the first time.
 
 REQ-0002 is deliberately left blocked and sitting in your queue, at an amount
 your login has authority to release. That is the live moment.
+
+`demo_docs/` holds seven documents to drag in **live** — far more convincing
+than rows that were already on screen:
+
+| File | Shows |
+|---|---|
+| `01_invoice_venue_hire.pdf` | Reads TOTAL ₦129,000, not SUBTOTAL ₦120,000 |
+| `02_payment_voucher_training.xlsx` | Spreadsheets are read too |
+| `03_market_receipt_photo.png` | **OCR off a photo** — the field story |
+| `04_transport_receipt_incomplete.txt` | Vendor blank + flagged, nothing invented |
+| `05_invoice_..._RESUBMITTED.pdf` | Duplicate of 01 |
+| `06_fuel_receipt_scan.pdf` | OCR off a scanned PDF |
+| `07_damaged_upload.pdf` | Says "damaged", not "vendor missing" |
+
+Every one is verified: correct vendor and correct total on all of them.
 
 ---
 
