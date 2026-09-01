@@ -91,10 +91,17 @@ check("routed to finance", r1.current_step, "finance")
 r1 = rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
                actor="amara@eva.org", department="finance",
                notes="Fund available on GR-USAID-2024.")
-check("routed to ED", r1.current_step, "ed")
+check("routed to executive approval", r1.current_step, "approval")
+
+# Every step must name a department that actually exists. The final step used
+# to route to "ed", which is not in the department registry — so anything over
+# the threshold queued behind a department with no users and sat there
+# silently, with nothing in the UI to explain why it never moved.
+check("no step routes to a non-existent department",
+      rq.unroutable_steps(ORG, rq.get_workflow(ORG)), [])
 
 r1 = rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
-               actor="seun@eva.org", department="ed", notes="Approved.")
+               actor="seun@eva.org", department="management", notes="Approved.")
 check("fully approved", r1.status, rq.ReqStatus.APPROVED)
 check("no step pending", r1.current_step, None)
 check("three approvals recorded", len(r1.approvals), 3)

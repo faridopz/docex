@@ -283,8 +283,16 @@ def default_workflow(org_id: str, size: str = "medium") -> RequisitionWorkflow:
     Smart defaults so a new org works on day one without configuring anything.
 
     small  — Submit → Finance
-    medium — Submit → Compliance → Finance → ED (above threshold)
-    large  — Submit → Dept Head → Compliance → Finance → ED
+    medium — Submit → Compliance → Finance → Management (above threshold)
+    large  — Submit → Dept Head → Compliance → Finance → Management
+
+    Every `department` here MUST exist in the default department registry
+    (departments.py: program, compliance, finance, management). An earlier
+    version routed the final step to "ed", which is not a default department —
+    so any requisition above the threshold routed to a department with no
+    users and sat in the queue forever, with nothing to explain why. The
+    guard below turns that class of mistake into a loud failure instead of a
+    stuck requisition.
     """
     if size == "small":
         steps = [
@@ -297,7 +305,7 @@ def default_workflow(org_id: str, size: str = "medium") -> RequisitionWorkflow:
             WorkflowStep(key="compliance", label="Compliance Review", department="compliance"),
             WorkflowStep(key="finance", label="Finance Review", department="finance",
                          can_override=True, override_limit=100_000),
-            WorkflowStep(key="ed", label="Executive Director", department="ed",
+            WorkflowStep(key="approval", label="Executive Approval", department="management",
                          min_amount=50_000, can_override=True, override_limit=500_000),
         ]
     else:  # medium
@@ -305,10 +313,35 @@ def default_workflow(org_id: str, size: str = "medium") -> RequisitionWorkflow:
             WorkflowStep(key="compliance", label="Compliance Review", department="compliance"),
             WorkflowStep(key="finance", label="Finance Review", department="finance",
                          can_override=True, override_limit=100_000),
-            WorkflowStep(key="ed", label="Executive Director", department="ed",
+            WorkflowStep(key="approval", label="Executive Approval", department="management",
                          min_amount=50_000, can_override=True, override_limit=200_000),
         ]
     return RequisitionWorkflow(org_id=org_id, steps=steps)
+
+
+def unroutable_steps(org_id: str, wf: RequisitionWorkflow) -> list[str]:
+    """
+    Steps whose department does not exist, or has nobody in it.
+
+    A requisition that reaches such a step stops dead: no queue shows it and
+    no one is notified. Surfacing this lets the admin screen say so before a
+    payment goes missing rather than after.
+    """
+    try:
+        import departments
+    except ImportError:  # pragma: no cover
+        return []
+
+    try:
+        known = {d.key for d in departments.list_departments()}
+    except Exception:
+        return []
+
+    return [
+        f"{s.label or s.key} → '{s.department}'"
+        for s in wf.steps
+        if s.department and s.department not in known
+    ]
 
 
 def set_workflow(org_id: str, wf: RequisitionWorkflow) -> RequisitionWorkflow:
