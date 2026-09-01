@@ -244,6 +244,46 @@ def test_vendor_is_clean() -> None:
     check(f"no leading punctuation (got {v!r})", v == VENDOR)
 
 
+def test_vendor_is_never_invented() -> None:
+    print("\nA receipt with no letterhead yields no vendor, not a guess")
+    # No business name anywhere. The old scan walked past the date and
+    # returned the description line as the supplier.
+    r = fr.upload_receipt(
+        org_id="t", uploaded_by="fw@t.org",
+        file_content=(b"DATE: 2026-08-22\n"
+                      b"Transport, Kano to Dawakin Kudu (return)\n"
+                      b"3 field officers\n"
+                      b"TOTAL: 18,000.00\n"),
+        filename="transport.txt", amount_submitted=18000.0,
+        project_code="P-101", category="travel",
+    )
+    check(f"vendor is blank, not the description (got {r.extracted.vendor_name!r})",
+          r.extracted.vendor_name == "")
+    check("the amount is still read", r.extracted.extracted_amount == 18000.0)
+    check("missing vendor is flagged",
+          any(f.type == fr.ReceiptFlagType.MISSING_VENDOR for f in r.flags))
+
+
+def test_business_name_starting_with_a_label_word() -> None:
+    print("\nA vendor whose name starts with a label word is not discarded")
+    # "TOTAL Filling Station" is a real petrol brand. A plain startswith()
+    # check treated the line as a totals row and returned the address instead.
+    r = fr.upload_receipt(
+        org_id="t", uploaded_by="fw@t.org",
+        file_content=(b"TOTAL FILLING STATION\n"
+                      b"Zaria Road, Kano\n"
+                      b"DATE: 2026-08-19\n"
+                      b"PMS 40 litres\n"
+                      b"TOTAL: 62,000.00\n"),
+        filename="fuel.txt", amount_submitted=62000.0,
+        project_code="P-101", category="travel",
+    )
+    check(f"vendor is the business, not the street (got {r.extracted.vendor_name!r})",
+          r.extracted.vendor_name == "TOTAL FILLING STATION")
+    check("the total is still read correctly",
+          r.extracted.extracted_amount == 62000.0)
+
+
 def test_unreadable_receipt_says_so() -> None:
     print("\nAn unreadable receipt says so, and says which kind")
     r = fr.upload_receipt(
@@ -287,6 +327,8 @@ def main() -> int:
     test_ocr_reads_a_photo()
     test_subtotal_is_not_mistaken_for_total()
     test_vendor_is_clean()
+    test_vendor_is_never_invented()
+    test_business_name_starting_with_a_label_word()
     test_unreadable_receipt_says_so()
     test_ocr_receipt_is_marked_for_review()
 

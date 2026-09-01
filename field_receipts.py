@@ -606,29 +606,66 @@ def _extract_vendor(text: str) -> str:
         if vendor:
             return vendor[:100]  # truncate to 100 chars
 
-    # Fallback: the first plausible capitalised line is usually the vendor's
-    # name at the top of the receipt. But it must not be one of the OTHER
-    # labelled fields — "DATE: 2026-08-16" is a date, and returning it as the
-    # vendor manufactures a confident wrong answer instead of admitting the
-    # vendor is absent. Blank is the honest result; the reviewer can then
-    # actually see the gap and fill it in.
+    # Fallback: a receipt puts the business name at the TOP. So consider only
+    # the first few real lines — do not scan down the page hunting for
+    # something capitalised.
+    #
+    # Scanning was the bug: on a receipt with no vendor at all, it walked past
+    # the date and returned the description line ("Transport, Kano to Dawakin
+    # Kudu") as the supplier. That is inventing a vendor. Blank is the honest
+    # answer — the reviewer sees the gap and fills it in, which is the whole
+    # point of flagging an incomplete receipt rather than guessing.
     _META_LABELS = (
         "date", "amount", "total", "subtotal", "tax", "vat", "invoice",
         "receipt", "ref", "reference", "qty", "quantity", "item", "items",
         "project", "category", "grant", "notes", "note", "fieldworker",
         "kobo", "submitted", "balance", "change", "cash", "card",
     )
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line or len(line) <= 2 or len(line) >= 100:
+
+    def _is_meta(line: str) -> bool:
+        """A metadata line, e.g. "DATE: 2026-08-16" or "TOTAL 47,500".
+
+        The label must be followed by a separator or a number — not merely be
+        a prefix of the first word. "TOTAL FILLING STATION" is a real petrol
+        brand, and a plain startswith() check silently discarded it as if it
+        were a totals row, handing back the street address instead.
+        """
+        low = line.lower().strip()
+        for label in _META_LABELS:
+            if not low.startswith(label):
+                continue
+            rest = low[len(label):].lstrip()
+            if not rest:
+                return True
+            if rest[0] in ":=-–—":
+                return True
+            if rest[0].isdigit() or rest[0] in "₦$£€":
+                return True
+        return False
+
+    # ONLY the first real line is a candidate. A receipt's letterhead is the
+    # first thing printed on it; if the document opens with "DATE:" then it
+    # has no letterhead and the vendor is genuinely absent.
+    #
+    # Looking any further down is what produced a supplier called "Transport,
+    # Kano to Dawakin Kudu (return)" — the description line, one row below a
+    # date. Returning nothing is the correct answer there, and the missing-
+    # vendor flag then tells the reviewer exactly what to supply.
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
             continue
-        head = line.split(":", 1)[0].strip().lower() if ":" in line else ""
-        if head and head in _META_LABELS:
+        # Structural markers the extractor itself inserts.
+        if line.startswith("=== ") and line.endswith(" ==="):
             continue
-        if line.lower().startswith(_META_LABELS):
-            continue
+        if len(line) <= 2 or len(line) >= 100:
+            return ""
+        if ":" in line and line.split(":", 1)[0].strip().lower() in _META_LABELS:
+            return ""
+        if _is_meta(line):
+            return ""
         if not line[0].isupper():
-            continue
+            return ""
         return line[:50]
     return ""
 
