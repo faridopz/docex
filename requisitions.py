@@ -333,7 +333,7 @@ def unroutable_steps(org_id: str, wf: RequisitionWorkflow) -> list[str]:
         return []
 
     try:
-        known = {d.key for d in departments.list_departments()}
+        known = {d.key for d in departments.list_departments(org_id)}
     except Exception:
         return []
 

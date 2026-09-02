@@ -10,11 +10,20 @@ Security choices (deliberately boring and standard):
   - The signing secret comes from AUTH_SECRET, else a persisted random secret
     in {root}/.auth_secret so sessions survive restarts (mirrors approval_tokens).
 
-Persistence: one JSON file per user under {root}/users/. This matches the rest
-of DOCex's file-based storage. Email is unique (enforced on create).
+Persistence: users are records in the org-scoped store (store.py) under the
+"users" collection. That gives two things the old {root}/users/ directory
+never had:
 
-NOTE: local-disk storage is ephemeral on the Render container (see CLAUDE.md).
-For the demo that's acceptable; a durable user store is a Phase-2 item.
+  * DURABILITY — with DOCEX_DB set, users live in SQLite/Postgres and survive
+    a redeploy. Before this change every client's logins were wiped on each
+    Render deploy, which is not something a paying customer can be asked to
+    tolerate.
+  * TENANCY — users belong to an organisation. The org comes from DOCEX_ORG
+    (one org per instance today) and is also stamped into the session token,
+    so when multi-org lands the token already carries what it needs.
+
+Tests redirect storage with store.set_store(JsonFileStore(tmpdir)) rather than
+poking at a module-level directory.
 """
 from __future__ import annotations
 
@@ -28,32 +37,24 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import store
 from models import Department, Role, User, UserPublic
 
 _ROOT = Path(__file__).parent
-
-# Where accounts live.
-#
-# auth.py writes user files directly rather than going through store.py, so
-# this directory is the one piece of state that isn't org-scoped. Two things
-# need to be able to redirect it, and both matter:
-#
-#   * DOCEX_USERS_DIR, for seeding a throwaway account without touching a real
-#     one (see seed_admin.py).
-#   * Assigning auth._USER_DIR directly, which the test suites do to point at
-#     a temp dir. Without that isolation a suite writes into the developer's
-#     real users/ directory, /auth/status then reports setup is already done,
-#     and the first-run screen becomes unreachable — a genuinely confusing
-#     lockout that has bitten this project already.
-#
-# So the env var is read once here to set the default, and _user_dir() reads
-# the module-level name at call time so the assignment idiom keeps working.
-_USER_DIR = Path(os.environ.get("DOCEX_USERS_DIR", "").strip() or _ROOT / "users")
 _SECRET_FILE = _ROOT / ".auth_secret"
+_USERS = "users"                       # store collection name
 
 
-def _user_dir() -> Path:
-    return _USER_DIR
+def _org(org_id: Optional[str] = None) -> str:
+    """Resolve the organisation a call applies to.
+
+    Explicit argument wins; otherwise DOCEX_ORG; otherwise "default". Mirrors
+    api/context.default_org() so engine and route agree on the same tenant.
+    """
+    explicit = (org_id or "").strip()
+    if explicit:
+        return store.require_org(explicit)
+    return store.require_org((os.environ.get("DOCEX_ORG") or "default").strip() or "default")
 
 
 _PBKDF2_ITERS = 200_000
@@ -119,50 +120,43 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _ensure_dir() -> None:
-    _user_dir().mkdir(parents=True, exist_ok=True)
-
-
-def _path(user_id: str) -> Path:
-    if not user_id or "/" in user_id or "\\" in user_id or ".." in user_id:
-        raise ValueError(f"Invalid user id: {user_id!r}")
-    return _user_dir() / f"{user_id}.json"
-
-
-def _save(user: User) -> User:
-    _ensure_dir()
+def _save(user: User, org_id: Optional[str] = None) -> User:
     user.updated_at = _now_iso()
     if not user.created_at:
         user.created_at = user.updated_at
-    _path(user.id).write_text(user.model_dump_json(indent=2))
+    store.get_store().put(_org(org_id), _USERS, user.id, user.model_dump())
     return user
 
 
-def _iter_all() -> list[User]:
-    _ensure_dir()
+def _iter_all(org_id: Optional[str] = None) -> list[User]:
     out: list[User] = []
-    for p in _user_dir().glob("*.json"):
+    for raw in store.get_store().list(_org(org_id), _USERS):
         try:
-            out.append(User.model_validate_json(p.read_text()))
+            out.append(User.model_validate(raw))
         except Exception as exc:
-            print(f"Warning: skipping corrupt user {p.name}: {exc}")
+            print(f"Warning: skipping corrupt user {raw.get('id')}: {exc}")
     return out
 
 
-def get_by_email(email: str) -> Optional[User]:
+def get_by_email(email: str, org_id: Optional[str] = None) -> Optional[User]:
     want = (email or "").strip().lower()
-    for u in _iter_all():
+    for u in _iter_all(org_id):
         if u.email.lower() == want:
             return u
     return None
 
 
-def get_by_id(user_id: str) -> Optional[User]:
-    path = _path(user_id)
-    if not path.exists():
+def get_by_id(user_id: str, org_id: Optional[str] = None) -> Optional[User]:
+    if not user_id:
         return None
     try:
-        return User.model_validate_json(path.read_text())
+        raw = store.get_store().get(_org(org_id), _USERS, user_id)
+    except store.StoreError:
+        return None
+    if raw is None:
+        return None
+    try:
+        return User.model_validate(raw)
     except Exception:
         return None
 
@@ -174,8 +168,36 @@ def public(user: User) -> UserPublic:
     )
 
 
-def list_public() -> list[UserPublic]:
-    return [public(u) for u in sorted(_iter_all(), key=lambda u: u.created_at or "")]
+def list_public(org_id: Optional[str] = None) -> list[UserPublic]:
+    return [public(u) for u in sorted(_iter_all(org_id), key=lambda u: u.created_at or "")]
+
+
+def migrate_legacy_users(org_id: Optional[str] = None) -> int:
+    """One-time import of accounts from the pre-store {root}/users/*.json layout.
+
+    Only runs when the store has NO users for the org, so it can be called on
+    every boot without ever overwriting a newer record. Legacy files are left
+    in place (they're a free backup); delete the directory once you've signed
+    in successfully. Returns the number of accounts imported.
+    """
+    legacy = _ROOT / "users"
+    if not legacy.is_dir():
+        return 0
+    org = _org(org_id)
+    if _iter_all(org):
+        return 0
+    imported = 0
+    for path in sorted(legacy.glob("*.json")):
+        try:
+            user = User.model_validate_json(path.read_text())
+        except Exception as exc:
+            print(f"Warning: skipping legacy user {path.name}: {exc}")
+            continue
+        store.get_store().put(org, _USERS, user.id, user.model_dump())
+        imported += 1
+    if imported:
+        print(f"[auth] Imported {imported} account(s) from legacy users/ into org '{org}'.")
+    return imported
 
 
 # ─── user lifecycle ─────────────────────────────────────────────────────────
@@ -191,17 +213,19 @@ def create_user(
     password: str,
     department: Department,
     role: Role = "reviewer",
+    org_id: Optional[str] = None,
 ) -> User:
+    org = _org(org_id)
     email = (email or "").strip().lower()
     if "@" not in email:
         raise AuthError("A valid email is required.")
-    if get_by_email(email):
+    if get_by_email(email, org):
         raise AuthError("A user with that email already exists.")
     # Departments are org-defined data (departments.py) — reject a typo/unknown
     # key rather than creating a user nobody's queue will ever show.
     try:
         import departments as _departments
-        _departments.require(department)
+        _departments.require(department, org_id=org)
     except ImportError:  # pragma: no cover - registry optional
         pass
     except Exception as exc:
@@ -216,11 +240,11 @@ def create_user(
         password_hash=pw_hash,
         password_salt=pw_salt,
     )
-    return _save(user)
+    return _save(user, org)
 
 
-def authenticate(email: str, password: str) -> User:
-    user = get_by_email(email)
+def authenticate(email: str, password: str, org_id: Optional[str] = None) -> User:
+    user = get_by_email(email, org_id)
     # Run a dummy verify even when the user is missing, to keep timing uniform.
     if user is None:
         hash_password("timing-equalizer-000")
@@ -235,8 +259,14 @@ def authenticate(email: str, password: str) -> User:
 # ─── session tokens ─────────────────────────────────────────────────────────
 
 
-def issue_token(user: User, ttl: int = _TOKEN_TTL) -> str:
-    payload = {"uid": user.id, "exp": int(dt.datetime.now(dt.timezone.utc).timestamp()) + ttl}
+def issue_token(user: User, ttl: int = _TOKEN_TTL, org_id: Optional[str] = None) -> str:
+    # "org" rides in the token so a future multi-org deployment can resolve
+    # the tenant from the session alone, without changing the token format.
+    payload = {
+        "uid": user.id,
+        "org": _org(org_id),
+        "exp": int(dt.datetime.now(dt.timezone.utc).timestamp()) + ttl,
+    }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64(hmac.new(_secret(), body.encode(), hashlib.sha256).digest())
     return f"{body}.{sig}"
@@ -257,7 +287,19 @@ def verify_token(token: str) -> User:
         raise AuthError("Corrupt token payload.") from exc
     if int(payload.get("exp", 0)) < int(dt.datetime.now(dt.timezone.utc).timestamp()):
         raise AuthError("Session expired — please sign in again.")
-    user = get_by_id(payload.get("uid", ""))
+    # Tokens minted before the org claim existed have no "org"; fall back to
+    # the instance default so nobody is logged out by the upgrade.
+    user = get_by_id(payload.get("uid", ""), payload.get("org") or None)
     if user is None or not user.active:
         raise AuthError("Account not found or disabled.")
     return user
+
+
+def token_org(token: str) -> Optional[str]:
+    """The org claim carried by a token, without verifying it. For routing only —
+    never trust this for authorisation; verify_token() does that."""
+    try:
+        body = token.split(".", 1)[0]
+        return json.loads(_unb64(body)).get("org") or None
+    except Exception:
+        return None

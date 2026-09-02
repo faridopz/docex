@@ -16,17 +16,27 @@ opens no door that wasn't already open. It is deliberately not an API endpoint
 and not reachable over the network. Nothing here weakens the sign-in path:
 passwords still go through the same PBKDF2 hashing every other account uses.
 
-To seed a throwaway account without touching your real one:
+Accounts live in the org-scoped store. To seed against the durable database the
+API uses, set the same DOCEX_DB (and DOCEX_ORG) the API runs with:
 
-    DOCEX_USERS_DIR=/tmp/docex-users python seed_admin.py demo@docex.app
+    DOCEX_DB=./docex.db DOCEX_ORG=neem python seed_admin.py admin@neem.org
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 
 import auth
+import store
+
+# Match api/main.py: SQLite when DOCEX_DB is set, JSON files otherwise. Without
+# this the script would seed into a JSON dir the running API never reads.
+_db = os.environ.get("DOCEX_DB", "").strip()
+if _db:
+    import store_sql
+    store.set_store(store_sql.SqliteStore(_db))
 
 
 def _pick_department() -> str:
@@ -71,7 +81,8 @@ def main() -> int:
     parser.add_argument("--department", help="Department key, e.g. finance")
     args = parser.parse_args()
 
-    print(f"Accounts directory: {auth._user_dir()}")
+    print(f"Storage: {'SQLite ' + _db if _db else 'JSON files (set DOCEX_DB for durable)'}")
+    print(f"Organisation: {auth._org()}")
 
     email = (args.email or input("Email: ")).strip().lower()
     if "@" not in email:

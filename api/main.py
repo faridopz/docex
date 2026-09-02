@@ -85,7 +85,15 @@ try:
     import store_sql
 
     _db_path = os.environ.get("DOCEX_DB")
-    if _db_path:
+    # True when WE own storage setup, i.e. the normal server boot. False when a
+    # test or embedding process installed a backend before importing the app.
+    _owns_storage = not store.is_configured()
+    if not _owns_storage:
+        # Respect the caller's store — overriding here silently redirected test
+        # writes into the developer's real data/ directory, which then made
+        # /auth/status report "already set up" and locked out first-run.
+        print("[DOCex] Store already configured by caller; leaving it alone", flush=True)
+    elif _db_path:
         # Production/cloud: use SQLite at a persistent path (requires mounted volume)
         print(f"[DOCex] Initializing SQLite storage at {_db_path}", flush=True)
         store.set_store(store_sql.SqliteStore(_db_path))
@@ -98,6 +106,23 @@ try:
 except Exception as _store_err:
     print(f"[DOCex] WARNING: failed to initialize store: {_store_err}", flush=True)
     raise
+
+# One-time import of accounts/departments from the pre-store file layout, so an
+# instance upgraded in place keeps its logins. No-op once the store has data.
+#
+# ONLY on the real server boot. A test that points storage at a temp dir and
+# then imports this app would otherwise have the developer's legacy users/
+# directory imported into its fixture — which silently made the "first
+# registered user becomes admin" path untestable, because a user already
+# existed. Guarding on _owns_storage keeps the migration where it belongs.
+if _owns_storage:
+    try:
+        import auth as _auth
+        import departments as _departments
+        _auth.migrate_legacy_users()
+        _departments.migrate_legacy_registry()
+    except Exception as _mig_err:  # never block boot on a migration hiccup
+        print(f"[DOCex] Notice: legacy import skipped: {_mig_err}", flush=True)
 
 from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402

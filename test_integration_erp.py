@@ -6,15 +6,16 @@ import tempfile
 from pathlib import Path
 
 # Redirect every store to temp dirs BEFORE the app handles requests.
+import store
 import auth as auth_mod
 import notification_center as nc
 import transactions as tx
 import vouchers as vouchers_mod
 
 _base = Path(tempfile.mkdtemp(prefix="docex_erp_"))
-for sub in ("users", "txn", "notif", "vouchers", "cards"):
+for sub in ("txn", "notif", "vouchers", "cards"):
     (_base / sub).mkdir()
-auth_mod._USER_DIR = _base / "users"
+store.set_store(store.JsonFileStore(_base / "store"))   # users + departments
 auth_mod._SECRET_FILE = _base / ".auth_secret"
 auth_mod._secret_cache = None
 tx._TXN_DIR = _base / "txn"

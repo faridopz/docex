@@ -151,6 +151,13 @@ def set_store(store: Store) -> None:
     _store = store
 
 
+def is_configured() -> bool:
+    """True once something has explicitly installed a backend. api/main.py
+    checks this so a test that redirected storage before importing the app
+    isn't silently pointed back at the real data directory."""
+    return _store is not None
+
+
 # ─── helpers engines share ──────────────────────────────────────────────────
 
 

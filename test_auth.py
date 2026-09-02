@@ -5,10 +5,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import store
 import auth as auth_mod
 
 _u = Path(tempfile.mkdtemp(prefix="docex_users_"))
-auth_mod._USER_DIR = _u
+store.set_store(store.JsonFileStore(_u))          # users now live in the store
 auth_mod._SECRET_FILE = _u / ".auth_secret"
 auth_mod._secret_cache = None  # force re-derive against temp file
 

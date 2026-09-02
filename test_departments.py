@@ -5,17 +5,17 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import store
 import auth as auth_mod
-import departments as dept_mod
+import departments as dept_mod  # noqa: F401  (exercised via the API)
 import notification_center as nc
 import transactions as tx
 
 # Redirect every store to temp locations BEFORE the app is exercised.
 _base = Path(tempfile.mkdtemp(prefix="docex_dept_"))
-for sub in ("users", "txn", "notif"):
+for sub in ("txn", "notif"):
     (_base / sub).mkdir()
-dept_mod._REGISTRY_PATH = _base / "departments.json"
-auth_mod._USER_DIR = _base / "users"
+store.set_store(store.JsonFileStore(_base / "store"))   # users + departments
 auth_mod._SECRET_FILE = _base / ".auth_secret"
 auth_mod._secret_cache = None
 tx._TXN_DIR = _base / "txn"

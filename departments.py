@@ -12,21 +12,33 @@ It owns two things:
   2. The state -> owning-department map, so an org routes its own workflow
      (who the ball sits with at each stage of the transaction state machine).
 
-Persisted as ONE JSON document at {root}/departments.json — same file-based
-pattern as org_profile.json. Never raises on a missing/corrupt file: it falls
-back to the built-in defaults so the app always boots.
+Persisted as ONE record in the org-scoped store (collection "config", record
+"departments"), so each organisation carries its own registry and it survives a
+redeploy when DOCEX_DB is set. Never raises on a missing/corrupt record: it
+falls back to the built-in defaults so the app always boots.
+
+Every public function takes an optional org_id; omitted means the instance
+default (DOCEX_ORG). Existing single-org callers therefore need no change.
 """
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
-from pathlib import Path
 from typing import Optional
 
+import store
 from models import DepartmentDef, DepartmentRegistry
 
-_ROOT = Path(__file__).parent
-_REGISTRY_PATH = _ROOT / "departments.json"
+_CONFIG = "config"                     # store collection
+_REGISTRY_ID = "departments"           # record id within it
+
+
+def _org(org_id: Optional[str] = None) -> str:
+    explicit = (org_id or "").strip()
+    if explicit:
+        return store.require_org(explicit)
+    return store.require_org((os.environ.get("DOCEX_ORG") or "default").strip() or "default")
 
 # The original four — kept as the seed so existing installs behave identically.
 _DEFAULT_DEPARTMENTS: list[DepartmentDef] = [
@@ -77,67 +89,92 @@ def default_registry() -> DepartmentRegistry:
     )
 
 
-def load() -> DepartmentRegistry:
+def migrate_legacy_registry(org_id: Optional[str] = None) -> bool:
+    """One-time import of the pre-store {root}/departments.json file. Only
+    runs when the org has no registry in the store yet. Returns True if
+    something was imported."""
+    from pathlib import Path
+    legacy = Path(__file__).parent / "departments.json"
+    if not legacy.exists():
+        return False
+    org = _org(org_id)
+    if store.get_store().get(org, _CONFIG, _REGISTRY_ID) is not None:
+        return False
+    try:
+        reg = DepartmentRegistry.model_validate_json(legacy.read_text())
+    except Exception as exc:
+        print(f"Warning: legacy departments.json unreadable ({exc}); not imported.")
+        return False
+    if not reg.departments:
+        return False
+    save(reg, org)
+    print(f"[departments] Imported legacy departments.json into org '{org}'.")
+    return True
+
+
+def load(org_id: Optional[str] = None) -> DepartmentRegistry:
     """Load the registry, falling back to defaults if absent or unreadable."""
-    if not _REGISTRY_PATH.exists():
+    raw = store.get_store().get(_org(org_id), _CONFIG, _REGISTRY_ID)
+    if raw is None:
         return default_registry()
     try:
-        reg = DepartmentRegistry.model_validate_json(_REGISTRY_PATH.read_text())
+        reg = DepartmentRegistry.model_validate(raw)
     except Exception as exc:
-        print(f"Warning: departments.json unreadable ({exc}); using defaults.")
+        print(f"Warning: departments registry unreadable ({exc}); using defaults.")
         return default_registry()
-    if not reg.departments:            # empty file → defaults, never an empty app
+    if not reg.departments:            # empty record → defaults, never an empty app
         return default_registry()
     if not reg.state_owners:
         reg.state_owners = dict(_DEFAULT_STATE_OWNERS)
     return reg
 
 
-def save(reg: DepartmentRegistry) -> DepartmentRegistry:
+def save(reg: DepartmentRegistry, org_id: Optional[str] = None) -> DepartmentRegistry:
     reg.updated_at = _now_iso()
     reg.departments.sort(key=lambda d: (d.order, d.name))
-    _REGISTRY_PATH.write_text(reg.model_dump_json(indent=2))
+    store.get_store().put(_org(org_id), _CONFIG, _REGISTRY_ID, reg.model_dump())
     return reg
 
 
-def list_departments() -> list[DepartmentDef]:
-    return load().departments
+def list_departments(org_id: Optional[str] = None) -> list[DepartmentDef]:
+    return load(org_id).departments
 
 
-def keys() -> list[str]:
-    return [d.key for d in load().departments]
+def keys(org_id: Optional[str] = None) -> list[str]:
+    return [d.key for d in load(org_id).departments]
 
 
-def exists(key: str) -> bool:
-    return (key or "") in set(keys())
+def exists(key: str, org_id: Optional[str] = None) -> bool:
+    return (key or "") in set(keys(org_id))
 
 
-def get(key: str) -> Optional[DepartmentDef]:
-    for d in load().departments:
+def get(key: str, org_id: Optional[str] = None) -> Optional[DepartmentDef]:
+    for d in load(org_id).departments:
         if d.key == key:
             return d
     return None
 
 
-def label(key: str) -> str:
+def label(key: str, org_id: Optional[str] = None) -> str:
     """Display name for a key; falls back to the key itself so UI never breaks
     on a record referencing a department that was later renamed/removed."""
-    d = get(key)
+    d = get(key, org_id)
     return d.name if d else (key or "")
 
 
-def require(key: str) -> str:
+def require(key: str, org_id: Optional[str] = None) -> str:
     """Validate a department key, raising DepartmentError if unknown."""
-    if not exists(key):
+    if not exists(key, org_id):
         raise DepartmentError(
-            f"Unknown department '{key}'. Known: {', '.join(keys()) or 'none'}."
+            f"Unknown department '{key}'. Known: {', '.join(keys(org_id)) or 'none'}."
         )
     return key
 
 
 def add(name: str, description: str = "", order: int = 100,
-        is_final_authority: bool = False, key: Optional[str] = None) -> DepartmentDef:
-    reg = load()
+        is_final_authority: bool = False, key: Optional[str] = None,
+        org_id: Optional[str] = None) -> DepartmentDef:
+    reg = load(org_id)
     dept_key = slugify(key or name)
     if any(d.key == dept_key for d in reg.departments):
         raise DepartmentError(f"A department with key '{dept_key}' already exists.")
@@ -145,15 +182,16 @@ def add(name: str, description: str = "", order: int = 100,
                          description=description, order=order,
                          is_final_authority=is_final_authority)
     reg.departments.append(dept)
-    save(reg)
+    save(reg, org_id)
     return dept
 
 
 def update(key: str, *, name: Optional[str] = None, description: Optional[str] = None,
-           order: Optional[int] = None, is_final_authority: Optional[bool] = None) -> DepartmentDef:
+           order: Optional[int] = None, is_final_authority: Optional[bool] = None,
+           org_id: Optional[str] = None) -> DepartmentDef:
     """Update a department's display fields. The KEY is immutable on purpose —
     existing transactions/notifications reference it."""
-    reg = load()
+    reg = load(org_id)
     for d in reg.departments:
         if d.key == key:
             if name is not None:
@@ -164,15 +202,15 @@ def update(key: str, *, name: Optional[str] = None, description: Optional[str] =
                 d.order = order
             if is_final_authority is not None:
                 d.is_final_authority = is_final_authority
-            save(reg)
+            save(reg, org_id)
             return d
     raise DepartmentError(f"Unknown department '{key}'.")
 
 
-def remove(key: str) -> None:
+def remove(key: str, org_id: Optional[str] = None) -> None:
     """Delete a department. Refuses if it still owns a workflow state — removing
     it would leave transactions with an unroutable owner."""
-    reg = load()
+    reg = load(org_id)
     if key in set(reg.state_owners.values()):
         owned = [s for s, d in reg.state_owners.items() if d == key]
         raise DepartmentError(
@@ -185,21 +223,43 @@ def remove(key: str) -> None:
     if not remaining:
         raise DepartmentError("An organisation must keep at least one department.")
     reg.departments = remaining
-    save(reg)
+    save(reg, org_id)
 
 
-def state_owner(state: str) -> Optional[str]:
+def state_owner(state: str, org_id: Optional[str] = None) -> Optional[str]:
     """Which department owns a workflow state (None = unowned, e.g. 'returned')."""
-    return load().state_owners.get(state)
+    return load(org_id).state_owners.get(state)
 
 
-def set_state_owner(state: str, department_key: Optional[str]) -> DepartmentRegistry:
+def set_state_owner(state: str, department_key: Optional[str],
+                    org_id: Optional[str] = None) -> DepartmentRegistry:
     """Route a workflow state to a department (or clear it with None)."""
-    reg = load()
+    reg = load(org_id)
     if department_key is None:
         reg.state_owners.pop(state, None)
     else:
         if not any(d.key == department_key for d in reg.departments):
             raise DepartmentError(f"Unknown department '{department_key}'.")
         reg.state_owners[state] = department_key
-    return save(reg)
+    return save(reg, org_id)
+
+
+def replace_all(departments: list[DepartmentDef], state_owners: dict[str, str],
+                org_id: Optional[str] = None) -> DepartmentRegistry:
+    """Install a complete registry in one write — used by org_config when a
+    client profile is applied. Validates that every state owner names a
+    department that exists, so a profile typo fails here, not as a stuck
+    requisition three weeks later."""
+    if not departments:
+        raise DepartmentError("An organisation must have at least one department.")
+    known = {d.key for d in departments}
+    bad = {s: d for s, d in state_owners.items() if d not in known}
+    if bad:
+        raise DepartmentError(
+            "State owners reference unknown departments: "
+            + ", ".join(f"{s} → '{d}'" for s, d in bad.items())
+        )
+    reg = DepartmentRegistry(departments=list(departments),
+                             state_owners=dict(state_owners),
+                             updated_at=_now_iso())
+    return save(reg, org_id)
