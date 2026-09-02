@@ -1,5 +1,24 @@
 # DOCex — Project Memory
 
+> **START HERE: read `MASTER_CONTEXT.md` first.** It carries the product, the
+> architecture, the business model, pricing, the NEEM engagement, and every
+> decision already made. This file covers coding conventions and build history.
+
+## The rule that shapes everything
+
+**One engine. One config file per client. Never fork the codebase.**
+
+A new client is `profiles/<client>.json` applied with `org_config.py` — not new
+code. If a client needs behaviour the engine can't express as configuration,
+that is a feature request for the *engine*: built once, available to everyone,
+gated behind a feature flag if only some should see it.
+
+```bash
+python3 org_config.py validate profiles/<client>.json
+DOCEX_ORG=<client> DOCEX_DB=./docex.db python3 org_config.py apply profiles/<client>.json
+DOCEX_ORG=<client> DOCEX_DB=./docex.db python3 org_config.py describe
+```
+
 ## What We Are Building
 
 DOCex has grown from a document-extraction tool into an **AI-native finance &
@@ -300,7 +319,34 @@ The screens for the Phase 4 backend. `npx tsc --noEmit` clean.
       unexplained exceptions before explained ones.
 - [x] AppShell nav: Requisitions · Payments · Audit.
 
-### Phase 5 — Next (not started)
+### Phase 5 — Multi-tenancy foundation ✅ SHIPPED (Sep 2026)
+The change that turns DOCex from one deployment into a repeatable product.
+`org_config.py` + `profiles/` + `test_org_config.py` (44 checks green).
+- [x] **`auth.py` on the store layer** — users were JSON files at the repo root:
+      wiped on every redeploy and not org-scoped. Now org-scoped records with
+      SQLite durability. `issue_token()` stamps the org into the session token,
+      so multi-org needs no token format change later. `migrate_legacy_users()`
+      imports the old `users/` directory once, on real server boot only.
+- [x] **`departments.py` on the store layer** — same fix for
+      `departments.json`. Every function takes an optional `org_id` defaulting
+      to `DOCEX_ORG`, so single-org callers were untouched. Added
+      `replace_all()`, which validates that every state owner names a
+      department that exists.
+- [x] **`org_config.py`** — validate → apply → describe for client profiles.
+      Validation runs BEFORE any write, so an invalid profile can never leave
+      an org half-configured. Catches the mistakes that strand payments: a step
+      routed to a missing department, a state owner naming one, an
+      `override_limit` below the `min_amount` where the step engages. Applying
+      is idempotent. Admin passwords are never persisted.
+- [x] **`store.is_configured()`** — lets a test install its own backend before
+      importing the app; `api/main.py` now respects it instead of silently
+      redirecting test writes into the developer's real `data/` directory.
+      The legacy import is likewise gated to real server boot only.
+- [x] **`profiles/_template.json`** (commented reference) + `profiles/neem.json`
+      (awaiting NEEM's real thresholds and grant codes).
+- [x] Verified end-to-end: profile → SQLite → API login → org-scoped data.
+
+### Phase 6 — Next (not started)
 - [ ] Onboarding wizard (5 questions → generated workflow + policy)
 - [ ] Auditor export (Excel + PDF) from `audit_summary()`
 - [ ] Fund/budget balance checks wired to `grants.py` (engine ready, not linked)
@@ -308,11 +354,15 @@ The screens for the Phase 4 backend. `npx tsc --noEmit` clean.
       true before/after numbers — currently unmeasured, do NOT quote figures.
 - [ ] Haiku-first + conservative Sonnet escalation (benchmark against
       Sonnet-only before trusting it).
-- [ ] **Durable storage** — Postgres + object store. Local disk is ephemeral, so
-      transactions/users/departments reset on redeploy. Blocks real operational
-      use.
-- [ ] Async batch (`batch_id`, progressive results), retries, idempotency.
-- [ ] Multi-org tenancy (`org_id` scoping) — currently ONE org per instance.
+- [ ] **Remaining engines still writing raw files** — `notification_center.py`,
+      `transactions.py`, `vouchers.py`, and the directory-based storage in
+      several `api/*_routes.py` (rulebooks, checks, verifications, rate cards,
+      decks). Same durability + tenancy gap `auth`/`departments` just had. Move
+      them onto `store.get_store()`.
+- [ ] **Verify `PostgresStore` against a live database** — written but untested.
+      Run `test_store_sql.py` with `DOCEX_DATABASE_URL` set before trusting it.
+- [ ] Async batch (`batch_id`, progressive results), retries.
+- [ ] Fix `demo_seed.py` — hangs during data generation (not engine logic).
 
 ## Business Model
 Pricing happens per-pilot in conversation — NOT on the landing, NOT
