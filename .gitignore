@@ -75,3 +75,10 @@ Thumbs.db
 
 # Generated demo documents — rebuild with `python3 make_demo_docs.py`
 /demo_docs/
+
+# Commercial material — pricing, margins, cost structure, prospect lists.
+# Deliberately NOT in the repo: our data-ownership terms let a client take the
+# source code on termination, and a contractor may get repo access. Neither
+# should be able to read our margin on their own account.
+# These files live on disk in business/ and are backed up separately.
+business/
