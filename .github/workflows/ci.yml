@@ -62,3 +62,64 @@ jobs:
           file: api/Dockerfile        # ...but the Dockerfile lives in api/
           push: false
           tags: docex-api:ci
+
+  # ---- Job 3: run the test suites -----------------------------------------
+  # A green build only proves the image assembles. These suites are the actual
+  # specification: policy checks, approval authority, the hash-chained audit
+  # trail, org isolation, and the extraction paths that must never return a
+  # plausible-but-wrong number. They run without an API key — anything needing
+  # the model is mocked or skipped — so CI stays fast and free.
+  tests:
+    name: Engines — test suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # tesseract is what makes a photographed receipt readable. Without the
+      # binary the OCR assertions skip rather than fail, so CI would go green
+      # while the field-receipt path was broken. Install it.
+      - name: Install tesseract (OCR)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install reportlab        # builds PDF fixtures for test_extraction
+
+      # Each suite is a standalone script that exits non-zero on failure.
+      # Run them all, then fail once at the end, so one broken suite doesn't
+      # hide the state of the other sixteen.
+      - name: Run all suites
+        run: |
+          failed=""
+          for t in test_auth test_departments test_integration_erp test_org_config \
+                   test_requisitions test_engine_integration test_extraction \
+                   test_field_receipts test_transactions test_vouchers \
+                   test_store_sql test_idempotency test_per_diem test_payroll \
+                   test_kobo_sync test_compliance_perf test_batch_perf; do
+            echo "::group::$t"
+            if python "$t.py"; then echo "PASS $t"; else echo "FAIL $t"; failed="$failed $t"; fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::Failing suites:$failed"
+            exit 1
+          fi
+          echo "All suites green."
+
+      # A client profile that doesn't validate would strand payments in a
+      # department nobody owns. Cheap to check, expensive to miss.
+      - name: Validate shipped client profiles
+        run: |
+          for p in profiles/*.json; do
+            case "$p" in *_template.json) ;; esac
+            echo "-- $p"
+            python org_config.py validate "$p"
+          done
