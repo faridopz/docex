@@ -1,0 +1,81 @@
+{
+  "_comment": "EVA (Education as a Vaccine) — SCAFFOLD. Departments and flow come from their process map and the four finance role descriptions. Every _todo below must be confirmed against their signed policy PDFs (uploads/) before this is applied to a live instance. Apply: DOCEX_ORG=eva DOCEX_DB=./eva.db python3 org_config.py apply profiles/eva.json",
+
+  "org_id": "eva",
+  "name": "Education as a Vaccine",
+  "currency": "NGN",
+
+  "_departments_note": "EVA's finance hierarchy: ED/Board → Admin/Finance Team Lead (TLFA) → Finance Coordinator → Finance Officer. The Compliance Officer sits inside Finance but reports to ED/Board for independence, and reviews EVERY payment. TLFA processes the payment on the bank platform; the ED gives final authorisation afterwards — which is why 'tlfa' and 'ed' are separate steps.",
+  "departments": [
+    {"key": "program",    "name": "Program / Admin", "description": "Initiates requests and assembles supporting documentation", "order": 10},
+    {"key": "compliance", "name": "Compliance",      "description": "Independent review: deductions captured, approvals obtained, documents complete, donor rules met. Reports to ED/Board.", "order": 20},
+    {"key": "finance",    "name": "Finance",         "description": "Completeness, accuracy, and budget availability by project and cost centre", "order": 30},
+    {"key": "tlfa",       "name": "Admin/Finance Team Lead", "description": "Raises the payment voucher and processes payment on the bank platform", "order": 40},
+    {"key": "ed",         "name": "Executive Director", "description": "Final authorisation", "order": 50, "is_final_authority": true}
+  ],
+
+  "state_owners": {
+    "submitted": "program",
+    "intake": "program",
+    "compliance_review": "compliance",
+    "finance_review": "finance",
+    "approval": "ed",
+    "paid": "tlfa"
+  },
+
+  "workflow": {
+    "_todo": "CONFIRM AGAINST THE SIGNED POLICIES: the real DOA amount bands and who approves in each; the procurement thresholds that set the number of quotes required (EVA Approved Procurement Policy); advance limits (POL-FIN-300.01 through .04); petty cash ceiling (POL-FIN-100.02). The numbers below are PLACEHOLDERS chosen to be obviously wrong rather than plausibly wrong.",
+    "_flow": "Their process map: Program initiates → Compliance review → Finance review → voucher raised → approval per DOA → TLFA processes payment → ED final authorisation → recorded under project + expense codes → filed for audit.",
+    "steps": [
+      {"key": "compliance", "label": "Compliance Review",   "department": "compliance"},
+      {"key": "finance",    "label": "Finance Review",      "department": "finance"},
+      {"key": "tlfa",       "label": "TLFA Voucher + Payment", "department": "tlfa", "can_override": true, "override_limit": 500000},
+      {"key": "ed",         "label": "ED Authorisation",    "department": "ed", "min_amount": 500000, "can_override": true, "override_limit": 20000000}
+    ],
+    "max_amount": 20000000,
+    "allowed_categories": [
+      "travel", "per_diem", "advance", "supplies", "venue", "catering",
+      "consultancy", "equipment", "utilities", "communication",
+      "sub_grant", "salary", "petty_cash"
+    ],
+    "required_documents": ["invoice"],
+    "forbidden_vendors": [],
+    "approved_vendors": [],
+    "duplicate_window_days": 30
+  },
+
+  "_grants_note": "EVA is a prime/pass-through managing sub-recipients, notably USG-funded. Populate from their signed agreements — donor, project code, value, and the agreement period that drives grant-period blocking.",
+  "grants": [],
+
+  "admin": {
+    "email": "admin@eva.org",
+    "name": "EVA Finance",
+    "password": "change-me-on-first-login",
+    "department": "finance"
+  },
+
+  "_features_note": "Flags for the EVA-specific engines. All false until the engine behind each one exists and is tested — a flag that turns on nothing is worse than no flag. See EVA_BUILD_PLAN.md for the engine specs (E1–E9).",
+  "features": {
+    "doa_matrix": false,
+    "statutory_deductions": false,
+    "budget_availability": false,
+    "payroll": false,
+    "grants_cashflow": false,
+    "procurement_bands": false,
+    "cash_receipts": false,
+    "accounting_export": false,
+    "subrecipient_review": false,
+    "multi_office": false,
+    "kobo_sync": false,
+    "tin_verification": false
+  },
+
+  "_open_questions": [
+    "REFINANCING SIGN CONVENTION — blocks payroll (E4). Working interpretation: it is cost recovery / recharge, salary cost charged back to a donor grant, shown negative because it offsets the expense line. MUST be confirmed with EVA before any payroll code is written. A wrong sign convention in a finance system is a serious defect.",
+    "DOA bands — the actual amount thresholds and the approver at each.",
+    "Procurement thresholds — how many quotations are required at each amount band.",
+    "Statutory rates — PAYE bands, pension rate, WHT rates by payment type, VAT treatment.",
+    "Multi-office — are HQ / State / field offices a reporting dimension on every transaction, or separate instances?",
+    "QuickBooks export — which format, and does it import as a journal or as bills?"
+  ]
+}
