@@ -68,7 +68,7 @@ check("non-admin blocked from adding users (403)", r.status_code == 403)
 check("dashboard needs auth (401)", client.get("/dashboard").status_code == 401)
 
 # 2. Build a voucher from participants (inline rate) and submit it.
-r = client.post("/vouchers", json={
+r = client.post("/vouchers", headers=fh, json={
     "event_name": "Q3 Workshop", "created_by": "bola",
     "participants": [
         {"participant_name": "Aisha", "role": "Facilitator", "rate_per_day": 20000,
@@ -81,21 +81,21 @@ check("voucher built", r.status_code == 200)
 v = r.json()
 check("voucher total 45k+5k + 30k = 80k", abs(v["total"] - 80000) < 0.01)
 
-r = client.post(f"/vouchers/{v['id']}/submit")
+r = client.post(f"/vouchers/{v['id']}/submit", headers=fh)
 check("voucher submitted", r.status_code == 200)
 ref = r.json()["txn_ref"]
 check("got a V-reference", ref and ref.startswith("V"))
 
 # 3. Compliance sees it (notification + owns the transaction).
-r = client.get("/notifications", params={"department": "compliance"})
+r = client.get("/notifications", headers=fh, params={"department": "compliance"})
 check("compliance notified of the new voucher", r.json()["unread"] >= 1)
 
-r = client.get(f"/transactions/{ref}")
+r = client.get(f"/transactions/{ref}", headers=fh)
 check("transaction is in compliance_review", r.json()["state"] == "compliance_review")
 
 # Compliance views + passes to finance.
-client.post(f"/transactions/{ref}/view", json={"department": "compliance"})
-r = client.get(f"/transactions/{ref}")
+client.post(f"/transactions/{ref}/view", headers=fh, json={"department": "compliance"})
+r = client.get(f"/transactions/{ref}", headers=fh)
 check("viewed_by records compliance", "compliance" in r.json()["viewed_by"])
 
 # Transitions are now the IN-APP approval path: authenticated + role-gated.

@@ -88,6 +88,18 @@ check("2c only the two non-duplicate payments called the LLM", holder["calls"] =
 # ── 3. Batch failure isolation via the endpoint (missing file) ──
 import tempfile, os
 from pathlib import Path
+
+# Point storage at a temp dir BEFORE importing the app. Without this the test
+# registers its user into the developer's real data/ store — which both
+# pollutes it and means "first user becomes admin" no longer holds, so the
+# bootstrap below silently fails.
+import store as _store
+_STORE_TMP = tempfile.mkdtemp(prefix="docex_batchperf_")
+_store.set_store(_store.JsonFileStore(_STORE_TMP))
+import auth as _auth
+_auth._SECRET_FILE = Path(_STORE_TMP) / ".auth_secret"
+_auth._secret_cache = None
+
 from fastapi.testclient import TestClient
 import api.compliance_routes as cr
 import api.main as m
@@ -101,12 +113,22 @@ rb_path.write_text(rulebook.model_dump_json())
 try:
     holder = install_fake()
     client = TestClient(m.app)
+
+    # The API is default-deny (api/security.py), so this endpoint now needs a
+    # session. Bootstrap one: the first registered user becomes admin.
+    client.post("/auth/register", json={
+        "email": "batch@test.org", "name": "Batch", "password": "batch-password-123",
+        "department": "finance"})
+    _tok = client.post("/auth/login", json={
+        "email": "batch@test.org", "password": "batch-password-123"}).json()["token"]
+    _h = {"Authorization": f"Bearer {_tok}"}
+
     files = [
         ("documents", ("a.txt", b"INVOICE\nInvoice No: INV-900\nTotal Amount: NGN 10,000", "text/plain")),
     ]
     # P1 references the uploaded file; P2 references a filename that was NOT uploaded.
     payments = '[{"label":"P1 ok","filenames":["a.txt"]},{"label":"P2 missing","filenames":["ghost.txt"]}]'
-    r = client.post("/compliance/check/batch",
+    r = client.post("/compliance/check/batch", headers=_h,
                     files=files, data={"rulebook_id": rulebook.id, "payments": payments})
     check("3a endpoint 200 (no whole-batch 422)", r.status_code == 200, f"status={r.status_code}")
     if r.status_code == 200:

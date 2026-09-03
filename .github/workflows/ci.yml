@@ -99,11 +99,12 @@ jobs:
       - name: Run all suites
         run: |
           failed=""
-          for t in test_auth test_departments test_integration_erp test_org_config \
-                   test_requisitions test_engine_integration test_extraction \
-                   test_field_receipts test_transactions test_vouchers \
-                   test_store_sql test_idempotency test_per_diem test_payroll \
-                   test_kobo_sync test_compliance_perf test_batch_perf; do
+          for t in test_auth test_auth_coverage test_departments test_integration_erp \
+                   test_org_config test_requisitions test_engine_integration \
+                   test_extraction test_field_receipts test_transactions \
+                   test_vouchers test_store_sql test_idempotency test_per_diem \
+                   test_payroll test_kobo_sync test_compliance_perf \
+                   test_batch_perf test_usage; do
             echo "::group::$t"
             if python "$t.py"; then echo "PASS $t"; else echo "FAIL $t"; failed="$failed $t"; fi
             echo "::endgroup::"

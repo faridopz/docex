@@ -30,9 +30,33 @@ of clean code substitutes for it.
 ## P0 — before NEEM touches it with real data
 
 Nothing below is optional. A finance system that loses a payment record has
-failed at the only thing it promised.
+failed at the only thing it promised — and one that hands it to a stranger has
+failed worse.
 
-### 1. Durable storage — the actual blocker
+### 0. Authentication — FIXED, and worth knowing how it broke
+
+**What was wrong:** roughly ninety routes had no authentication at all. The
+newer routers (requisitions, departments, field receipts, org config) gate every
+endpoint; the older demo-era ones never did. Verified live with no credentials:
+`GET /compliance/rulebooks`, `/compliance/checks` and `/compliance/org-profile`
+all returned **200**. Two separate risks — client financial data readable by
+anyone with the URL, and endpoints that spend real money (Claude, Paystack) open
+to anyone who felt like spending it.
+
+**The fix:** `api/security.py` — default-deny middleware. Nothing reaches a
+handler without a valid session except a short, commented allowlist: health,
+login, register, status, docs, and the token-bearing public links for
+self-check-in and emailed approvals. Decorators would have fixed it once;
+default-deny fixes it for every route added from here.
+
+`test_auth_coverage.py` enumerates every route the live app serves, calls it
+with no credentials, and fails if anything not on the allowlist answers
+something other than 401. **That test is the thing that stops this recurring.**
+
+**Lesson for the checklist below:** this document originally checked durability
+and never checked auth coverage. When adding a client, verify both.
+
+### 1. Durable storage — the other blocker
 
 `render.yaml` today: `plan: free`, no disk, no `DOCEX_DB`. Storage falls back
 to JSON files inside the container and **resets on every deploy.**
@@ -231,6 +255,8 @@ IF IT BREAKS
 
 Do not put real client data in until every one of these is true:
 
+- [x] **Auth: default-deny middleware live, `test_auth_coverage.py` green**
+- [ ] Confirm on the deployed instance: `curl $API/compliance/checks` returns 401
 - [ ] `DOCEX_DB` set, on a persistent disk, **verified to survive a redeploy**
 - [ ] Paid plan — no sleeping
 - [ ] Backups running daily, **one restore actually tested**

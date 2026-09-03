@@ -34,14 +34,43 @@ import type {
 } from "@/types";
 import { assignBucket } from "@/lib/buckets";
 import { throwFriendly } from "@/lib/errors";
+import { getToken } from "@/lib/session";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+/**
+ * fetch() with the session token attached.
+ *
+ * Every call in this file used bare fetch() and therefore sent no credentials.
+ * That was fine while the API accepted anonymous requests; the API is now
+ * default-deny (api/security.py), so an unauthenticated call gets a 401.
+ *
+ * Wrapping rather than rewriting 48 call sites keeps each one's existing
+ * response handling — throwFriendly, blob downloads, streaming — exactly as it
+ * was, and means the next function added here is authenticated by default.
+ *
+ * Deliberately does NOT set Content-Type: several callers post FormData, where
+ * the browser must supply its own multipart boundary. An explicit Authorization
+ * header on the caller wins, so the public check-in and approval flows can
+ * still opt out by passing one (or none, since those paths are allowlisted).
+ */
+async function authFetch(
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Authorization")) {
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  return fetch(input, { ...init, headers });
+}
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE}/health`);
+    const res = await authFetch(`${BASE}/health`);
     return res.ok;
   } catch {
     return false;
@@ -60,7 +89,7 @@ export async function extractSingle(
   body.append("questions", JSON.stringify(questions));
   for (const f of files) body.append("documents", f);
 
-  const res = await fetch(`${BASE}/extract/single`, { method: "POST", body });
+  const res = await authFetch(`${BASE}/extract/single`, { method: "POST", body });
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<SingleExtractionResponse>;
 }
@@ -87,7 +116,7 @@ export async function extractBatch(
     for (const f of ap.files) body.append("documents", f);
   }
 
-  const res = await fetch(`${BASE}/extract/batch`, { method: "POST", body });
+  const res = await authFetch(`${BASE}/extract/batch`, { method: "POST", body });
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<BatchExtractionResponse>;
 }
@@ -105,7 +134,7 @@ export async function draftFollowups(
   questions: Question[],
   templateId?: string | null,
 ): Promise<FollowupDraft[]> {
-  const res = await fetch(`${BASE}/draft-followups`, {
+  const res = await authFetch(`${BASE}/draft-followups`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // template_id (snake_case) matches the Pydantic schema on the backend.
@@ -248,7 +277,7 @@ export async function interpretPolicy(
   body.append("name", name);
   for (const f of files) body.append("policy_documents", f);
 
-  const res = await fetch(`${BASE}/compliance/policy`, {
+  const res = await authFetch(`${BASE}/compliance/policy`, {
     method: "POST",
     body,
   });
@@ -272,7 +301,7 @@ export async function startPolicyJob(
   body.append("name", name);
   for (const f of files) body.append("policy_documents", f);
 
-  const res = await fetch(`${BASE}/compliance/policy/async`, {
+  const res = await authFetch(`${BASE}/compliance/policy/async`, {
     method: "POST",
     body,
   });
@@ -284,7 +313,7 @@ export async function startPolicyJob(
 }
 
 export async function getPolicyJob(jobId: string): Promise<PolicyJob> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/policy/jobs/${encodeURIComponent(jobId)}`,
   );
   if (!res.ok) {
@@ -295,7 +324,7 @@ export async function getPolicyJob(jobId: string): Promise<PolicyJob> {
 }
 
 export async function listRulebooks(): Promise<RulebookSummary[]> {
-  const res = await fetch(`${BASE}/compliance/rulebooks`);
+  const res = await authFetch(`${BASE}/compliance/rulebooks`);
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Failed to load rulebooks (${res.status}): ${detail}`);
@@ -305,7 +334,7 @@ export async function listRulebooks(): Promise<RulebookSummary[]> {
 }
 
 export async function getRulebook(id: string): Promise<PolicyRulebook> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/rulebooks/${encodeURIComponent(id)}`,
   );
   if (!res.ok) {
@@ -326,7 +355,7 @@ export async function updateRulebook(
     approval_workflow?: string[] | null;
   },
 ): Promise<PolicyRulebook> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/rulebooks/${encodeURIComponent(id)}`,
     {
       method: "PUT",
@@ -353,13 +382,13 @@ export async function updateRulebook(
 // ─── Organisation profile (per-org config) ──────────────────────────────────
 
 export async function getOrgProfile(): Promise<OrgProfile> {
-  const res = await fetch(`${BASE}/compliance/org-profile`);
+  const res = await authFetch(`${BASE}/compliance/org-profile`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<OrgProfile>;
 }
 
 export async function updateOrgProfile(profile: OrgProfile): Promise<OrgProfile> {
-  const res = await fetch(`${BASE}/compliance/org-profile`, {
+  const res = await authFetch(`${BASE}/compliance/org-profile`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(profile),
@@ -369,7 +398,7 @@ export async function updateOrgProfile(profile: OrgProfile): Promise<OrgProfile>
 }
 
 export async function deleteRulebook(id: string): Promise<void> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/rulebooks/${encodeURIComponent(id)}`,
     { method: "DELETE" },
   );
@@ -391,7 +420,7 @@ export interface RouteSuggestion {
 export async function routePayment(files: File[]): Promise<RouteSuggestion[]> {
   const body = new FormData();
   for (const f of files) body.append("payment_documents", f);
-  const res = await fetch(`${BASE}/compliance/route`, {
+  const res = await authFetch(`${BASE}/compliance/route`, {
     method: "POST",
     body,
   });
@@ -436,7 +465,7 @@ export async function checkPaymentSingle(
     }
   }
 
-  const res = await fetch(`${BASE}/compliance/check/single`, {
+  const res = await authFetch(`${BASE}/compliance/check/single`, {
     method: "POST",
     body,
   });
@@ -465,7 +494,7 @@ export async function checkPaymentForm(
   if (rulebookId) body.append("rulebook_id", rulebookId);
   for (const f of files) body.append("payment_documents", f);
 
-  const res = await fetch(`${BASE}/compliance/check/form`, {
+  const res = await authFetch(`${BASE}/compliance/check/form`, {
     method: "POST",
     body,
   });
@@ -495,7 +524,7 @@ export async function retireTravel(input: {
   body.append("receipts_json", JSON.stringify(input.receipts));
   for (const f of input.files ?? []) body.append("receipt_files", f);
 
-  const res = await fetch(`${BASE}/compliance/retire`, { method: "POST", body });
+  const res = await authFetch(`${BASE}/compliance/retire`, { method: "POST", body });
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<ComplianceCheckResult>;
 }
@@ -507,7 +536,7 @@ export async function createStarterRulebook(
   kind: string,
   name?: string,
 ): Promise<PolicyRulebook> {
-  const res = await fetch(`${BASE}/compliance/rulebooks/starter`, {
+  const res = await authFetch(`${BASE}/compliance/rulebooks/starter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, name }),
@@ -540,7 +569,7 @@ export async function checkPaymentBatch(
     for (const f of p.files) body.append("documents", f);
   }
 
-  const res = await fetch(`${BASE}/compliance/check/batch`, {
+  const res = await authFetch(`${BASE}/compliance/check/batch`, {
     method: "POST",
     body,
   });
@@ -554,7 +583,7 @@ export async function checkPaymentBatch(
 // ── Saved check CRUD + approval ────────────────────────────────────────────
 
 export async function listChecks(): Promise<CheckSummary[]> {
-  const res = await fetch(`${BASE}/compliance/checks`);
+  const res = await authFetch(`${BASE}/compliance/checks`);
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Failed to load checks (${res.status}): ${detail}`);
@@ -564,7 +593,7 @@ export async function listChecks(): Promise<CheckSummary[]> {
 }
 
 export async function getCheck(id: string): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(id)}`,
   );
   if (!res.ok) {
@@ -590,7 +619,7 @@ export async function precheckDocs(
   const body = new FormData();
   for (const f of files) body.append("payment_documents", f);
   body.append("payment_type", paymentType);
-  const res = await fetch(`${BASE}/compliance/precheck`, {
+  const res = await authFetch(`${BASE}/compliance/precheck`, {
     method: "POST",
     body,
   });
@@ -600,7 +629,7 @@ export async function precheckDocs(
 
 /** Toggle whether a payment has been executed ("Paid" on the board). */
 export async function markPaid(checkId: string): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/mark-paid`,
     { method: "POST" },
   );
@@ -625,7 +654,7 @@ export async function addRisk(
   checkId: string,
   body: RiskInput,
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/risks`,
     {
       method: "POST",
@@ -642,7 +671,7 @@ export async function updateRisk(
   riskId: string,
   body: RiskInput,
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/risks/${encodeURIComponent(riskId)}`,
     {
       method: "PUT",
@@ -666,7 +695,7 @@ export async function approveCheck(
       signed_name: signature.signed_name ?? null,
     });
   }
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(id)}/approve`,
     init,
   );
@@ -675,7 +704,7 @@ export async function approveCheck(
 }
 
 export async function unapproveCheck(id: string): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(id)}/unapprove`,
     { method: "POST" },
   );
@@ -687,7 +716,7 @@ export async function unapproveCheck(id: string): Promise<ComplianceCheckResult>
 }
 
 export async function deleteCheck(id: string): Promise<void> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(id)}`,
     { method: "DELETE" },
   );
@@ -1013,7 +1042,7 @@ export async function verifyBankBatch(
   body.append("delay_ms", String(delayMs));
   body.append("persist", "true");
 
-  const res = await fetch(`${BASE}/verify/bank-batch`, {
+  const res = await authFetch(`${BASE}/verify/bank-batch`, {
     method: "POST",
     body,
   });
@@ -1023,7 +1052,7 @@ export async function verifyBankBatch(
 
 /** List every saved verification batch, newest first. */
 export async function listVerifyBatches(): Promise<BatchVerifySummary[]> {
-  const res = await fetch(`${BASE}/verify/batches`);
+  const res = await authFetch(`${BASE}/verify/batches`);
   if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as BatchVerifyListResponse;
   return data.batches;
@@ -1033,7 +1062,7 @@ export async function listVerifyBatches(): Promise<BatchVerifySummary[]> {
 export async function getVerifyBatch(
   batchId: string,
 ): Promise<BankVerifyBatchResult> {
-  const res = await fetch(`${BASE}/verify/batches/${batchId}`);
+  const res = await authFetch(`${BASE}/verify/batches/${batchId}`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<BankVerifyBatchResult>;
 }
@@ -1048,7 +1077,7 @@ export async function getVerifyBatch(
  * API avoids round-tripping the data through JS.
  */
 export async function exportVerifyBatchToXlsx(batchId: string): Promise<void> {
-  const res = await fetch(`${BASE}/verify/batches/${batchId}/export.xlsx`);
+  const res = await authFetch(`${BASE}/verify/batches/${batchId}/export.xlsx`);
   if (!res.ok) await throwFriendly(res);
   const blob = await res.blob();
   // Pull the filename from Content-Disposition so the downloaded file
@@ -1069,7 +1098,7 @@ export async function exportVerifyBatchToXlsx(batchId: string): Promise<void> {
 
 /** Delete one saved verification batch. */
 export async function deleteVerifyBatch(batchId: string): Promise<void> {
-  const res = await fetch(`${BASE}/verify/batches/${batchId}`, {
+  const res = await authFetch(`${BASE}/verify/batches/${batchId}`, {
     method: "DELETE",
   });
   if (!res.ok) await throwFriendly(res);
@@ -1097,7 +1126,7 @@ export async function runAttendanceAgent(
   body.append("rate_per_day", String(ratePerDay));
   body.append("persist", "true");
 
-  const res = await fetch(`${BASE}/agents/attendance-payment/run`, {
+  const res = await authFetch(`${BASE}/agents/attendance-payment/run`, {
     method: "POST",
     body,
   });
@@ -1109,7 +1138,7 @@ export async function runAttendanceAgent(
 export async function listAttendanceRuns(): Promise<
   import("@/types").AttendancePaymentRunSummary[]
 > {
-  const res = await fetch(`${BASE}/agents/attendance-payment/runs`);
+  const res = await authFetch(`${BASE}/agents/attendance-payment/runs`);
   if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as {
     runs: import("@/types").AttendancePaymentRunSummary[];
@@ -1121,7 +1150,7 @@ export async function listAttendanceRuns(): Promise<
 export async function getAttendanceRun(
   runId: string,
 ): Promise<import("@/types").AttendancePaymentRun> {
-  const res = await fetch(`${BASE}/agents/attendance-payment/runs/${runId}`);
+  const res = await authFetch(`${BASE}/agents/attendance-payment/runs/${runId}`);
   if (!res.ok) await throwFriendly(res);
   return res.json();
 }
@@ -1133,7 +1162,7 @@ export async function getAttendanceRun(
 export async function verifyAttendanceRun(
   runId: string,
 ): Promise<import("@/types").BankVerifyBatchResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/agents/attendance-payment/runs/${runId}/verify`,
     { method: "POST" },
   );
@@ -1143,7 +1172,7 @@ export async function verifyAttendanceRun(
 
 /** Download the run's paid bucket as a payment schedule .xlsx. */
 export async function exportAttendanceSchedule(runId: string): Promise<void> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/agents/attendance-payment/runs/${runId}/schedule.xlsx`,
   );
   if (!res.ok) await throwFriendly(res);
@@ -1164,7 +1193,7 @@ export async function exportAttendanceSchedule(runId: string): Promise<void> {
 
 /** Delete a saved attendance run. */
 export async function deleteAttendanceRun(runId: string): Promise<void> {
-  const res = await fetch(`${BASE}/agents/attendance-payment/runs/${runId}`, {
+  const res = await authFetch(`${BASE}/agents/attendance-payment/runs/${runId}`, {
     method: "DELETE",
   });
   if (!res.ok) await throwFriendly(res);
@@ -1176,14 +1205,14 @@ export async function deleteAttendanceRun(runId: string): Promise<void> {
 // Payment Agent run endpoint accepts a rate_card_id to apply per-role rates.
 
 export async function listRateCards(): Promise<RateCard[]> {
-  const res = await fetch(`${BASE}/rate-cards`);
+  const res = await authFetch(`${BASE}/rate-cards`);
   if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as { rate_cards: RateCard[] };
   return data.rate_cards;
 }
 
 export async function getRateCard(id: string): Promise<RateCard> {
-  const res = await fetch(`${BASE}/rate-cards/${id}`);
+  const res = await authFetch(`${BASE}/rate-cards/${id}`);
   if (!res.ok) await throwFriendly(res);
   return res.json();
 }
@@ -1194,7 +1223,7 @@ export async function createRateCard(payload: {
   roles: RateLine[];
   currency?: string;
 }): Promise<RateCard> {
-  const res = await fetch(`${BASE}/rate-cards`, {
+  const res = await authFetch(`${BASE}/rate-cards`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ currency: "NGN", ...payload }),
@@ -1212,7 +1241,7 @@ export async function updateRateCard(
     currency?: string;
   },
 ): Promise<RateCard> {
-  const res = await fetch(`${BASE}/rate-cards/${id}`, {
+  const res = await authFetch(`${BASE}/rate-cards/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ currency: "NGN", ...payload }),
@@ -1222,7 +1251,7 @@ export async function updateRateCard(
 }
 
 export async function deleteRateCard(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/rate-cards/${id}`, { method: "DELETE" });
+  const res = await authFetch(`${BASE}/rate-cards/${id}`, { method: "DELETE" });
   if (!res.ok) await throwFriendly(res);
 }
 
@@ -1254,7 +1283,7 @@ export async function runAttendanceAgentAdvanced(opts: {
     body.append("payment_info_sheet_url", opts.paymentInfoSheetUrl);
   body.append("persist", "true");
 
-  const res = await fetch(`${BASE}/agents/attendance-payment/run`, {
+  const res = await authFetch(`${BASE}/agents/attendance-payment/run`, {
     method: "POST",
     body,
   });
@@ -1300,7 +1329,7 @@ export function getAdminSecret(): string | null {
 }
 
 export async function runDiagnostic(): Promise<DiagnosticReport> {
-  const res = await fetch(`${BASE}/diagnostics/run`, {
+  const res = await authFetch(`${BASE}/diagnostics/run`, {
     method: "POST",
     headers: adminHeaders(),
   });
@@ -1310,7 +1339,7 @@ export async function runDiagnostic(): Promise<DiagnosticReport> {
 }
 
 export async function getLastDiagnostic(): Promise<DiagnosticReport | null> {
-  const res = await fetch(`${BASE}/diagnostics/last`, {
+  const res = await authFetch(`${BASE}/diagnostics/last`, {
     headers: adminHeaders(),
   });
   // 404 has two meanings here: (a) admin gate rejected the request, or
@@ -1324,7 +1353,7 @@ export async function getLastDiagnostic(): Promise<DiagnosticReport | null> {
 }
 
 export async function listDiagnosticReports(): Promise<DiagnosticReportSummary[]> {
-  const res = await fetch(`${BASE}/diagnostics`, { headers: adminHeaders() });
+  const res = await authFetch(`${BASE}/diagnostics`, { headers: adminHeaders() });
   if (res.status === 404) throw new AdminAuthError();
   if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as { reports: DiagnosticReportSummary[] };
@@ -1341,7 +1370,7 @@ export async function summarizeForAssistant(
   payload: unknown,
   contextId?: string,
 ): Promise<AssistantBrief> {
-  const res = await fetch(`${BASE}/assistant/summarize`, {
+  const res = await authFetch(`${BASE}/assistant/summarize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1370,26 +1399,26 @@ export async function uploadDeck(
   if (opts?.tags && opts.tags.length > 0)
     body.append("tags", opts.tags.join(", "));
 
-  const res = await fetch(`${BASE}/knowledge/decks`, { method: "POST", body });
+  const res = await authFetch(`${BASE}/knowledge/decks`, { method: "POST", body });
   if (!res.ok) await throwFriendly(res);
   return res.json();
 }
 
 export async function listDecks(): Promise<SlideDeckSummary[]> {
-  const res = await fetch(`${BASE}/knowledge/decks`);
+  const res = await authFetch(`${BASE}/knowledge/decks`);
   if (!res.ok) await throwFriendly(res);
   const data = (await res.json()) as { decks: SlideDeckSummary[] };
   return data.decks;
 }
 
 export async function getDeck(deckId: string): Promise<SlideDeck> {
-  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`);
+  const res = await authFetch(`${BASE}/knowledge/decks/${deckId}`);
   if (!res.ok) await throwFriendly(res);
   return res.json();
 }
 
 export async function deleteDeck(deckId: string): Promise<void> {
-  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`, {
+  const res = await authFetch(`${BASE}/knowledge/decks/${deckId}`, {
     method: "DELETE",
   });
   if (!res.ok) await throwFriendly(res);
@@ -1399,7 +1428,7 @@ export async function chatWithDeck(
   deckId: string,
   question: string,
 ): Promise<KnowledgeAnswer> {
-  const res = await fetch(`${BASE}/knowledge/decks/${deckId}/chat`, {
+  const res = await authFetch(`${BASE}/knowledge/decks/${deckId}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
@@ -1414,7 +1443,7 @@ export async function chatWithLibrary(
   question: string,
   opts?: { folder?: string | null; tags?: string[] },
 ): Promise<KnowledgeAnswer> {
-  const res = await fetch(`${BASE}/knowledge/library/chat`, {
+  const res = await authFetch(`${BASE}/knowledge/library/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1436,7 +1465,7 @@ export async function updateDeck(
     tags?: string[];
   },
 ): Promise<SlideDeck> {
-  const res = await fetch(`${BASE}/knowledge/decks/${deckId}`, {
+  const res = await authFetch(`${BASE}/knowledge/decks/${deckId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1452,7 +1481,7 @@ export async function updateDeck(
 export async function suggestFolder(
   deckId: string,
 ): Promise<{ suggested_folder: string; reasoning: string }> {
-  const res = await fetch(`${BASE}/knowledge/folders/suggest`, {
+  const res = await authFetch(`${BASE}/knowledge/folders/suggest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ deck_id: deckId }),
@@ -1472,7 +1501,7 @@ export async function addCheckNote(
   note: string,
   ruleId?: string,
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(`${BASE}/compliance/checks/${checkId}/notes`, {
+  const res = await authFetch(`${BASE}/compliance/checks/${checkId}/notes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ note, rule_id: ruleId ?? null }),
@@ -1487,7 +1516,7 @@ export async function recordRuleDecision(
   action: "dismiss" | "escalate" | "clarification_requested",
   reason: string,
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${checkId}/rules/${ruleId}/decision`,
     {
       method: "POST",
@@ -1510,7 +1539,7 @@ export async function escalateCheck(
     signed_name?: string | null;
   },
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/escalate`,
     {
       method: "POST",
@@ -1532,7 +1561,7 @@ export async function requestClarification(
     signed_name?: string | null;
   },
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/clarification`,
     {
       method: "POST",
@@ -1552,7 +1581,7 @@ export async function respondToClarification(
     signed_name?: string | null;
   },
 ): Promise<ComplianceCheckResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/clarification/respond`,
     {
       method: "POST",
@@ -1565,7 +1594,7 @@ export async function respondToClarification(
 }
 
 export async function listPendingChecks(): Promise<CheckSummary[]> {
-  const res = await fetch(`${BASE}/compliance/pending`);
+  const res = await authFetch(`${BASE}/compliance/pending`);
   if (!res.ok) await throwFriendly(res);
   const json = (await res.json()) as { checks: CheckSummary[] };
   return json.checks;
@@ -1575,7 +1604,7 @@ export async function listPendingChecks(): Promise<CheckSummary[]> {
 
 /** Every action across every voucher, newest first — the audit register. */
 export async function getAuditLog(): Promise<AuditLogRow[]> {
-  const res = await fetch(`${BASE}/compliance/audit-log`);
+  const res = await authFetch(`${BASE}/compliance/audit-log`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<AuditLogRow[]>;
 }
@@ -1661,7 +1690,7 @@ export async function requestSignoff(
   stage: string,
   approverEmail: string,
 ): Promise<{ ok: boolean; emailed: boolean; link: string }> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/checks/${encodeURIComponent(checkId)}/request-signoff`,
     {
       method: "POST",
@@ -1691,7 +1720,7 @@ export interface ApprovalTokenInfo {
 export async function verifyApprovalToken(
   token: string,
 ): Promise<ApprovalTokenInfo> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/approve/verify/${encodeURIComponent(token)}`,
   );
   if (!res.ok) await throwFriendly(res);
@@ -1704,7 +1733,7 @@ export async function submitApproval(
   action: "approve" | "return",
   note?: string,
 ): Promise<{ ok: boolean; approved?: boolean; returned?: boolean }> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/compliance/approve/${encodeURIComponent(token)}`,
     {
       method: "POST",
@@ -1726,7 +1755,7 @@ export async function createCollection(input: {
   rate_per_day: number;
   rate_card_id?: string | null;
 }): Promise<AttendanceCollection> {
-  const res = await fetch(COLL_BASE, {
+  const res = await authFetch(COLL_BASE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -1736,13 +1765,13 @@ export async function createCollection(input: {
 }
 
 export async function listCollections(): Promise<AttendanceCollectionSummary[]> {
-  const res = await fetch(COLL_BASE);
+  const res = await authFetch(COLL_BASE);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<AttendanceCollectionSummary[]>;
 }
 
 export async function getCollection(id: string): Promise<AttendanceCollection> {
-  const res = await fetch(`${COLL_BASE}/${id}`);
+  const res = await authFetch(`${COLL_BASE}/${id}`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<AttendanceCollection>;
 }
@@ -1757,7 +1786,7 @@ export async function updateCollection(
     attendees: CollectedAttendee[];
   }>,
 ): Promise<AttendanceCollection> {
-  const res = await fetch(`${COLL_BASE}/${id}`, {
+  const res = await authFetch(`${COLL_BASE}/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1767,12 +1796,12 @@ export async function updateCollection(
 }
 
 export async function deleteCollection(id: string): Promise<void> {
-  const res = await fetch(`${COLL_BASE}/${id}`, { method: "DELETE" });
+  const res = await authFetch(`${COLL_BASE}/${id}`, { method: "DELETE" });
   if (!res.ok) await throwFriendly(res);
 }
 
 export async function buildCollectionRun(id: string): Promise<{ run_id: string }> {
-  const res = await fetch(`${COLL_BASE}/${id}/run`, { method: "POST" });
+  const res = await authFetch(`${COLL_BASE}/${id}/run`, { method: "POST" });
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<{ run_id: string }>;
 }
@@ -1780,7 +1809,7 @@ export async function buildCollectionRun(id: string): Promise<{ run_id: string }
 export async function getPublicCollection(
   token: string,
 ): Promise<PublicCollectionInfo> {
-  const res = await fetch(`${COLL_BASE}/public/${token}`);
+  const res = await authFetch(`${COLL_BASE}/public/${token}`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<PublicCollectionInfo>;
 }
@@ -1797,7 +1826,7 @@ export async function selfCheckIn(
     present_days?: string[];
   },
 ): Promise<void> {
-  const res = await fetch(`${COLL_BASE}/public/${token}/attendees`, {
+  const res = await authFetch(`${COLL_BASE}/public/${token}/attendees`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -1825,7 +1854,7 @@ export interface IntegrationSyncResult {
 }
 
 export async function listIntegrations(): Promise<IntegrationInfo[]> {
-  const res = await fetch(`${BASE}/knowledge/integrations`);
+  const res = await authFetch(`${BASE}/knowledge/integrations`);
   if (!res.ok) await throwFriendly(res);
   return res.json() as Promise<IntegrationInfo[]>;
 }
@@ -1833,7 +1862,7 @@ export async function listIntegrations(): Promise<IntegrationInfo[]> {
 export async function syncIntegration(
   provider: string,
 ): Promise<IntegrationSyncResult> {
-  const res = await fetch(
+  const res = await authFetch(
     `${BASE}/knowledge/integrations/${encodeURIComponent(provider)}/sync`,
     { method: "POST" },
   );

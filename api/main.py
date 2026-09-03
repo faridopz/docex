@@ -137,6 +137,7 @@ from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
 from .department_routes import router as department_router  # noqa: E402
 from .org_routes import router as org_router  # noqa: E402
+from .security import AuthMiddleware  # noqa: E402
 from .transaction_routes import router as transaction_router  # noqa: E402
 from .voucher_routes import router as voucher_router  # noqa: E402
 from .field_receipt_routes import router as field_receipt_router  # noqa: E402
@@ -259,6 +260,27 @@ class _RequestIDMiddleware:
 
 
 app.add_middleware(_RequestIDMiddleware)
+
+# Authentication floor — DEFAULT DENY.
+#
+# Added last, so it is the OUTERMOST middleware and nothing reaches a route
+# handler without a valid session except the small allowlist in api/security.py
+# (health, login, register, status, docs, and the token-bearing public links for
+# self-check-in and emailed approvals).
+#
+# This exists because ~90 routes had no auth at all: the newer routers gate
+# every endpoint with Depends(current_user), but the older ones never did, which
+# left client rulebooks, compliance checks, transactions and vouchers readable
+# by anyone with the URL — and left endpoints that spend money (Claude,
+# Paystack) open to anyone who felt like spending it.
+#
+# Decorators would have fixed it once; default-deny fixes it for every route
+# added from now on. test_auth_coverage.py enumerates the live app and fails if
+# anything becomes reachable without credentials.
+app.add_middleware(
+    AuthMiddleware,
+    allowed_origins=_default_dev_origins + _extra_origins,
+)
 
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.
