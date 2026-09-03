@@ -557,9 +557,32 @@ procurement bands for free. See `DELIVERY_PLAYBOOK.md` §3.
 
 ---
 
+
+## 11c. Where each client stands (Sept 2026)
+
+| | NEEM | EVA |
+|---|---|---|
+| Stage | **Deploying for real** — no longer a demo | Engine build, Phase 1 done |
+| Price | ₦450k/mo (reputation trade) | ₦600k/mo + phased build fees |
+| Blocker | Production config — 2–3 days | 5 more engines |
+| Config | `profiles/neem.json`, needs their Sep 10 numbers | `profiles/eva.json`, needs their policy numbers |
+
+**NEEM is live-bound.** Everything in `PRODUCTION_READINESS.md` must be green
+before their real payment data goes in. Auth is now closed (default-deny);
+durable storage and tested backups are the remaining blockers.
+
+**EVA Phase 1 is built:** `doa.py` — the Delegation of Authority matrix, 60
+checks green. That is the piece that lets EVA go live and start paying. Phases
+2–5 (deductions, coding/budget, payroll, procurement, accounting export) follow
+while they pay. Payroll stays blocked on the refinancing sign convention.
+
+---
+
 ## 12. Repo map
 
 **Read first:** `MASTER_CONTEXT.md` (this) · `CLAUDE.md` (conventions) · `SOUL.md`
+
+**Plan + skills:** `business/SCALE_PLAN.md` · skill `docex-client-onboarding`
 
 **How work gets done:** `DELIVERY_PLAYBOOK.md` (the factory model + the
 Config/Core/Custom triage gate) · `PRODUCTION_READINESS.md` (the go-live gap list)
