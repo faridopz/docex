@@ -582,7 +582,7 @@ while they pay. Payroll stays blocked on the refinancing sign convention.
 
 **Read first:** `MASTER_CONTEXT.md` (this) · `CLAUDE.md` (conventions) · `SOUL.md`
 
-**Plan + skills:** `business/SCALE_PLAN.md` · skill `docex-client-onboarding`
+**Plan + skills:** `business/SCALE_PLAN.md` · `SKILLS.md` (seven installed skills covering prospect → configure → build → deploy → run → price → incident)
 
 **How work gets done:** `DELIVERY_PLAYBOOK.md` (the factory model + the
 Config/Core/Custom triage gate) · `PRODUCTION_READINESS.md` (the go-live gap list)
