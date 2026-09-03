@@ -190,6 +190,67 @@ def test_orgs_are_isolated() -> None:
     check("token resolves in the right org", auth.verify_token(tok).email == "admin@beta.org")
 
 
+def test_client_config_drives_what_each_client_sees() -> None:
+    print("\nclient_config() is what makes one engine look like many products")
+    # This is the contract the frontend navigation depends on. If it breaks,
+    # a client sees a menu item for something they never bought.
+    acme = oc.client_config("acme")
+    check("modules default to all three when unset",
+          sorted(acme["modules"]) == ["compliance", "knowledge", "screening"])
+    check("features are returned", isinstance(acme["features"], dict))
+
+    # An org with no profile at all must behave exactly as before this existed:
+    # every module, no features.
+    fresh = oc.client_config("never-configured")
+    check("unconfigured org gets every module", len(fresh["modules"]) == 3)
+    check("unconfigured org gets no features", fresh["features"] == {})
+
+    # Selling one module only.
+    oc.apply_profile({"org_id": "acme", "modules": ["compliance"]})
+    check("modules narrow to what was bought",
+          oc.client_config("acme")["modules"] == ["compliance"])
+    check("beta is unaffected", len(oc.client_config("beta")["modules"]) == 3)
+
+    # Modules must survive a later profile apply that doesn't mention them —
+    # otherwise a workflow tweak would silently hand the client back modules
+    # they never paid for.
+    oc.apply_profile({"org_id": "acme", "workflow": {"max_amount": 12345}})
+    check("modules survive an unrelated apply",
+          oc.client_config("acme")["modules"] == ["compliance"])
+
+    rep = oc.validate_profile({"org_id": "acme", "modules": ["compliance", "wat"]})
+    check("unknown module is rejected", any("Unknown module" in e for e in rep.errors))
+    rep = oc.validate_profile({"org_id": "acme", "modules": []})
+    check("empty module list is rejected", not rep.ok)
+
+
+def test_two_clients_see_different_systems() -> None:
+    print("\nTwo clients, one engine, different products")
+    # The whole model in one test: EVA gets payroll, NEEM does not, and
+    # neither can tell the other's capability exists.
+    oc.apply_profile({
+        "org_id": "neemish",
+        "modules": ["compliance"],
+        "features": {"tin_verification": True, "payroll": False},
+    })
+    oc.apply_profile({
+        "org_id": "evaish",
+        "modules": ["compliance", "knowledge"],
+        "features": {"payroll": True, "doa_matrix": True, "tin_verification": False},
+    })
+    n, e = oc.client_config("neemish"), oc.client_config("evaish")
+
+    check("NEEM-ish sees one module", n["modules"] == ["compliance"])
+    check("EVA-ish sees two", e["modules"] == ["compliance", "knowledge"])
+    check("NEEM-ish has TIN", n["features"]["tin_verification"] is True)
+    check("NEEM-ish does NOT have payroll", n["features"].get("payroll") is not True)
+    check("EVA-ish has payroll", e["features"]["payroll"] is True)
+    check("EVA-ish does NOT have TIN", e["features"].get("tin_verification") is not True)
+    check("flags agree with feature_enabled()",
+          oc.feature_enabled("evaish", "payroll") is True
+          and oc.feature_enabled("neemish", "payroll") is False)
+
+
 def test_feature_flags() -> None:
     print("\nFeature flags gate per-client behaviour")
     check("acme kobo off", oc.feature_enabled("acme", "kobo_sync") is False)
@@ -211,6 +272,8 @@ def main() -> int:
     test_reapply_is_idempotent()
     test_partial_profile_only_touches_its_sections()
     test_orgs_are_isolated()
+    test_client_config_drives_what_each_client_sees()
+    test_two_clients_see_different_systems()
     test_feature_flags()
     print("\n" + "=" * 64)
     print(f"{_passed} passed, {_failed} failed")

@@ -23,7 +23,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { getOrgProfile } from "@/lib/api";
+import {
+  DEFAULT_CLIENT_CONFIG,
+  getClientConfig,
+  type ClientConfig,
+  type ModuleKey,
+} from "@/lib/orgConfig";
 import { NotificationBell } from "@/components/erp/NotificationBell";
 
 /**
@@ -59,11 +64,19 @@ type NavItem = {
   href: string;
   icon: LucideIcon;
   match: string[];
+  // Optional feature flag. When set, this item only appears if the client's
+  // profile has that flag on. Items with no flag are part of the base product
+  // and every client sees them.
+  //
+  // This is what lets one engine serve many clients without any of them seeing
+  // a menu entry for something their organisation never bought — EVA gets
+  // payroll, NEEM does not, and neither is aware of the other's screens.
+  flag?: string;
 };
 
 // The three product modules a client can switch on independently. The engine
 // underneath is shared; these are just the workflows on top.
-export type ModuleKey = "compliance" | "screening" | "knowledge";
+export type { ModuleKey } from "@/lib/orgConfig";
 
 type NavGroup = { module: ModuleKey; label: string; items: NavItem[] };
 
@@ -81,7 +94,9 @@ const NAV_GROUPS: NavGroup[] = [
       { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"] },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
-      { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"] },
+      // Flagged: not every client runs participant-payment events. TA Connect
+      // does; a client doing only internal finance ops has no use for it.
+      { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"], flag: "attendance_payments" },
     ],
   },
   {
@@ -114,23 +129,23 @@ export function AppShell({
   const router = useRouter();
   const { ready, user, signOut } = useAuth();
 
-  // Which modules this org has switched on. Default to all until we know, so
-  // nav never flashes empty; if the profile can't load we just show everything.
-  const [enabledModules, setEnabledModules] = useState<ModuleKey[]>([
-    "compliance",
-    "screening",
-    "knowledge",
-  ]);
+  // What this client's organisation has switched on — which product modules
+  // they bought, and which individual capabilities are enabled inside them.
+  // Comes from their profile (profiles/<client>.json), so the same engine
+  // presents a different system to each client.
+  //
+  // Defaults to every module and no features until the call returns: nav never
+  // flashes empty, and no capability is ever advertised before we know the
+  // client actually has it.
+  const [clientConfig, setClientConfig] = useState<ClientConfig>(DEFAULT_CLIENT_CONFIG);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const p = await getOrgProfile();
-        if (!cancelled && Array.isArray(p.enabled_modules) && p.enabled_modules.length) {
-          setEnabledModules(p.enabled_modules as ModuleKey[]);
-        }
+        const cfg = await getClientConfig();
+        if (!cancelled) setClientConfig(cfg);
       } catch {
-        /* keep all modules visible on failure */
+        /* leave the defaults in place — a blip must not empty the nav */
       }
     })();
     return () => {
@@ -138,7 +153,16 @@ export function AppShell({
     };
   }, []);
 
-  const groups = NAV_GROUPS.filter((g) => enabledModules.includes(g.module));
+  const enabledModules = clientConfig.modules;
+  const groups = NAV_GROUPS
+    .filter((g) => enabledModules.includes(g.module))
+    // Drop flagged items this client doesn't have, then drop any group that
+    // ends up empty — an empty section header is worse than no section.
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((i) => !i.flag || clientConfig.features[i.flag] === true),
+    }))
+    .filter((g) => g.items.length > 0);
   const complianceOn = enabledModules.includes("compliance");
 
   // Demo gate: every page rendered inside AppShell requires a signed-in demo

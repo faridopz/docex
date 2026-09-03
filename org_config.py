@@ -43,8 +43,17 @@ PROFILE SHAPE  (see profiles/_template.json for a commented example)
   },
   "grants": [ {project_code, donor, title?, value?, start_date, end_date} ],
   "admin": { "email": "...", "name": "...", "password": "...", "department": "finance" },
+  "modules": ["compliance", "screening", "knowledge"],
   "features": { "kobo_sync": false, "tin_verification": false, ... }
 }
+
+MODULES vs FEATURES — both gate what a client sees, at different grain:
+  modules  — the top-level product areas in the navigation. Coarse. A client
+             that only bought the finance workflow has ["compliance"].
+  features — individual capabilities inside a module ("payroll", "doa_matrix").
+             Fine. This is how EVA gets payroll while NEEM never sees it.
+Both are read by the frontend from GET /org/config, so a flag flipped in a
+profile changes what the client's navigation shows on their next page load.
 
 Every section is optional except org_id. A missing section leaves that part of
 the org untouched, so you can apply a profile that only updates the workflow.
@@ -63,6 +72,9 @@ import store
 _CONFIG = "config"
 _PROFILE_ID = "profile"          # the applied profile, kept for describe/diff
 _FEATURES_ID = "features"
+
+# Top-level product areas. A client sees only the ones they bought.
+_ALL_MODULES = ("compliance", "screening", "knowledge")
 
 
 class ProfileError(ValueError):
@@ -183,6 +195,18 @@ def validate_profile(profile: dict) -> ValidationReport:
         sd, ed = g.get("start_date"), g.get("end_date")
         if sd and ed and str(ed) < str(sd):
             rep.errors.append(f"grants[{i}] ends before it starts ({sd} → {ed}).")
+
+    mods = profile.get("modules")
+    if mods is not None:
+        if not isinstance(mods, list) or not mods:
+            rep.errors.append("modules must be a non-empty list if present.")
+        else:
+            unknown = [m for m in mods if m not in _ALL_MODULES]
+            if unknown:
+                rep.errors.append(
+                    f"Unknown module(s): {', '.join(unknown)}. "
+                    f"Known: {', '.join(_ALL_MODULES)}."
+                )
 
     admin = profile.get("admin")
     if admin:
@@ -307,10 +331,13 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             )
             res.admin_created = True
 
-    # 5. Feature flags + the profile itself, for describe/diff later.
+    # 5. Modules + feature flags + the profile itself, for describe/diff later.
     features = dict(profile.get("features") or {})
     st = store.get_store()
-    st.put(org_id, _CONFIG, _FEATURES_ID, {"features": features})
+    existing = st.get(org_id, _CONFIG, _FEATURES_ID) or {}
+    modules = profile.get("modules") or existing.get("modules") or list(_ALL_MODULES)
+    st.put(org_id, _CONFIG, _FEATURES_ID,
+           {"features": features, "modules": list(modules)})
     safe = {k: v for k, v in profile.items() if k != "admin"}   # never persist a password
     st.put(org_id, _CONFIG, _PROFILE_ID, {"profile": safe})
     res.features = features
@@ -325,6 +352,24 @@ def feature_enabled(org_id: str, name: str, default: bool = False) -> bool:
     that doesn't exist for an org is `default` — so new flags are opt-in."""
     raw = store.get_store().get(store.require_org(org_id), _CONFIG, _FEATURES_ID) or {}
     return bool((raw.get("features") or {}).get(name, default))
+
+
+def client_config(org_id: str) -> dict:
+    """What the frontend needs to decide what this client can see.
+
+    Deliberately small and safe to expose to any signed-in user of the org: it
+    carries no policy numbers, no other org's anything, and nothing secret —
+    only which product areas and capabilities are switched on.
+
+    An org that has never had a profile applied gets every module and no
+    features, which is the pre-existing behaviour: nav shows everything, and
+    individual capabilities stay off until someone turns them on.
+    """
+    raw = store.get_store().get(store.require_org(org_id), _CONFIG, _FEATURES_ID) or {}
+    return {
+        "modules": list(raw.get("modules") or _ALL_MODULES),
+        "features": dict(raw.get("features") or {}),
+    }
 
 
 def describe_org(org_id: str) -> dict:
@@ -349,7 +394,8 @@ def describe_org(org_id: str) -> dict:
             "approved_vendors": wf.approved_vendors,
             "duplicate_window_days": wf.duplicate_window_days,
         },
-        "features": (store.get_store().get(org, _CONFIG, _FEATURES_ID) or {}).get("features", {}),
+        "modules": client_config(org)["modules"],
+        "features": client_config(org)["features"],
     }
     try:
         import grants

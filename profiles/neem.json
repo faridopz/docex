@@ -1,17 +1,35 @@
 {
-  "_comment": "NEEM starter profile — FILL IN from their documents/flows when they arrive (Sep 10 follow-up). Values here are placeholders from the discovery call, not confirmed. Apply: DOCEX_ORG=neem python3 org_config.py apply profiles/neem.json",
-
+  "_comment": "NEEM starter profile \u2014 FILL IN from their documents/flows when they arrive (Sep 10 follow-up). Values here are placeholders from the discovery call, not confirmed. Apply: DOCEX_ORG=neem python3 org_config.py apply profiles/neem.json",
   "org_id": "neem",
   "name": "NEEM",
   "currency": "NGN",
-
   "departments": [
-    {"key": "program",    "name": "Programs / Field",  "description": "Fieldworkers + program officers raise requests and upload receipts", "order": 10},
-    {"key": "compliance", "name": "Compliance",        "description": "Donor rules, documentation completeness",                            "order": 20},
-    {"key": "finance",    "name": "Finance",           "description": "Verification, approval, payment, month-end reconciliation",           "order": 30},
-    {"key": "management", "name": "Executive Director","description": "Final authority above threshold",                                     "order": 40, "is_final_authority": true}
+    {
+      "key": "program",
+      "name": "Programs / Field",
+      "description": "Fieldworkers + program officers raise requests and upload receipts",
+      "order": 10
+    },
+    {
+      "key": "compliance",
+      "name": "Compliance",
+      "description": "Donor rules, documentation completeness",
+      "order": 20
+    },
+    {
+      "key": "finance",
+      "name": "Finance",
+      "description": "Verification, approval, payment, month-end reconciliation",
+      "order": 30
+    },
+    {
+      "key": "management",
+      "name": "Executive Director",
+      "description": "Final authority above threshold",
+      "order": 40,
+      "is_final_authority": true
+    }
   ],
-
   "state_owners": {
     "submitted": "program",
     "intake": "program",
@@ -20,32 +38,61 @@
     "approval": "management",
     "paid": "finance"
   },
-
   "workflow": {
     "_todo": "CONFIRM with NEEM: their actual approval thresholds, who can override, procurement (3-quote) threshold, required documents per category.",
     "steps": [
-      {"key": "compliance", "label": "Compliance Review",  "department": "compliance"},
-      {"key": "finance",    "label": "Finance Review",     "department": "finance",    "can_override": true, "override_limit": 250000},
-      {"key": "approval",   "label": "ED Approval",        "department": "management", "min_amount": 250000, "can_override": true, "override_limit": 5000000}
+      {
+        "key": "compliance",
+        "label": "Compliance Review",
+        "department": "compliance"
+      },
+      {
+        "key": "finance",
+        "label": "Finance Review",
+        "department": "finance",
+        "can_override": true,
+        "override_limit": 250000
+      },
+      {
+        "key": "approval",
+        "label": "ED Approval",
+        "department": "management",
+        "min_amount": 250000,
+        "can_override": true,
+        "override_limit": 5000000
+      }
     ],
     "max_amount": 5000000,
-    "allowed_categories": ["travel", "supplies", "venue", "catering", "consultancy", "equipment", "utilities", "communication"],
-    "required_documents": ["invoice"],
+    "allowed_categories": [
+      "travel",
+      "supplies",
+      "venue",
+      "catering",
+      "consultancy",
+      "equipment",
+      "utilities",
+      "communication"
+    ],
+    "required_documents": [
+      "invoice"
+    ],
     "forbidden_vendors": [],
     "approved_vendors": [],
     "duplicate_window_days": 30
   },
-
   "grants": [],
-
   "admin": {
     "email": "admin@neem.org",
     "name": "NEEM Finance",
     "password": "change-me-on-first-login",
     "department": "finance"
   },
-
+  "_modules_note": "Top-level product areas this client bought. The nav shows only these. Finance-workflow-only clients don't need the screening or knowledge modules.",
+  "modules": [
+    "compliance"
+  ],
   "features": {
+    "attendance_payments": false,
     "kobo_sync": false,
     "tin_verification": true,
     "bank_reconciliation": false,

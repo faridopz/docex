@@ -136,6 +136,7 @@ from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
 from .department_routes import router as department_router  # noqa: E402
+from .org_routes import router as org_router  # noqa: E402
 from .transaction_routes import router as transaction_router  # noqa: E402
 from .voucher_routes import router as voucher_router  # noqa: E402
 from .field_receipt_routes import router as field_receipt_router  # noqa: E402
@@ -316,6 +317,11 @@ app.include_router(auth_router)
 # Departments — each org defines its own departments + which one owns each
 # workflow state. See api/department_routes.py.
 app.include_router(department_router)
+
+# Org config — which product modules and feature flags this client has switched
+# on. The frontend reads it to build navigation, so a client never sees a menu
+# item for something their organisation didn't buy. See api/org_routes.py.
+app.include_router(org_router)
 
 # Self-Check Agent — runtime diagnostic that exercises every primitive and
 # reports health. V1 of the longer-term Self-Improvement Agent (observe →
