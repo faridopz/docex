@@ -11,6 +11,105 @@ new session (mine or anyone's) starts informed instead of asking again.
 
 ---
 
+## 0. THE MODEL — settle this before anything else
+
+Four questions get confused with each other constantly. Here are the answers,
+and they are not negotiable without a deliberate decision recorded in §10.
+
+| Question | Answer |
+|---|---|
+| How many **codebases**? | **ONE.** Never forked, never copied. |
+| How many **versions of the software**? | **ONE.** Every client runs the same release. |
+| How many **running instances**? | **ONE PER CLIENT.** Own server, own database. |
+| Do clients see the **same thing**? | **NO.** Config + feature flags make each one theirs. |
+
+### Said plainly
+
+**You are not building a new version per client. You are running the same
+version for every client, configured differently.**
+
+The analogy that holds: you are a **house builder with one design system**. Same
+blueprint, same construction method, same suppliers. Each house is built on its
+own plot with its own utilities and its own front-door key. The owner picks the
+layout and the finishes. When you learn a better way to build a roof, every
+future house gets it — and you can retrofit the existing ones.
+
+You do not design a new house from scratch for each buyer. That is what forking
+the codebase would be, and it is the one thing that kills this business.
+
+### The picture
+
+```
+                    ONE CODEBASE  ·  ONE VERSION
+                  (github.com/faridopz/docex)
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+   NEEM instance         EVA instance        Client 3 instance
+   own server            own server          own server
+   own database          own database        own database
+        │                     │                     │
+   neem.json             eva.json            client3.json
+   4 departments         5 departments       their departments
+   ₦250k ceiling         ₦20m ceiling        their ceiling
+   TIN flag ON           payroll flag ON     both ON
+   payroll flag OFF      TIN flag OFF        + procurement
+```
+
+Same code in all three boxes. Different config, different data, different
+experience.
+
+### Why separate instances rather than one shared platform
+
+The code supports both — `org_id` is part of every storage key and
+`test_org_config.py` proves two organisations on one instance cannot see each
+other. Separate instances is a **deployment choice**, not an architectural one,
+and it is reversible.
+
+Three reasons it is the right default now:
+
+1. **Blast radius.** A bad deploy takes down one client, not all of them.
+2. **The compliance story.** *"Your data is on your own instance, your own
+   database"* ends a conversation that *"we isolate by tenant key"* starts.
+   For donor-funded finance data this matters more than the hosting cost.
+3. **Data residency.** Some donors require data in-country. Per-client instances
+   let NEEM sit in one region and a UK charity in another.
+
+The shared-instance option stays open for a future low-cost tier — small NGOs at
+₦150k/month where per-client infrastructure wouldn't pay for itself. **That is
+why the multi-tenancy work was worth doing before there was a second client.**
+
+### What differs between clients, and how
+
+| Layer | Shared or per-client? | Where it lives |
+|---|---|---|
+| Engine code | **Shared** | the repo |
+| Features | **Shared**, switched per client | feature flags |
+| Departments, approval chain, thresholds, categories, grant codes | Per client | `profiles/<client>.json` |
+| Data (payments, receipts, audit trail) | Per client | their own database |
+| Branding / URL | Per client | their instance |
+
+### The three buckets every client request falls into
+
+| | What | Time | Who gets it |
+|---|---|---|---|
+| **CONFIG** | A value in their JSON | Minutes | Just them |
+| **CORE** | A capability the engine lacks | Days | **Everyone, forever** |
+| **CUSTOM** | Only they will ever want it | Weeks | Just them — **priced separately** |
+
+Default to CONFIG. Prefer CORE over CUSTOM — that is what turns one client's
+requirement into the next client's selling point. CUSTOM is rare and always
+quoted.
+
+### The one rule that protects all of it
+
+> **Never write a client's name into engine code.**
+> If you catch yourself typing `if org == "eva"`, stop. That is a config field
+> or a feature flag. Three of those and you have forked the codebase without
+> having decided to.
+
+---
+
 ## 1. What DOCex is
 
 An **AI-native finance and compliance platform for donor-funded organisations.**
