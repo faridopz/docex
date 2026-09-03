@@ -1,5 +1,5 @@
 {
-  "_comment": "EVA (Education as a Vaccine) \u2014 SCAFFOLD. Departments and flow come from their process map and the four finance role descriptions. Every _todo below must be confirmed against their signed policy PDFs (uploads/) before this is applied to a live instance. Apply: DOCEX_ORG=eva DOCEX_DB=./eva.db python3 org_config.py apply profiles/eva.json",
+  "_comment": "EVA (Education as a Vaccine). Approval thresholds below are EXTRACTED FROM THEIR SIGNED PROCUREMENT POLICY with citations in _sources. Items in _open_questions are NOT stated in any document we hold and must be confirmed before go-live. Apply: DOCEX_ORG=eva DOCEX_DB=./eva.db python3 org_config.py apply profiles/eva.json",
   "org_id": "eva",
   "name": "Education as a Vaccine",
   "currency": "NGN",
@@ -32,8 +32,15 @@
     {
       "key": "ed",
       "name": "Executive Director",
-      "description": "Final authorisation",
+      "description": "Approves all procurements of N300,000 or more",
       "order": 50,
+      "is_final_authority": false
+    },
+    {
+      "key": "board",
+      "name": "Board (Chair + Finance Committee)",
+      "description": "Approves procurements of N10,000,000 or more \u2014 Board Chair plus at least one member of the Finance Committee",
+      "order": 60,
       "is_final_authority": true
     }
   ],
@@ -46,7 +53,7 @@
     "paid": "tlfa"
   },
   "workflow": {
-    "_todo": "CONFIRM AGAINST THE SIGNED POLICIES: the real DOA amount bands and who approves in each; the procurement thresholds that set the number of quotes required (EVA Approved Procurement Policy); advance limits (POL-FIN-300.01 through .04); petty cash ceiling (POL-FIN-100.02). The numbers below are PLACEHOLDERS chosen to be obviously wrong rather than plausibly wrong.",
+    "_todo": "Thresholds below are CONFIRMED from the signed Procurement Policy (see _sources). Still unconfirmed: advance limits and retirement windows, petty cash ceiling, statutory rates \u2014 see _open_questions.",
     "_flow": "Their process map: Program initiates \u2192 Compliance review \u2192 Finance review \u2192 voucher raised \u2192 approval per DOA \u2192 TLFA processes payment \u2192 ED final authorisation \u2192 recorded under project + expense codes \u2192 filed for audit.",
     "steps": [
       {
@@ -64,18 +71,26 @@
         "label": "TLFA Voucher + Payment",
         "department": "tlfa",
         "can_override": true,
-        "override_limit": 500000
+        "override_limit": 300000
       },
       {
         "key": "ed",
-        "label": "ED Authorisation",
+        "label": "ED Approval",
         "department": "ed",
-        "min_amount": 500000,
+        "min_amount": 300000,
         "can_override": true,
-        "override_limit": 20000000
+        "override_limit": 10000000
+      },
+      {
+        "key": "board",
+        "label": "Board Approval",
+        "department": "board",
+        "min_amount": 10000000,
+        "can_override": true,
+        "override_limit": 100000000
       }
     ],
-    "max_amount": 20000000,
+    "max_amount": 100000000,
     "allowed_categories": [
       "travel",
       "per_diem",
@@ -128,11 +143,21 @@
     "tin_verification": false
   },
   "_open_questions": [
-    "REFINANCING SIGN CONVENTION \u2014 blocks payroll (E4). Working interpretation: it is cost recovery / recharge, salary cost charged back to a donor grant, shown negative because it offsets the expense line. MUST be confirmed with EVA before any payroll code is written. A wrong sign convention in a finance system is a serious defect.",
-    "DOA bands \u2014 the actual amount thresholds and the approver at each.",
-    "Procurement thresholds \u2014 how many quotations are required at each amount band.",
-    "Statutory rates \u2014 PAYE bands, pension rate, WHT rates by payment type, VAT treatment.",
-    "Multi-office \u2014 are HQ / State / field offices a reporting dimension on every transaction, or separate instances?",
-    "QuickBooks export \u2014 which format, and does it import as a journal or as bills?"
-  ]
+    "DISCREPANCY IN THEIR OWN DOCUMENT: the Procurement Policy reads '300,000 Naira (two hundred thousand Naira)' \u2014 the figure and the words disagree. Every other mention says N300,000, so we configured 300,000, but EVA must confirm and correct their policy text.",
+    "ADVANCE RETIREMENT WINDOW \u2014 not stated in POL-FIN-300.01 (Activity Advances) or 300.04 (Travel Advance). No number appears anywhere in either document. This is a genuine gap in their policy, not a gap in our reading. Ask what the practice is and whether they want it enforced.",
+    "ADVANCE LIMITS \u2014 no maximum advance amount stated in any of POL-FIN-300.01 to .04.",
+    "PETTY CASH CEILING \u2014 POL-FIN-100.02 mentions N40,000, but only inside a worked illustration ('It is assumed that EVA/FCT establishes a Petty Cash Fund...'). That is an example, not a policy limit. Confirm the real ceiling per office.",
+    "REFINANCING SIGN CONVENTION \u2014 blocks payroll (E4). Working interpretation: cost recovery / recharge, salary charged back to a donor grant, shown negative because it offsets the expense line. MUST be confirmed before any payroll code is written.",
+    "STATUTORY RATES \u2014 PAYE bands, pension rate, WHT rates by payment type, VAT treatment. Not in the documents we hold.",
+    "GRANT CODES + AGREEMENT PERIODS \u2014 needed for grant-period blocking. Populate from their signed agreements.",
+    "MULTI-OFFICE \u2014 are HQ / State / field offices a reporting dimension on every transaction, or separate instances?",
+    "QUICKBOOKS EXPORT \u2014 which format, and does it import as a journal or as bills?"
+  ],
+  "_sources": {
+    "procurement_three_quotes": "EVA Approved Procurement Policy \u2014 'three quotes for procurements estimated to be 300,000 Naira or more'",
+    "approval_below_300k": "Procurement Policy, Thresholds and Approval \u2014 'Approvals for procurements below N300,000 can be given by departmental heads or their delegates (who should not be below the grade level of a coordinator)'",
+    "approval_300k_plus": "Procurement Policy \u2014 'All procurements involving N300,000 or more ... must be approved by the executive director'",
+    "approval_10m_plus": "Procurement Policy \u2014 'Procurements involving N10,000,000 or more ... must be approved by the board chair and at least a member of the finance committee of the board'",
+    "single_source_waiver": "Procurement Policy \u2014 'A written justification (procurement waiver) should be provided for single source procurement of value of 200,000 Naira'"
+  }
 }
