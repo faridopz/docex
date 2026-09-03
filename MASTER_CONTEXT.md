@@ -584,6 +584,8 @@ while they pay. Payroll stays blocked on the refinancing sign convention.
 
 **Plan + skills:** `business/SCALE_PLAN.md` · `SKILLS.md` (seven installed skills covering prospect → configure → build → deploy → run → price → incident)
 
+**Starting a workstream:** `CHAT_STARTERS.md` (copy-paste openers for EVA build · NEEM delivery · business · engine)
+
 **Deployment shape:** `DEPLOYMENT_TOPOLOGY.md` (separate URL, server and database per client; one codebase)
 
 **How work gets done:** `DELIVERY_PLAYBOOK.md` (the factory model + the
