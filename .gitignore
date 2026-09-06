@@ -89,3 +89,6 @@ business/
 demo.db
 *.db-shm
 *.db-wal
+
+# Generated locally by spend_report.py --html
+spend_report.html
