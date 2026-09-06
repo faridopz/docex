@@ -72,6 +72,22 @@ export default function NewRequisitionPage() {
     return parsedAmount > workflow.max_amount;
   }, [workflow?.max_amount, parsedAmount, amountValid]);
 
+  /** Which approvers this amount will actually pass through.
+   *
+   *  A step only engages at or above its min_amount, so the chain changes as
+   *  the amount is typed. Showing it before submitting answers the question
+   *  every submitter actually has — "who has to sign this, and how long will
+   *  it take?" — instead of leaving them to find out when it lands somewhere
+   *  unexpected. The workflow is already loaded for the ceiling warning, so
+   *  this costs nothing extra.
+   */
+  const approvalRoute = useMemo(() => {
+    if (!workflow?.steps?.length || !amountValid) return [];
+    return workflow.steps
+      .filter((s) => parsedAmount >= (s.min_amount ?? 0))
+      .map((s) => s.label || s.key);
+  }, [workflow?.steps, parsedAmount, amountValid]);
+
   const canSubmit = vendorName.trim() !== "" && amountValid && !submitting;
 
   function toggleDocument(doc: string) {
@@ -339,6 +355,32 @@ export default function NewRequisitionPage() {
           {error ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
               {error}
+            </div>
+          ) : null}
+
+          {/* Where this is about to go. The chain depends on the amount, so it
+              updates as you type — the submitter learns that ₦300,000 needs the
+              ED before they submit, not after it lands there. */}
+          {approvalRoute.length ? (
+            <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                This will go to
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {approvalRoute.map((label, i) => (
+                  <span key={label} className="flex items-center gap-1.5">
+                    {i > 0 ? <span className="text-gray-400">→</span> : null}
+                    <span className="rounded-md bg-white px-2 py-1 text-sm font-medium text-gray-800 ring-1 ring-gray-200">
+                      {label}
+                    </span>
+                  </span>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-gray-500">
+                {approvalRoute.length === 1
+                  ? "One approval at this amount."
+                  : `${approvalRoute.length} approvals at this amount.`}
+              </p>
             </div>
           ) : null}
 
