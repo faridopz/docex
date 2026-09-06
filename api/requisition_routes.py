@@ -149,6 +149,8 @@ async def create_requisition_endpoint(
     receipt_ids: Annotated[str, Form(description="Comma-separated field receipt IDs")] = "",
     documents: Annotated[str, Form(description="Comma-separated document labels")] = "",
     currency: Annotated[str, Form()] = "NGN",
+    submit: Annotated[bool, Form(
+        description="False saves a draft instead of submitting for approval")] = True,
     idempotency_key: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
     ctx: Ctx = Depends(request_context),
 ):
@@ -157,6 +159,10 @@ async def create_requisition_endpoint(
 
     Policy checks run immediately, so the submitter sees any failure or warning
     before an approver ever opens it.
+
+    Pass `submit=false` to save a DRAFT — checks still run, so the person
+    filling the form gets the same immediate feedback, but nothing enters
+    anyone's approval queue and the amount is not treated as committed.
 
     Send an `Idempotency-Key` header and a retry after a dropped connection
     replays the original requisition instead of raising a duplicate.
@@ -181,6 +187,7 @@ async def create_requisition_endpoint(
                     receipt_ids=[s.strip() for s in receipt_ids.split(",") if s.strip()],
                     documents=[s.strip() for s in documents.split(",") if s.strip()],
                     currency=currency,
+                    submit=submit,
                 )
             except rq.RequisitionError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -278,6 +285,73 @@ async def get_requisition_endpoint(req_id: str, ctx: Ctx = Depends(request_conte
 
 
 # ─── decide ─────────────────────────────────────────────────────────────────
+
+
+@router.put("/requisitions/{req_id}/draft")
+async def update_draft_endpoint(
+    req_id: str,
+    vendor_name: Annotated[Optional[str], Form()] = None,
+    amount: Annotated[Optional[float], Form()] = None,
+    category: Annotated[Optional[str], Form()] = None,
+    project_code: Annotated[Optional[str], Form()] = None,
+    grant_code: Annotated[Optional[str], Form()] = None,
+    vendor_account: Annotated[Optional[str], Form()] = None,
+    description: Annotated[Optional[str], Form()] = None,
+    receipt_ids: Annotated[Optional[str], Form()] = None,
+    documents: Annotated[Optional[str], Form()] = None,
+    currency: Annotated[Optional[str], Form()] = None,
+    ctx: Ctx = Depends(request_context),
+):
+    """Edit a draft. Policy checks re-run on every save, so the consequence of a
+    change is visible immediately rather than at submit.
+
+    Drafts only. A submitted requisition may already be in front of an
+    approver, and changing the amount underneath them is exactly what the audit
+    trail exists to prevent — return it first.
+    """
+    fields = {
+        "vendor_name": vendor_name, "amount": amount, "category": category,
+        "project_code": project_code, "vendor_account": vendor_account,
+        "description": description, "currency": currency,
+    }
+    if grant_code is not None:
+        fields["grant_code"] = grant_code.strip() or None
+    for key, raw in (("receipt_ids", receipt_ids), ("documents", documents)):
+        if raw is not None:
+            fields[key] = [s.strip() for s in raw.split(",") if s.strip()]
+    try:
+        req = rq.update_draft(ctx.org_id, req_id, actor=ctx.user_id, **fields)
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _detail_out(req)
+
+
+@router.post("/requisitions/{req_id}/submit")
+async def submit_draft_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
+    """Send a draft into the approval chain.
+
+    Checks re-run first: a draft written last week may have gone stale — a
+    grant can close, a vendor can be blocked, an identical invoice can arrive
+    in between. An approver should never be shown a stale verdict.
+    """
+    try:
+        req = rq.submit_draft(ctx.org_id, req_id, actor=ctx.user_id)
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _detail_out(req)
+
+
+@router.delete("/requisitions/{req_id}/draft")
+async def discard_draft_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
+    """Delete a draft. Only ever a draft — anything submitted is part of the
+    record and gets declined, never removed."""
+    try:
+        deleted = rq.discard_draft(ctx.org_id, req_id, actor=ctx.user_id)
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="No such draft.")
+    return {"deleted": True, "id": req_id}
 
 
 @router.post("/requisitions/{req_id}/decide")

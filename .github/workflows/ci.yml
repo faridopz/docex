@@ -104,7 +104,7 @@ jobs:
                    test_extraction test_field_receipts test_transactions \
                    test_vouchers test_store_sql test_idempotency test_per_diem \
                    test_payroll test_kobo_sync test_compliance_perf \
-                   test_batch_perf test_usage test_doa; do
+                   test_batch_perf test_usage test_doa test_drafts; do
             echo "::group::$t"
             if python "$t.py"; then echo "PASS $t"; else echo "FAIL $t"; failed="$failed $t"; fi
             echo "::endgroup::"

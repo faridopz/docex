@@ -760,6 +760,99 @@ def _submit(org_id: str, req: Requisition) -> Requisition:
     return req
 
 
+_DRAFT_EDITABLE = (
+    "vendor_name", "vendor_account", "amount", "currency", "category",
+    "project_code", "grant_code", "description", "receipt_ids", "documents",
+)
+
+
+def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisition:
+    """Edit a draft and re-run its policy checks.
+
+    ONLY drafts. Once something is submitted it is a claim someone else is
+    acting on, and silently changing the amount underneath an approver is the
+    kind of thing an audit trail exists to prevent. Editing a submitted
+    requisition means returning it first, which is recorded.
+
+    Checks re-run on every edit, so the person filling the form sees the
+    consequence of a change immediately rather than discovering it at submit.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"No requisition {req_id}.")
+    if req.status != ReqStatus.DRAFT:
+        raise RequisitionError(
+            f"{req.ref} is {req.status.value}, not a draft. Return it first if it "
+            "needs changing — an approver may already have acted on these figures."
+        )
+
+    changed: list[str] = []
+    for key, value in fields.items():
+        if value is None or key not in _DRAFT_EDITABLE:
+            continue
+        if key == "amount":
+            value = _money(value)
+        if getattr(req, key) != value:
+            setattr(req, key, value)
+            changed.append(key)
+
+    if changed:
+        _audit(req, "draft_edited", actor=actor, department=req.department,
+               detail="Changed: " + ", ".join(sorted(changed)))
+        req.checks = run_policy_checks(org, req)
+        fails = len([c for c in req.checks if c.result == CheckResult.FAIL])
+        warns = len([c for c in req.checks if c.result == CheckResult.WARNING])
+        _audit(req, "checks_run", actor="system",
+               detail=f"{len(req.checks)} checks: {fails} fail, {warns} warning")
+        req.updated_at = _now_iso()
+    return _save(org, req)
+
+
+def submit_draft(org_id: str, req_id: str, *, actor: str) -> Requisition:
+    """Send a draft into the approval chain.
+
+    Re-runs the checks first. A draft written last week may have become
+    non-compliant since — a grant can close, a vendor can be blocked, an
+    identical invoice can arrive in between. Submitting on stale checks would
+    put a stale answer in front of an approver.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"No requisition {req_id}.")
+    if req.status != ReqStatus.DRAFT:
+        raise RequisitionError(f"{req.ref} has already been submitted.")
+    if not req.vendor_name.strip():
+        raise RequisitionError("A draft needs a vendor before it can be submitted.")
+    if _money(req.amount) <= 0:
+        raise RequisitionError("A draft needs an amount above zero before it can be submitted.")
+
+    req.checks = run_policy_checks(org, req)
+    fails = len([c for c in req.checks if c.result == CheckResult.FAIL])
+    warns = len([c for c in req.checks if c.result == CheckResult.WARNING])
+    _audit(req, "checks_run", actor="system",
+           detail=f"re-checked at submit — {len(req.checks)} checks: {fails} fail, {warns} warning")
+    req = _submit(org, req)
+    req.updated_at = _now_iso()
+    return _save(org, req)
+
+
+def discard_draft(org_id: str, req_id: str, *, actor: str) -> bool:
+    """Delete a draft. Only ever a draft — anything submitted is part of the
+    record and gets declined, not deleted."""
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        return False
+    if req.status != ReqStatus.DRAFT:
+        raise RequisitionError(
+            f"{req.ref} is {req.status.value} and part of the record. "
+            "Decline it instead — submitted requisitions are never deleted."
+        )
+    return store.get_store().delete(org, _REQUISITIONS, req_id)
+
+
 def decide(
     org_id: str,
     req_id: str,

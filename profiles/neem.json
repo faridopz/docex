@@ -97,6 +97,7 @@
     "tin_verification": true,
     "bank_reconciliation": false,
     "timesheets": false,
-    "advance_aging": false
+    "advance_aging": false,
+    "legacy_intake": false
   }
 }

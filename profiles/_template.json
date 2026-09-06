@@ -1,17 +1,35 @@
 {
   "_comment": "Copy to profiles/<client>.json. Every section except org_id is optional. Apply with: DOCEX_ORG=<client> python3 org_config.py apply profiles/<client>.json",
-
   "org_id": "client-slug",
   "name": "Client Display Name",
   "currency": "NGN",
-
   "departments": [
-    {"key": "program",    "name": "Programs",    "description": "Raises requests, attaches evidence", "order": 10},
-    {"key": "compliance", "name": "Compliance",  "description": "Policy + donor rule review",         "order": 20},
-    {"key": "finance",    "name": "Finance",     "description": "Verifies, approves, pays",           "order": 30},
-    {"key": "management", "name": "Management",  "description": "Final authority above threshold",   "order": 40, "is_final_authority": true}
+    {
+      "key": "program",
+      "name": "Programs",
+      "description": "Raises requests, attaches evidence",
+      "order": 10
+    },
+    {
+      "key": "compliance",
+      "name": "Compliance",
+      "description": "Policy + donor rule review",
+      "order": 20
+    },
+    {
+      "key": "finance",
+      "name": "Finance",
+      "description": "Verifies, approves, pays",
+      "order": 30
+    },
+    {
+      "key": "management",
+      "name": "Management",
+      "description": "Final authority above threshold",
+      "order": 40,
+      "is_final_authority": true
+    }
   ],
-
   "state_owners": {
     "submitted": "program",
     "intake": "program",
@@ -20,26 +38,57 @@
     "approval": "management",
     "paid": "finance"
   },
-
   "workflow": {
     "_comment": "Steps run in order; a step only engages at/above min_amount. can_override lets that step release a FAILED check, up to override_limit, with a written reason.",
     "steps": [
-      {"key": "compliance", "label": "Compliance Review",  "department": "compliance"},
-      {"key": "finance",    "label": "Finance Review",     "department": "finance",    "can_override": true, "override_limit": 250000},
-      {"key": "approval",   "label": "Executive Approval", "department": "management", "min_amount": 250000, "can_override": true, "override_limit": 5000000}
+      {
+        "key": "compliance",
+        "label": "Compliance Review",
+        "department": "compliance"
+      },
+      {
+        "key": "finance",
+        "label": "Finance Review",
+        "department": "finance",
+        "can_override": true,
+        "override_limit": 250000
+      },
+      {
+        "key": "approval",
+        "label": "Executive Approval",
+        "department": "management",
+        "min_amount": 250000,
+        "can_override": true,
+        "override_limit": 5000000
+      }
     ],
     "max_amount": 5000000,
-    "allowed_categories": ["travel", "supplies", "venue", "catering", "consultancy", "equipment", "utilities"],
-    "required_documents": ["invoice"],
+    "allowed_categories": [
+      "travel",
+      "supplies",
+      "venue",
+      "catering",
+      "consultancy",
+      "equipment",
+      "utilities"
+    ],
+    "required_documents": [
+      "invoice"
+    ],
     "forbidden_vendors": [],
     "approved_vendors": [],
     "duplicate_window_days": 30
   },
-
   "grants": [
-    {"project_code": "GRANT-2026-A", "donor": "Donor Name", "title": "Project title", "value": 50000000, "start_date": "2026-01-01", "end_date": "2026-12-31"}
+    {
+      "project_code": "GRANT-2026-A",
+      "donor": "Donor Name",
+      "title": "Project title",
+      "value": 50000000,
+      "start_date": "2026-01-01",
+      "end_date": "2026-12-31"
+    }
   ],
-
   "admin": {
     "_comment": "Created only if the email is new. Never persisted to the store. Change the password on first login.",
     "email": "admin@client.org",
@@ -47,12 +96,12 @@
     "password": "change-me-on-first-login",
     "department": "finance"
   },
-
   "features": {
     "kobo_sync": false,
     "tin_verification": false,
     "bank_reconciliation": false,
     "timesheets": false,
-    "advance_aging": false
+    "advance_aging": false,
+    "legacy_intake": false
   }
 }

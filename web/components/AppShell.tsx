@@ -90,8 +90,15 @@ const NAV_GROUPS: NavGroup[] = [
       { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] },
       { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] },
       { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"] },
-      { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"] },
-      { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"] },
+      // The pre-requisitions intake screens. "Submit requisition" here and
+      // "Requisitions" above were two different systems wearing the same word,
+      // which is confusing in a nav and worse in a demo — /requisitions is the
+      // one with policy checks, the approval chain and the audit trail.
+      //
+      // Flagged off by default so new clients see one obvious path. Existing
+      // installs that still rely on these screens turn `legacy_intake` on.
+      { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"], flag: "legacy_intake" },
+      { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"], flag: "legacy_intake" },
       { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
       // Flagged: not every client runs participant-payment events. TA Connect
