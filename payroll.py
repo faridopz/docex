@@ -126,10 +126,28 @@ class PayrollLine(BaseModel):
     net: float = 0.0
     employer_cost: float = 0.0              # gross + employer contributions
     allocations: list[SalaryAllocation] = Field(default_factory=list)
+    # WHERE THE SPLIT CAME FROM. An auditor's first question about a payroll
+    # line charged to a grant is "how do you know they worked that much on it",
+    # and "timesheet" and "budget" are very different answers:
+    #
+    #   "timesheet" — derived from approved, after-the-fact recorded hours.
+    #                 Defensible under 2 CFR 200.430(i).
+    #   "budget"    — the percentages someone typed into the staff record.
+    #                 A plan, not evidence. Allowed here so payroll still runs,
+    #                 but flagged on the line and counted on the run.
+    allocation_source: Literal["timesheet", "budget", "none"] = "budget"
+    timesheet_id: Optional[str] = None      # the evidence, if there is any
+    hours_worked: float = 0.0
     # Amount recovered from donors for this person, carried with the org's sign
     # convention (default negative = a credit offsetting the salary cost).
     refinancing: float = 0.0
+    # flags = DEFECTS. Something is wrong and must be fixed before approval.
     flags: list[str] = Field(default_factory=list)
+    # notes = DISCLOSURES. Nothing is wrong, but an auditor should be told —
+    # chiefly that a split came from a budget rather than recorded hours.
+    # Keeping these apart is what lets payroll run for an organisation that has
+    # not adopted timesheets, while still saying so on every affected line.
+    notes: list[str] = Field(default_factory=list)
 
 
 class PayrollRun(BaseModel):
@@ -148,6 +166,11 @@ class PayrollRun(BaseModel):
     beneficiaries_direct: int = 0
     beneficiaries_indirect: int = 0
     staff_count: int = 0
+    # How much of this run is backed by evidence. `lines_from_budget` is the
+    # number an auditor will ask about, so it is on the run rather than
+    # something you have to count by hand.
+    lines_from_timesheet: int = 0
+    lines_from_budget: int = 0
     flags: list[str] = Field(default_factory=list)
     # Workflow: the run is submitted as a transaction; payment only follows
     # approval. `txn_ref` is the human reference (e.g. PR12).
@@ -156,6 +179,11 @@ class PayrollRun(BaseModel):
     txn_ref: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+    @property
+    def effort_verified(self) -> bool:
+        """True when every allocated line came from approved recorded hours."""
+        return self.lines_from_budget == 0 and self.lines_from_timesheet > 0
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -249,7 +277,8 @@ def compute_deductions(gross: float, policy: PayrollPolicy) -> list[DeductionRes
 def build_run(org_id: str, period: str, *,
               beneficiaries_direct: int = 0,
               beneficiaries_indirect: int = 0,
-              staff: Optional[list[StaffRecord]] = None) -> PayrollRun:
+              staff: Optional[list[StaffRecord]] = None,
+              use_timesheets: bool = True) -> PayrollRun:
     """Build the month's payroll: gross → deductions → net, allocated to donors
     and project codes, with refinancing carried at the org's sign convention.
 
@@ -285,21 +314,72 @@ def build_run(org_id: str, period: str, *,
             flags.append("Deductions exceed gross — check the rates.")
             net = 0.0
 
+        # WHERE THE SPLIT COMES FROM — actual effort beats a budget, always.
+        #
+        # 2 CFR 200.430(i) permits charging a grant only for work actually
+        # performed. Someone budgeted at 50% who worked 30% must cost the grant
+        # 30%. So an approved timesheet for this period overrides whatever
+        # percentages sit on the staff record, and the line records which was
+        # used — because "how do you know they worked that much on it" is the
+        # first question an auditor asks about a payroll line.
+        notes: list[str] = []
+        allocations = list(s.allocations)
+        source: str = "budget" if allocations else "none"
+        timesheet_id: Optional[str] = None
+        hours_worked = 0.0
+
+        if use_timesheets:
+            try:
+                import timesheets as _ts
+                sheet = _ts.find_timesheet(org, s.id, period)
+                if sheet and sheet.status in (_ts.TimesheetStatus.APPROVED,
+                                              _ts.TimesheetStatus.PROCESSED):
+                    effort = _ts.effort_allocation(sheet)
+                    if effort:
+                        donors = {a.project_code: a.donor for a in s.allocations}
+                        allocations = [
+                            SalaryAllocation(project_code=code,
+                                             donor=donors.get(code, ""),
+                                             percent=pct)
+                            for code, pct in sorted(effort.items())
+                        ]
+                        source = "timesheet"
+                        timesheet_id = sheet.id
+                        hours_worked = sheet.total_hours
+                        unknown = [c for c in effort if c not in donors]
+                        if unknown:
+                            notes.append(
+                                "Hours booked to project code(s) with no donor on the "
+                                f"staff record: {', '.join(sorted(unknown))}. The split "
+                                "is correct; the donor roll-up will be incomplete.")
+                elif sheet:
+                    notes.append(
+                        f"Timesheet for {period} is {sheet.status.value}, not approved — "
+                        "falling back to the budgeted allocation.")
+                else:
+                    notes.append(
+                        f"No timesheet for {period}. This split is BUDGETED, not "
+                        "evidenced — a donor may disallow it.")
+            except ImportError:
+                pass
+
         # Allocation integrity: must total 100%.
-        pct_total = _money(sum(a.percent for a in s.allocations))
-        allocations_valid = bool(s.allocations) and abs(pct_total - 100.0) <= _TOLERANCE
-        if not s.allocations:
+        pct_total = _money(sum(a.percent for a in allocations))
+        allocations_valid = bool(allocations) and abs(pct_total - 100.0) <= _TOLERANCE
+        if not allocations:
             flags.append("No donor/project allocation — salary is unfunded and uncoded.")
         elif not allocations_valid:
             flags.append(
                 f"Allocation totals {pct_total}% (must be 100%) — excluded from "
                 "donor and project roll-ups until corrected."
             )
+        if not allocations_valid:
+            source = "none"
 
         # Employer cost is what the donor actually funds.
         employer_cost = _money(gross + employer_total)
         if allocations_valid:
-            for a in s.allocations:
+            for a in allocations:
                 share = _money(employer_cost * (a.percent / 100.0))
                 by_project[a.project_code] = _money(by_project.get(a.project_code, 0.0) + share)
                 if a.donor:
@@ -316,7 +396,10 @@ def build_run(org_id: str, period: str, *,
             total_employee_deductions=employee_total,
             total_employer_contributions=employer_total,
             net=net, employer_cost=employer_cost,
-            allocations=s.allocations, refinancing=refinancing, flags=flags,
+            allocations=allocations, refinancing=refinancing,
+            flags=flags, notes=notes,
+            allocation_source=source, timesheet_id=timesheet_id,
+            hours_worked=hours_worked,
         ))
 
     run = PayrollRun(
@@ -331,9 +414,23 @@ def build_run(org_id: str, period: str, *,
         beneficiaries_direct=beneficiaries_direct,
         beneficiaries_indirect=beneficiaries_indirect,
         staff_count=len(lines),
+        lines_from_timesheet=sum(1 for l in lines if l.allocation_source == "timesheet"),
+        lines_from_budget=sum(1 for l in lines if l.allocation_source == "budget"),
         flags=run_flags,
         created_at=_now_iso(),
     )
+
+    # Say it once, loudly, on the run. Finding out at audit that half a
+    # payroll was charged on budgeted percentages is a bad way to find out.
+    if run.lines_from_budget:
+        run.flags.append(
+            f"{run.lines_from_budget} of {run.staff_count} salaries were allocated from "
+            "BUDGETED percentages, not recorded hours. Donors may disallow the "
+            "difference between budgeted and actual effort — collect the timesheets "
+            "before this run is approved.")
+    elif run.lines_from_timesheet:
+        run.flags.append(
+            f"All {run.lines_from_timesheet} allocations derive from approved timesheets.")
     _save(run)
     return run
 
@@ -377,11 +474,17 @@ def submit_for_approval(org_id: str, run_id: str, *,
     if run.txn_id:
         return run                                  # already submitted
 
+    # `flags` are defects and block; `notes` are disclosures and do not. A line
+    # allocated from a budget rather than recorded hours is disclosed on the
+    # line and counted on the run — but blocking on it would mean no
+    # organisation could run payroll until it had adopted timesheets.
     blocking = [l for l in run.lines if l.flags]
     if blocking:
+        detail = "; ".join(
+            f"{l.name}: {l.flags[0]}" for l in blocking[:3])
         raise ValueError(
-            f"{len(blocking)} payroll line(s) have unresolved issues "
-            "(allocation or deduction). Fix them before submitting for approval."
+            f"{len(blocking)} payroll line(s) have unresolved issues. {detail}"
+            + ("…" if len(blocking) > 3 else "")
         )
 
     txn = tx.create(
