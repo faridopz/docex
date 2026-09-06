@@ -141,7 +141,8 @@
     "multi_office": false,
     "kobo_sync": false,
     "tin_verification": false,
-    "legacy_intake": false
+    "legacy_intake": false,
+    "timesheets": true
   },
   "_open_questions": [
     "DISCREPANCY IN THEIR OWN DOCUMENT: the Procurement Policy reads '300,000 Naira (two hundred thousand Naira)' \u2014 the figure and the words disagree. Every other mention says N300,000, so we configured 300,000, but EVA must confirm and correct their policy text.",

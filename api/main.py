@@ -76,6 +76,15 @@ for _dirname in ("rulebooks", "checks", "verifications",
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Error reporting, before anything else can fail. No-op without SENTRY_DSN, so
+# a developer without an account sees no change; with one, every unhandled
+# exception is reported with credentials scrubbed and PII off.
+try:
+    import observability
+    observability.init_sentry()
+except Exception as _obs_err:   # never let monitoring setup break the boot
+    print(f"[DOCex] Notice: error reporting not started: {_obs_err}", flush=True)
+
 # ─── Storage initialization ──────────────────────────────────────────────────
 # Wire up durable SQL storage if DOCEX_DB is set; otherwise use JSON files.
 # This must happen before any routes are imported, so all engines see the
