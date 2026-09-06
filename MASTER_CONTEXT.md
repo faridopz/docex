@@ -588,6 +588,12 @@ while they pay. Payroll stays blocked on the refinancing sign convention.
 
 **Deployment shape:** `DEPLOYMENT_TOPOLOGY.md` (separate URL, server and database per client; one codebase)
 
+**⚠️ Read before any workflow work:** `ARCHITECTURE_REVIEW.md` — there are TWO
+parallel money-flow systems (`transactions.py` and `requisitions.py`) that never
+meet. Vouchers and payroll go through the one WITHOUT policy checks or the hash
+chain, so the audit guarantee is currently only true for requisitions. The
+review has the diagnosis and the migration path.
+
 **How work gets done:** `DELIVERY_PLAYBOOK.md` (the factory model + the
 Config/Core/Custom triage gate) · `PRODUCTION_READINESS.md` (the go-live gap list)
 
