@@ -27,8 +27,20 @@ from __future__ import annotations
 import argparse
 import getpass
 import io
+import os
 import sys
 from datetime import datetime, timedelta, timezone
+
+# Select the SAME storage backend api/main.py will use. Without this the seeder
+# writes into the default JSON store while the running API reads SQLite, so the
+# demo login it just created does not exist as far as the API is concerned —
+# and the failure surfaces as a 401 at the login screen, which looks like a
+# password problem rather than a storage one.
+_DB = os.environ.get("DOCEX_DB", "").strip()
+if _DB:
+    import store as _store
+    import store_sql as _store_sql
+    _store.set_store(_store_sql.SqliteStore(_DB))
 
 ORG = "default"          # matches DOCEX_ORG default, so the UI sees this data
 DEMO_EMAIL = "demo@neem.org"
@@ -256,7 +268,18 @@ def ensure_login(password: str | None) -> None:
 
     existing = auth.get_by_email(DEMO_EMAIL)
     if not password:
-        password = getpass.getpass(f"Password for {DEMO_EMAIL} (min 6 chars): ")
+        # Only prompt when there is a real terminal to prompt on. Run from a
+        # script, a CI job, or anywhere stdin isn't a TTY, getpass() blocks
+        # forever with no visible prompt — which looks exactly like the seeder
+        # hanging, and cost an evening before anyone noticed it was waiting
+        # for input rather than generating data.
+        if sys.stdin is not None and sys.stdin.isatty():
+            password = getpass.getpass(f"Password for {DEMO_EMAIL} (min 6 chars): ")
+        else:
+            print("error: no terminal available to prompt for a password.\n"
+                  "       Pass one explicitly:  python3 demo_seed.py --password '<something>'",
+                  file=sys.stderr)
+            raise SystemExit(1)
     if len(password) < 6:
         print("error: password must be at least 6 characters.", file=sys.stderr)
         raise SystemExit(1)
