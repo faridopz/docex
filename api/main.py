@@ -145,6 +145,7 @@ from .timesheet_routes import router as timesheet_router  # noqa: E402
 from .payroll_routes import router as payroll_router  # noqa: E402
 from .reconciliation_routes import router as reconciliation_router  # noqa: E402
 from .vendor_routes import router as vendor_router  # noqa: E402
+from .accounting_routes import router as accounting_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -395,6 +396,14 @@ app.include_router(reconciliation_router)
 # invoice from a real supplier with the account number altered passes every
 # other check in the system. Gated on `vendor_register`. See api/vendor_routes.py.
 app.include_router(vendor_router)
+
+# QuickBooks handoff. DOCex sits in FRONT of the accounting system: it owns
+# approval and evidence, QuickBooks owns the book of record. This exports the
+# coded payment register (so nobody re-types it) and cleans a Nigerian bank
+# statement into a file QuickBooks will actually accept — Nigerian banks cannot
+# be connected to QuickBooks bank feeds, so that reformatting is done by hand
+# today. Gated on `accounting_export`. See api/accounting_routes.py.
+app.include_router(accounting_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

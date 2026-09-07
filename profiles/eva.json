@@ -136,7 +136,7 @@
     "grants_cashflow": false,
     "procurement_bands": false,
     "cash_receipts": false,
-    "accounting_export": false,
+    "accounting_export": true,
     "subrecipient_review": false,
     "multi_office": false,
     "kobo_sync": false,
