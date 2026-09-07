@@ -299,8 +299,10 @@ def ensure_login(password: str | None) -> None:
                   "       Pass one explicitly:  python3 demo_seed.py --password '<something>'",
                   file=sys.stderr)
             raise SystemExit(1)
-    if len(password) < 6:
-        print("error: password must be at least 6 characters.", file=sys.stderr)
+    try:
+        auth.check_password_strength(password)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1)
 
     if existing:

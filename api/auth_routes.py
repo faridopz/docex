@@ -126,9 +126,28 @@ def register(body: RegisterRequest, authorization: Optional[str] = Header(defaul
 def login(body: LoginRequest) -> LoginResponse:
     try:
         user = auth_mod.authenticate(body.email, body.password)
+    except auth_mod.RateLimited as exc:
+        # 429, not 401. The caller needs to know that waiting helps and more
+        # guessing does not — and a monitoring system needs to tell a locked
+        # account apart from a wrong password.
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except auth_mod.AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return LoginResponse(token=auth_mod.issue_token(user), user=auth_mod.public(user))
+
+
+@router.post("/auth/logout")
+def logout(user: User = Depends(current_user)) -> dict:
+    """End every session this account holds.
+
+    Clearing the token in the browser is not a logout: a signed token that was
+    captured still works until it expires. This records a cutoff so every token
+    issued before now is refused — which also covers "I think someone has my
+    password" without waiting for an administrator.
+    """
+    auth_mod.logout(user)
+    return {"ok": True,
+            "detail": "Signed out on every device."}
 
 
 @router.get("/auth/me", response_model=UserPublic)

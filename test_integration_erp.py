@@ -42,26 +42,26 @@ def check(name, cond):
 
 # 1. Bootstrap admin (first user) + a finance user.
 r = client.post("/auth/register", json={
-    "email": "admin@taconnect-ng.org", "name": "Admin", "password": "adminpass",
+    "email": "admin@taconnect-ng.org", "name": "Admin", "password": "admin-passphrase",
     "department": "management", "role": "viewer"})
 check("first register ok", r.status_code == 200)
 check("first user forced to admin", r.json()["role"] == "admin")
 
 admin_tok = client.post("/auth/login", json={
-    "email": "admin@taconnect-ng.org", "password": "adminpass"}).json()["token"]
+    "email": "admin@taconnect-ng.org", "password": "admin-passphrase"}).json()["token"]
 ah = {"Authorization": f"Bearer {admin_tok}"}
 
 r = client.post("/auth/register", headers=ah, json={
-    "email": "bola@taconnect-ng.org", "name": "Bola", "password": "financepass",
+    "email": "bola@taconnect-ng.org", "name": "Bola", "password": "finance-passphrase",
     "department": "finance", "role": "approver"})
 check("admin can add finance user", r.status_code == 200)
 
 # Non-admin cannot add users.
 fin_tok = client.post("/auth/login", json={
-    "email": "bola@taconnect-ng.org", "password": "financepass"}).json()["token"]
+    "email": "bola@taconnect-ng.org", "password": "finance-passphrase"}).json()["token"]
 fh = {"Authorization": f"Bearer {fin_tok}"}
 r = client.post("/auth/register", headers=fh, json={
-    "email": "x@y.org", "name": "X", "password": "password", "department": "finance"})
+    "email": "x@y.org", "name": "X", "password": "unlikely-passphrase", "department": "finance"})
 check("non-admin blocked from adding users (403)", r.status_code == 403)
 
 # Unauthenticated dashboard is rejected.

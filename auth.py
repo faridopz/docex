@@ -96,9 +96,49 @@ def _unb64(data: str) -> bytes:
 # ─── password hashing ───────────────────────────────────────────────────────
 
 
+_PASSWORD_MIN = 10
+
+# Passwords that a six-character minimum happily accepts and an attacker tries
+# in the first second. Not a substitute for a breach corpus — it is the short
+# list of what people actually type when a form says "at least 6 characters".
+_WEAK_PASSWORDS = frozenset({
+    "password", "password1", "password123", "passw0rd", "letmein", "welcome",
+    "welcome1", "qwerty", "qwerty123", "123456", "1234567", "12345678",
+    "123456789", "1234567890", "abc123", "admin", "admin123", "changeme",
+    "iloveyou", "monkey", "dragon", "football", "sunshine", "princess",
+    "docex", "docex123", "finance", "finance123", "nigeria", "nigeria123",
+})
+
+
+def check_password_strength(password: str) -> None:
+    """Raise ValueError with a fixable message, or return silently.
+
+    A finance system holding payment authority is the wrong place for a
+    six-character minimum: an attacker who guesses one approver's password can
+    release money. Ten characters with some variety, and a refusal of the
+    handful of passwords everyone actually picks, costs a user nothing and
+    removes the cheapest attack.
+
+    Deliberately NOT a complexity maze (one upper, one symbol, one digit,
+    no repeats) — those push people towards Password1! and a sticky note. Length
+    plus a blocklist is the better trade.
+    """
+    if not password or len(password) < _PASSWORD_MIN:
+        raise ValueError(
+            f"Password must be at least {_PASSWORD_MIN} characters. A short "
+            "phrase you can remember is stronger than a short jumble.")
+    lowered = password.strip().lower()
+    if lowered in _WEAK_PASSWORDS:
+        raise ValueError(
+            "That password is one of the first an attacker tries. Choose "
+            "something else.")
+    if len(set(lowered)) < 5:
+        raise ValueError(
+            "That password repeats too few different characters to be safe.")
+
+
 def hash_password(password: str, salt: Optional[bytes] = None) -> tuple[str, str]:
-    if not password or len(password) < 6:
-        raise ValueError("Password must be at least 6 characters.")
+    check_password_strength(password)
     salt = salt or os.urandom(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERS)
     return digest.hex(), salt.hex()
@@ -207,6 +247,11 @@ class AuthError(ValueError):
     """Bad credentials / duplicate email / invalid token — mapped to HTTP 4xx."""
 
 
+class RateLimited(AuthError):
+    """Too many failed attempts. Routes map this to HTTP 429, not 401 — the
+    caller needs to know that waiting will help and more guessing will not."""
+
+
 def create_user(
     email: str,
     name: str,
@@ -244,16 +289,83 @@ def create_user(
 
 
 def authenticate(email: str, password: str, org_id: Optional[str] = None) -> User:
-    user = get_by_email(email, org_id)
-    # Run a dummy verify even when the user is missing, to keep timing uniform.
+    """Verify credentials, with brute-force protection.
+
+    Without the throttle below, an attacker could try passwords as fast as the
+    server answers — and PBKDF2 at 200k iterations only slows that to a few
+    guesses a second, which is thousands an hour against an approver who can
+    release payments.
+    """
+    org = _org(org_id)
+    _guard_login_rate(email, org)
+
+    user = get_by_email(email, org)
+    # Run a dummy verify even when the user is missing, to keep timing uniform —
+    # otherwise response time reveals which email addresses exist.
     if user is None:
-        hash_password("timing-equalizer-000")
+        hashlib.pbkdf2_hmac("sha256", b"timing-equalizer", os.urandom(16),
+                            _PBKDF2_ITERS)
+        _record_failed_login(email, org)
         raise AuthError("Invalid email or password.")
     if not user.active:
         raise AuthError("This account is disabled.")
     if not verify_password(password, user.password_hash, user.password_salt):
+        _record_failed_login(email, org)
         raise AuthError("Invalid email or password.")
+
+    _clear_failed_logins(email, org)
     return user
+
+
+# ─── brute-force protection ─────────────────────────────────────────────────
+#
+# Counted per (email, org) rather than per IP: an NGO office sits behind one
+# NAT address, so per-IP limiting would lock out the whole finance team the
+# moment one person fat-fingers their password. Attempts are stored, not held
+# in memory, so a restart cannot be used to reset the counter.
+
+_MAX_FAILED_LOGINS = 8
+_LOCKOUT_SECONDS = 15 * 60
+_ATTEMPTS = "login_attempts"
+
+
+def _attempt_key(email: str) -> str:
+    """A storage-safe key. The address itself is not stored as the id — an
+    email is personal data and a record id ends up in file names and logs."""
+    return hashlib.sha256((email or "").strip().lower().encode()).hexdigest()[:32]
+
+
+def _guard_login_rate(email: str, org_id: str) -> None:
+    raw = store.get_store().get(org_id, _ATTEMPTS, _attempt_key(email)) or {}
+    count = int(raw.get("count", 0))
+    if count < _MAX_FAILED_LOGINS:
+        return
+    last = float(raw.get("last", 0))
+    elapsed = dt.datetime.now(dt.timezone.utc).timestamp() - last
+    if elapsed < _LOCKOUT_SECONDS:
+        wait = int((_LOCKOUT_SECONDS - elapsed) / 60) + 1
+        raise RateLimited(
+            f"Too many failed sign-in attempts. Try again in {wait} minute"
+            f"{'s' if wait != 1 else ''}, or ask an administrator to reset "
+            "your password.")
+    # Window elapsed — start the count again rather than leaving it locked.
+    _clear_failed_logins(email, org_id)
+
+
+def _record_failed_login(email: str, org_id: str) -> None:
+    key = _attempt_key(email)
+    raw = store.get_store().get(org_id, _ATTEMPTS, key) or {}
+    store.get_store().put(org_id, _ATTEMPTS, key, {
+        "count": int(raw.get("count", 0)) + 1,
+        "last": dt.datetime.now(dt.timezone.utc).timestamp(),
+    })
+
+
+def _clear_failed_logins(email: str, org_id: str) -> None:
+    try:
+        store.get_store().delete(org_id, _ATTEMPTS, _attempt_key(email))
+    except Exception:
+        pass
 
 
 # ─── session tokens ─────────────────────────────────────────────────────────
@@ -262,10 +374,21 @@ def authenticate(email: str, password: str, org_id: Optional[str] = None) -> Use
 def issue_token(user: User, ttl: int = _TOKEN_TTL, org_id: Optional[str] = None) -> str:
     # "org" rides in the token so a future multi-org deployment can resolve
     # the tenant from the session alone, without changing the token format.
+    now = dt.datetime.now(dt.timezone.utc).timestamp()
     payload = {
         "uid": user.id,
         "org": _org(org_id),
-        "exp": int(dt.datetime.now(dt.timezone.utc).timestamp()) + ttl,
+        # Issued-at is what makes logout real. Tokens are stateless HMAC, so
+        # nothing can "delete" one — but a token minted BEFORE the user's
+        # sessions_valid_from can be refused, which revokes every session at
+        # once. See logout().
+        #
+        # Sub-second precision, deliberately. With whole seconds, a token
+        # issued in the SAME second as a logout compared equal and survived —
+        # so signing out and being handed back a still-valid token was a real
+        # possibility, and the window was a whole second wide.
+        "iat": round(now, 6),
+        "exp": int(now) + ttl,
     }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64(hmac.new(_secret(), body.encode(), hashlib.sha256).digest())
@@ -292,7 +415,43 @@ def verify_token(token: str) -> User:
     user = get_by_id(payload.get("uid", ""), payload.get("org") or None)
     if user is None or not user.active:
         raise AuthError("Account not found or disabled.")
+
+    # Was this token minted before the user last logged out (or changed their
+    # password)? Tokens issued before that moment are dead, which is what makes
+    # "sign out" mean something on a stateless token.
+    cutoff = _sessions_valid_from(user, payload.get("org") or None)
+    if cutoff and float(payload.get("iat", 0)) < cutoff:
+        raise AuthError("Session ended — please sign in again.")
     return user
+
+
+# ─── logout / session revocation ────────────────────────────────────────────
+#
+# A stateless signed token cannot be deleted, so clearing it in the browser is
+# not a logout — anyone who captured it still holds a working credential until
+# it expires. Recording a per-user cutoff turns "sign out" into a real
+# revocation, and does the same job when a password is changed or an account is
+# suspected compromised.
+
+_SESSION_CUTOFF = "session_cutoffs"
+
+
+def _sessions_valid_from(user: User, org_id: Optional[str] = None) -> float:
+    raw = store.get_store().get(_org(org_id), _SESSION_CUTOFF, user.id) or {}
+    return float(raw.get("valid_from", 0))
+
+
+def logout(user: User, org_id: Optional[str] = None) -> None:
+    """End every session this user currently holds.
+
+    Not just the token in front of us: if a session was captured, the person
+    logging out cannot know which token to kill, so we kill them all. The cost
+    is being signed out on your other device, which is the right trade.
+    """
+    store.get_store().put(_org(org_id), _SESSION_CUTOFF, user.id, {
+        "valid_from": round(dt.datetime.now(dt.timezone.utc).timestamp(), 6),
+        "at": _now_iso(),
+    })
 
 
 def token_org(token: str) -> Optional[str]:

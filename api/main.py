@@ -246,6 +246,9 @@ class _RequestIDMiddleware:
                 rid = v.decode("latin-1")
                 break
         rid = rid or uuid.uuid4().hex[:12]
+        # Stash it where the exception handler can find it, so a 500 can quote
+        # the same id that appears in the access log.
+        scope.setdefault("state", {})["request_id"] = rid
         start = time.perf_counter()
         status = {"code": 0}
 
@@ -274,6 +277,37 @@ class _RequestIDMiddleware:
 
 
 app.add_middleware(_RequestIDMiddleware)
+
+# ─── Safe error responses ───────────────────────────────────────────────────
+#
+# An unhandled exception must never hand the caller our internals. Starlette's
+# default 500 body is short, but a stray `detail=str(exc)` in a route can leak
+# a filesystem path, a table name, a connection string or an API key that
+# happened to be in the message — and a client's browser console is the last
+# place any of those should appear.
+#
+# So: the client gets a fixed sentence and a request id. The full traceback
+# goes to the server log and to Sentry (already scrubbed by observability.py).
+# When a client reports a problem they quote the id, and we find the exact
+# request without them having to describe it.
+
+
+@app.exception_handler(Exception)
+async def _safe_error(request, exc):  # noqa: ANN001
+    from fastapi.responses import JSONResponse
+
+    rid = getattr(request.state, "request_id", "") or "unknown"
+    _access_log.exception("rid=%s unhandled error on %s %s",
+                          rid, request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": ("Something went wrong on our side. Nothing was saved. "
+                       f"Quote reference {rid} if you contact support."),
+            "request_id": rid,
+        },
+    )
+
 
 # Authentication floor — DEFAULT DENY.
 #

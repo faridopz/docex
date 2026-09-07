@@ -73,23 +73,23 @@ check("unused department deletes cleanly", "team-lead-finance-admin" not in dept
 
 # ── users can't be created in a department that doesn't exist ──
 expect_err("unknown department rejected on user create",
-           lambda: auth_mod.create_user("x@y.org", "X", "password", "not-a-dept"),
+           lambda: auth_mod.create_user("x@y.org", "X", "valid-passphrase", "not-a-dept"),
            exc=auth_mod.AuthError)
 
 # ── in-app approval permissions ──
 admin = client.post("/auth/register", json={
-    "email": "admin@eva.org", "name": "Admin", "password": "adminpass",
+    "email": "admin@eva.org", "name": "Admin", "password": "admin-passphrase",
     "department": "finance"}).json()
-ah = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'admin@eva.org', 'password': 'adminpass'}).json()['token']}"}
+ah = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'admin@eva.org', 'password': 'admin-passphrase'}).json()['token']}"}
 
 client.post("/auth/register", headers=ah, json={
-    "email": "viewer@eva.org", "name": "Viewer", "password": "viewpass",
+    "email": "viewer@eva.org", "name": "Viewer", "password": "viewer-passphrase",
     "department": "finance", "role": "viewer"})
 client.post("/auth/register", headers=ah, json={
-    "email": "rev@eva.org", "name": "Rev", "password": "revpass",
+    "email": "rev@eva.org", "name": "Rev", "password": "reviewer-passphrase",
     "department": "compliance", "role": "reviewer"})
-vh = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'viewer@eva.org', 'password': 'viewpass'}).json()['token']}"}
-rh = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'rev@eva.org', 'password': 'revpass'}).json()['token']}"}
+vh = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'viewer@eva.org', 'password': 'viewer-passphrase'}).json()['token']}"}
+rh = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'rev@eva.org', 'password': 'reviewer-passphrase'}).json()['token']}"}
 
 txn = tx.create("voucher", "Test voucher", amount=1000)
 ref = txn.ref

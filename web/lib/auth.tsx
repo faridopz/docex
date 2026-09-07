@@ -35,7 +35,7 @@ type AuthState = {
   ready: boolean;
   user: AuthUser | null;
   signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
-  signOut: () => void;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -76,7 +76,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  function signOut() {
+  async function signOut() {
+    // Tell the server FIRST. Clearing localStorage only hides the token from
+    // this browser — a token that was captured keeps working until it expires.
+    // /auth/logout records a cutoff that kills every session this account
+    // holds, so signing out actually means something.
+    //
+    // The local clear happens either way: if the network call fails, the user
+    // still expects to be signed out here, and a session they cannot reach is
+    // better than a confusing half-state.
+    try {
+      await apiFetch("/auth/logout", { method: "POST" });
+    } catch {
+      /* offline, or already expired — clearing locally is still correct */
+    }
     clearSession();
     setUser(null);
   }

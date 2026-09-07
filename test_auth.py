@@ -39,17 +39,19 @@ h, s = auth_mod.hash_password("correct horse")
 check("verify correct password", auth_mod.verify_password("correct horse", h, s), True)
 check("reject wrong password", auth_mod.verify_password("wrong", h, s), False)
 check("salt makes hashes unique", auth_mod.hash_password("same-password")[0] != auth_mod.hash_password("same-password")[0], True)
-expect("weak password rejected", lambda: auth_mod.hash_password("123"), exc=ValueError)
+expect("short password rejected", lambda: auth_mod.hash_password("123"), exc=ValueError)
+expect("common password rejected", lambda: auth_mod.hash_password("password123"), exc=ValueError)
+expect("low-variety password rejected", lambda: auth_mod.hash_password("aaaaaaaaaaaa"), exc=ValueError)
 
 # ── user creation + uniqueness ──
-u = auth_mod.create_user("bola@taconnect-ng.org", "Bola", "s3cret!", "finance", "approver")
+u = auth_mod.create_user("bola@taconnect-ng.org", "Bola", "s3cret-passphrase", "finance", "approver")
 check("user department", u.department, "finance")
 check("public view hides hash", "password_hash" in auth_mod.public(u).model_dump(), False)
 expect("duplicate email rejected",
-       lambda: auth_mod.create_user("BOLA@taconnect-ng.org", "Dup", "s3cret!", "finance"))
+       lambda: auth_mod.create_user("BOLA@taconnect-ng.org", "Dup", "s3cret-passphrase", "finance"))
 
 # ── authenticate ──
-check("authenticate ok", auth_mod.authenticate("bola@taconnect-ng.org", "s3cret!").id, u.id)
+check("authenticate ok", auth_mod.authenticate("bola@taconnect-ng.org", "s3cret-passphrase").id, u.id)
 expect("authenticate wrong pw", lambda: auth_mod.authenticate("bola@taconnect-ng.org", "nope"))
 expect("authenticate unknown user", lambda: auth_mod.authenticate("ghost@x.org", "whatever"))
 
