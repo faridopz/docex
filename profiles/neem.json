@@ -99,7 +99,8 @@
     "timesheets": true,
     "advance_aging": false,
     "legacy_intake": false,
-    "payroll": false
+    "payroll": false,
+    "vendor_register": true
   },
   "_confirm_before_go_live": [
     "BANK STATEMENT FORMAT — reconciliation is switched ON, but the importer's column auto-detection has NOT been tested against a real NEEM statement. Ask for one month's export, run POST /reconciliation/preview, confirm the sample rows read correctly, then pin the mapping with PUT /reconciliation/columns. A wrong mapping produces a clean-looking reconciliation over the wrong pairing.",

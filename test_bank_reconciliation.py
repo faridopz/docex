@@ -53,12 +53,17 @@ def raises(label: str, fn, *, contains: str = "") -> None:
 
 
 class FakeTxn:
-    """Stands in for requisitions.TransactionRecord — same fields we read."""
+    """Stands in for a disbursement — the same fields the matcher reads.
+
+    Deliberately not tied to requisitions: the matcher works on the shared
+    payment ledger, so a payroll line and an invoice payment are the same shape
+    to it.
+    """
 
     def __init__(self, tid, ref, vendor, amount, paid_day, bank_reference=""):
         self.id = tid
-        self.requisition_ref = ref
-        self.vendor_name = vendor
+        self.source_ref = ref
+        self.payee_name = vendor
         self.amount = amount
         self.paid_at = f"2026-08-{paid_day:02d}T10:00:00+00:00"
         self.bank_reference = bank_reference
@@ -365,12 +370,14 @@ def test_manual_match_requires_a_reason() -> None:
            contains="written reason")
 
     class Stub:
-        id, requisition_ref, vendor_name = "T1", "REQ-0001", "Acme Ltd"
+        id, source_ref, payee_name = "T1", "REQ-0001", "Acme Ltd"
         amount, paid_at, bank_reference = 100000.0, "2026-08-04T10:00:00+00:00", ""
 
-    import requisitions as _req
-    original = _req.get_transaction
-    _req.get_transaction = lambda org, tid: Stub() if tid == "T1" else None
+    # A manual match resolves the payment through the shared ledger, so that is
+    # what gets stubbed — not one payment path.
+    import disbursements as _disb
+    original = _disb.get
+    _disb.get = lambda org, tid: Stub() if tid == "T1" else None
     try:
         run = br.manual_match(ORG, run.id, transaction_id="T1",
                               bank_line_id=line_id, actor="a@org",
@@ -387,7 +394,7 @@ def test_manual_match_requires_a_reason() -> None:
                                        reason="also this one"),
                contains="already matched")
     finally:
-        _req.get_transaction = original
+        _disb.get = original
 
 
 def test_closing_is_blocked_over_unexplained_money() -> None:

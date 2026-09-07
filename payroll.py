@@ -536,10 +536,28 @@ def submit_for_approval(org_id: str, run_id: str, *,
     return _save(run)
 
 
-def mark_paid(org_id: str, run_id: str) -> PayrollRun:
+def mark_paid(org_id: str, run_id: str, *, paid_by: str = "",
+              bulk_reference: str = "",
+              references: Optional[dict[str, str]] = None) -> PayrollRun:
     """Record that an APPROVED run has been paid. Refuses unless the linked
     transaction actually reached 'paid' — the approval gate is the state
-    machine, not this function's caller."""
+    machine, not this function's caller.
+
+    Also writes the run into the shared payment ledger, which is what makes it
+    reconcilable. Before this existed, a payroll run that had been properly
+    raised, reviewed and approved still appeared on the bank statement as
+    "money left the account with no approved request" — because reconciliation
+    could only see requisitions.
+
+    How the money actually left decides the shape of the record:
+
+      * `bulk_reference` — the whole run went as ONE transfer (a bulk upload to
+        the bank). One ledger line for the total.
+      * otherwise — one line per staff member, sharing a batch. `references`
+        maps staff_id → the individual transfer reference, if finance has them;
+        without one a line still matches on amount, date and name, just less
+        certainly.
+    """
     import transactions as tx
 
     run = get_run(org_id, run_id)
@@ -554,4 +572,32 @@ def mark_paid(org_id: str, run_id: str) -> PayrollRun:
             "Payment can only follow approval."
         )
     run.status = "paid"
-    return _save(run)
+    _save(run)
+
+    # Ledger write is best-effort and never blocks the payment record: the run
+    # IS paid, and refusing to record that because a downstream ledger complained
+    # would be the wrong trade. A missing ledger line surfaces at reconciliation
+    # as an unmatched bank debit, which is visible; a lost payment status is not.
+    try:
+        import disbursements as _disb
+        refs = references or {}
+        _disb.record_batch(
+            org_id,
+            source_kind=_disb.SourceKind.PAYROLL,
+            source_id=run.id,
+            source_ref=run.txn_ref or run.id,
+            paid_by=paid_by,
+            currency=run.currency,
+            bulk_reference=bulk_reference,
+            bulk_payee=f"Payroll {run.period}",
+            lines=[{"payee_name": l.name or l.staff_id,
+                    "amount": l.net,
+                    "bank_reference": refs.get(l.staff_id, ""),
+                    "memo": f"Net salary {run.period}"}
+                   for l in run.lines if l.net > 0],
+        )
+    except Exception as exc:                                  # pragma: no cover
+        print(f"Warning: payroll {run.period} paid but not written to the "
+              f"payment ledger ({exc}). It will show as an unmatched bank "
+              "debit at reconciliation.")
+    return run

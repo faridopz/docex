@@ -209,13 +209,21 @@ async def submit_run(run_id: str, ctx: Ctx = Depends(request_context)):
 
 
 @router.post("/runs/{run_id}/paid")
-async def mark_paid(run_id: str, ctx: Ctx = Depends(request_context)):
+async def mark_paid(run_id: str, bulk_reference: str = Form(""),
+                    ctx: Ctx = Depends(request_context)):
     """Record payment. Refused unless the linked transaction actually reached
-    'paid' — the gate is the state machine, not this endpoint."""
+    'paid' — the gate is the state machine, not this endpoint.
+
+    `bulk_reference` says the whole run left as one transfer, and becomes the
+    reference reconciliation matches the lump sum on. Leave it empty when each
+    person was paid separately; the ledger then records one line per staff
+    member so twelve salary debits on the statement match twelve payments.
+    """
     _gate(ctx)
     require_role(ctx, "admin", "approver")
     try:
-        run = payroll.mark_paid(ctx.org_id, run_id)
+        run = payroll.mark_paid(ctx.org_id, run_id, paid_by=ctx.user_id,
+                                bulk_reference=bulk_reference)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return _run_detail(run)

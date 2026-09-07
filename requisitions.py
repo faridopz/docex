@@ -434,6 +434,11 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
                 message="Vendor is acceptable under policy.",
             ))
 
+        # 5b. Vendor register: is this payee verified?
+        vendor_check = _check_vendor_register(org_id, req)
+        if vendor_check is not None:
+            checks.append(vendor_check)
+
     # 6. Category allowed
     if wf.allowed_categories:
         ok = req.category.strip().lower() in {c.lower() for c in wf.allowed_categories}
@@ -494,6 +499,106 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
         checks.append(period)
 
     return checks
+
+
+def _check_vendor_register(org_id: str, req: Requisition) -> Optional[PolicyCheck]:
+    """Is the payee a known, checked vendor?
+
+    Gated on the `vendor_register` feature flag, and silent when the register
+    is empty — an organisation that has not adopted it should not have every
+    requisition suddenly carrying a warning about a screen they have never
+    opened.
+
+    The severity ladder is deliberate:
+
+      * bank account says a DIFFERENT name  → FAIL. This is what diverted-
+        payment fraud looks like from the inside: a genuine invoice from a
+        genuine supplier, with the account number changed. Every other field on
+        the requisition is correct, so nothing else in the chain would catch it.
+      * vendor blocked                      → FAIL.
+      * account never checked, or unknown payee → WARNING. Informative, not
+        blocking: plenty of legitimate one-off payees never enter a register.
+      * TIN structurally invalid            → WARNING, and the message says
+        exactly what a format check does and does not prove.
+    """
+    try:
+        import org_config
+        if not org_config.feature_enabled(org_id, "vendor_register"):
+            return None
+        import vendors as _v
+    except ImportError:                                       # pragma: no cover
+        return None
+
+    try:
+        register = _v.list_vendors(org_id)
+    except Exception:                                         # pragma: no cover
+        return None
+    if not register:
+        return None
+
+    vendor = _v.find_by_name(org_id, req.vendor_name)
+    if vendor is None:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.WARNING, actual_value=req.vendor_name,
+            message=(f"'{req.vendor_name}' is not in the vendor register, so "
+                     "their bank account has not been verified. Add them, or "
+                     "confirm the account details by hand before paying."),
+        )
+
+    if vendor.blocked:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.FAIL, actual_value=vendor.name,
+            message=f"{vendor.name} is blocked: {vendor.blocked_reason}",
+        )
+
+    bank = vendor.bank
+    if bank.status == _v.VerificationStatus.MISMATCH:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.FAIL, actual_value=vendor.name,
+            policy_value=bank.resolved_name,
+            message=(f"The bank holds account {bank.account_number} in the name "
+                     f"'{bank.resolved_name}', not '{vendor.name}'. Do not pay "
+                     "until this is explained."),
+        )
+    if bank.status == _v.VerificationStatus.WARNING:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.WARNING, actual_value=vendor.name,
+            policy_value=bank.resolved_name,
+            message=(f"The bank holds this account as '{bank.resolved_name}' — "
+                     f"close to '{vendor.name}' but not identical. Confirm it is "
+                     "the same organisation."),
+        )
+    if bank.status != _v.VerificationStatus.VERIFIED:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.WARNING, actual_value=vendor.name,
+            message=(f"{vendor.name} is in the register but their bank account "
+                     "has not been verified. Run the check before paying."),
+        )
+
+    if vendor.tax.status == _v.VerificationStatus.INVALID:
+        return PolicyCheck(
+            code="VENDOR_VERIFIED", name="Payee verified",
+            result=CheckResult.WARNING, actual_value=vendor.name,
+            message=(f"Bank account confirmed, but the tax ID on file is not "
+                     f"valid: {vendor.tax.message}"),
+        )
+
+    tin_note = ("tax ID confirmed with the authority"
+                if vendor.tax.externally_verified else
+                "tax ID format checked only — not confirmed with the authority"
+                if vendor.tin else "no tax ID on file")
+    return PolicyCheck(
+        code="VENDOR_VERIFIED", name="Payee verified",
+        result=CheckResult.PASS, actual_value=vendor.name,
+        policy_value=bank.resolved_name,
+        message=(f"Bank account {bank.account_number} confirmed as "
+                 f"'{bank.resolved_name}'; {tin_note}."),
+    )
 
 
 def _check_receipts(org_id: str, req: Requisition) -> list[PolicyCheck]:

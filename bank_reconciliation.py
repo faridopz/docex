@@ -691,8 +691,13 @@ def reconcile(
     org = store.require_org(org_id)
     start, end = _period_bounds(period)
 
-    import requisitions as _req
-    txns = transactions if transactions is not None else _req.list_transactions(org)
+    # EVERY payment path, not just requisitions. Reading only requisitions is
+    # what made an approved payroll run appear as "money nobody authorised" —
+    # the most serious finding the system produces, fired at a correct payment.
+    # disbursements.py is the one place all paths record what actually left.
+    import disbursements as _disb
+    txns = (transactions if transactions is not None
+            else _disb.list_disbursements(org, start=start, end=end))
     txns = [t for t in txns if start <= (t.paid_at or "")[:10] <= end]
 
     lines, cmap = parse_statement(statement, filename=filename, column_map=column_map)
@@ -705,11 +710,11 @@ def reconcile(
 
     def take(txn, line, method: MatchMethod) -> None:
         matches.append(Match(
-            transaction_id=txn.id, transaction_ref=txn.requisition_ref or txn.id,
+            transaction_id=txn.id, transaction_ref=txn.source_ref or txn.id,
             bank_line_id=line.id, bank_row=line.row, method=method,
             amount=abs(line.amount), paid_at=txn.paid_at, bank_date=line.date,
             day_gap=_days_between(txn.paid_at, line.date),
-            vendor_name=txn.vendor_name))
+            vendor_name=txn.payee_name))
         remaining_txns.pop(txn.id, None)
         remaining_lines.pop(line.id, None)
 
@@ -734,7 +739,7 @@ def reconcile(
                 code=ExceptionCode.AMOUNT_MISMATCH, severity=Severity.HIGH,
                 amount=txn.amount, date=txn.paid_at[:10],
                 description=ln.description,
-                transaction_id=txn.id, transaction_ref=txn.requisition_ref,
+                transaction_id=txn.id, transaction_ref=txn.source_ref,
                 bank_line_id=ln.id, bank_row=ln.row,
                 note=(f"Reference {txn.bank_reference} matches, but the system "
                       f"records {txn.amount:,.2f} and the bank shows "
@@ -766,7 +771,7 @@ def reconcile(
     for txn in list(remaining_txns.values()):
         hits = [ln.id for ln in remaining_lines.values()
                 if abs(ln.amount_minor) == _minor(txn.amount)
-                and _vendor_hit(txn.vendor_name, f"{ln.description} {ln.reference}")]
+                and _vendor_hit(txn.payee_name, f"{ln.description} {ln.reference}")]
         if hits:
             candidates[txn.id] = hits
     for txn_id, line_id in _pair_uniquely(candidates).items():
@@ -780,8 +785,8 @@ def reconcile(
             exceptions.append(ReconException(
                 code=ExceptionCode.AMBIGUOUS, severity=Severity.MEDIUM,
                 amount=txn.amount, date=txn.paid_at[:10],
-                transaction_id=txn.id, transaction_ref=txn.requisition_ref,
-                description=txn.vendor_name,
+                transaction_id=txn.id, transaction_ref=txn.source_ref,
+                description=txn.payee_name,
                 candidates=[f"row {ln.row}: {ln.date} {ln.description[:40]}"
                             for ln in near],
                 note=(f"{len(near)} bank lines are for exactly this amount and "
@@ -797,8 +802,8 @@ def reconcile(
             code=ExceptionCode.NOT_IN_BANK,
             severity=Severity.MEDIUM if late else Severity.HIGH,
             amount=txn.amount, date=txn.paid_at[:10],
-            description=txn.vendor_name,
-            transaction_id=txn.id, transaction_ref=txn.requisition_ref,
+            description=txn.payee_name,
+            transaction_id=txn.id, transaction_ref=txn.source_ref,
             note=("Recorded as paid within %d days of period end — most likely "
                   "cleared in the next statement. Carry forward and confirm."
                   % days_to_end) if late else
@@ -879,17 +884,17 @@ def manual_match(
     if any(m.transaction_id == transaction_id for m in run.matches):
         raise ReconciliationError("That payment is already matched.")
 
-    import requisitions as _req
-    txn = _req.get_transaction(run.org_id, transaction_id)
+    import disbursements as _disb
+    txn = _disb.get(run.org_id, transaction_id)
     if txn is None:
         raise ReconciliationError(f"Payment '{transaction_id}' not found.")
 
     run.matches.append(Match(
-        transaction_id=txn.id, transaction_ref=txn.requisition_ref or txn.id,
+        transaction_id=txn.id, transaction_ref=txn.source_ref or txn.id,
         bank_line_id=line.id, bank_row=line.row, method=MatchMethod.MANUAL,
         amount=abs(line.amount), paid_at=txn.paid_at, bank_date=line.date,
         day_gap=_days_between(txn.paid_at, line.date),
-        vendor_name=txn.vendor_name, matched_by=actor, reason=reason.strip()))
+        vendor_name=txn.payee_name, matched_by=actor, reason=reason.strip()))
 
     run.exceptions = [e for e in run.exceptions
                       if e.transaction_id != transaction_id

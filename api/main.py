@@ -144,6 +144,7 @@ from .knowledge_routes import router as knowledge_router  # noqa: E402
 from .timesheet_routes import router as timesheet_router  # noqa: E402
 from .payroll_routes import router as payroll_router  # noqa: E402
 from .reconciliation_routes import router as reconciliation_router  # noqa: E402
+from .vendor_routes import router as vendor_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -388,6 +389,12 @@ app.include_router(payroll_router)
 # bank says left the account, in BOTH directions. Gated on
 # `bank_reconciliation`. See api/reconciliation_routes.py.
 app.include_router(reconciliation_router)
+
+# Vendor register — who we are allowed to pay, and whether anyone checked.
+# The bank-account check is the control that catches a diverted payment: a real
+# invoice from a real supplier with the account number altered passes every
+# other check in the system. Gated on `vendor_register`. See api/vendor_routes.py.
+app.include_router(vendor_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

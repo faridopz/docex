@@ -103,6 +103,7 @@
     "timesheets": false,
     "advance_aging": false,
     "legacy_intake": false,
-    "payroll": false
+    "payroll": false,
+    "vendor_register": false
   }
 }
