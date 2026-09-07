@@ -11,6 +11,7 @@ import {
   Landmark,
   Layers,
   Scale,
+  Timer,
   LayoutGrid,
   Loader2,
   LogOut,
@@ -50,6 +51,7 @@ export type NavSection =
   | "payments"
   | "audit"
   | "reconciliation"
+  | "timesheets"
   | "vouchers"
   | "extract"
   | "templates"
@@ -95,6 +97,10 @@ const NAV_GROUPS: NavGroup[] = [
       // control that makes the audit trail a description of the bank account
       // rather than a story about it.
       { section: "reconciliation", label: "Reconciliation", href: "/reconciliation", icon: Scale, match: ["/reconciliation"], flag: "bank_reconciliation" },
+      // Effort reporting. Sits in this group rather than an HR one because
+      // its output is financial: approved hours decide what each grant is
+      // charged for a salary.
+      { section: "timesheets", label: "Timesheets", href: "/timesheets", icon: Timer, match: ["/timesheets"], flag: "timesheets" },
       { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"] },
       // The pre-requisitions intake screens. "Submit requisition" here and
       // "Requisitions" above were two different systems wearing the same word,

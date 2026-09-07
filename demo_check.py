@@ -159,6 +159,8 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
             ("/audit/summary", "Audit screen"),
             ("/dashboard", "Dashboard"),
             ("/reconciliation", "Reconciliation screen"),
+            ("/timesheets", "Timesheets screen"),
+            ("/timesheets/mine", "My timesheets"),
         ]:
             code = client.get(path, headers=h).status_code
             ok(f"{label} ({code})") if code == 200 else bad(
