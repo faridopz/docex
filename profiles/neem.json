@@ -1,79 +1,117 @@
 {
-  "_comment": "NEEM starter profile — FILL IN from their documents/flows when they arrive (Sep 10 follow-up). Values here are placeholders from the discovery call, not confirmed. Apply: DOCEX_ORG=neem python3 org_config.py apply profiles/neem.json",
+  "_comment": "Neem Foundation. Thresholds below are EXTRACTED FROM THEIR SIGNED Procurement Policy (p6) and cross-checked against NEEM_Finance_Processes.pptx (2024). Where the two disagree, BOTH are recorded and the conflict is in _open_questions — see NEEM_DOCUMENT_FINDINGS.md. Apply: DOCEX_ORG=neem DOCEX_DB=./neem.db python3 org_config.py apply profiles/neem.json",
   "org_id": "neem",
-  "name": "NEEM",
+  "name": "Neem Foundation",
   "currency": "NGN",
   "departments": [
     {
       "key": "program",
-      "name": "Programs / Field",
-      "description": "Fieldworkers + program officers raise requests and upload receipts",
-      "order": 10
+      "name": "Programmes",
+      "order": 10,
+      "description": "Raises the memo and assembles supporting documents"
     },
     {
-      "key": "compliance",
-      "name": "Compliance",
-      "description": "Donor rules, documentation completeness",
-      "order": 20
+      "key": "procurement",
+      "name": "Procurement",
+      "order": 15,
+      "description": "Runs RFQ/RFP, coordinates the procurement committee, issues PO"
     },
     {
       "key": "finance",
-      "name": "Finance",
-      "description": "Verification, approval, payment, month-end reconciliation",
-      "order": 30
+      "name": "Finance / Audit",
+      "order": 20,
+      "description": "Checks the pack: dates, budget line, calculations, signatures, document agreement. Returns it with questions until satisfied."
     },
     {
-      "key": "management",
-      "name": "Executive Director",
-      "description": "Final authority above threshold",
+      "key": "admin",
+      "name": "Admin",
+      "order": 30,
+      "description": "Forwards Finance-cleared requests to the AED, keeping the copy list"
+    },
+    {
+      "key": "aed",
+      "name": "Assistant Executive Director",
       "order": 40,
+      "description": "Reviews and approves. Also gives the final release approval in GAPS.",
+      "is_final_authority": false
+    },
+    {
+      "key": "ed",
+      "name": "Executive Director",
+      "order": 50,
+      "description": "Joint approval with the AED above N7,000,000 and for sole sourcing above N1,000,000",
       "is_final_authority": true
     }
   ],
   "state_owners": {
     "submitted": "program",
     "intake": "program",
-    "compliance_review": "compliance",
-    "finance_review": "finance",
-    "approval": "management",
+    "compliance_review": "finance",
+    "finance_review": "admin",
+    "approval": "aed",
     "paid": "finance"
   },
   "workflow": {
-    "_todo": "CONFIRM with NEEM: their actual approval thresholds, who can override, procurement (3-quote) threshold, required documents per category.",
+    "_source": "Neem Procurement Policy p6, 'FULL AND OPEN COMPETITION' threshold table.",
+    "_thresholds_as_written": {
+      "1 - 200,000": "AED. Single quote. Preapproved supplier.",
+      "200,001 - 2,000,000": "AED. Min 3 quotes. Preapproved supplier or online advert.",
+      "2,000,001 - 7,000,000": "AED on procurement committee recommendation. Min 3 quotes. Competitive tender.",
+      "above 7,000,000": "ED AND AED on committee recommendation. Min 5 quotes. Competitive tender.",
+      "sole source above 1,000,000": "ED and AED, on programme manager / executive board recommendation."
+    },
     "steps": [
       {
-        "key": "compliance",
-        "label": "Compliance Review",
-        "department": "compliance"
-      },
-      {
         "key": "finance",
-        "label": "Finance Review",
-        "department": "finance",
-        "can_override": true,
-        "override_limit": 250000
+        "label": "Finance / Audit review",
+        "department": "finance"
       },
       {
-        "key": "approval",
-        "label": "ED Approval",
-        "department": "management",
-        "min_amount": 250000,
+        "key": "admin",
+        "label": "Admin forwards to AED",
+        "department": "admin"
+      },
+      {
+        "key": "aed",
+        "label": "AED approval",
+        "department": "aed",
         "can_override": true,
-        "override_limit": 5000000
+        "override_limit": 7000000
+      },
+      {
+        "key": "ed",
+        "label": "ED + AED joint approval",
+        "department": "ed",
+        "min_amount": 7000001,
+        "can_override": true,
+        "override_limit": 100000000
       }
     ],
-    "max_amount": 5000000,
+    "max_amount": 100000000,
     "allowed_categories": [
-      "travel",
-      "supplies",
-      "venue",
-      "catering",
-      "consultancy",
-      "equipment",
+      "client_support_food",
+      "client_support_other",
+      "client_support_transport",
+      "client_support_educational",
+      "transportation_ground",
+      "transportation_airfare",
+      "per_diem",
+      "dsa",
+      "advance",
+      "rent",
       "utilities",
-      "communication"
+      "furniture_fittings",
+      "independent_contractor",
+      "admin_fees",
+      "wht_remittance",
+      "petty_cash",
+      "staff_cost",
+      "equipment",
+      "venue",
+      "consultancy"
     ],
     "required_documents": [
+      "memo",
       "invoice"
     ],
     "forbidden_vendors": [],
@@ -104,11 +142,55 @@
     "accounting_export": true
   },
   "_confirm_before_go_live": [
-    "PAYROLL is left OFF for NEEM: no deduction rules (PAYE bands, pension rate) have been confirmed, and running payroll without them would pay gross as net.",
-    "BANK FEED vs CSV — Farid reports NEEM can connect their Nigerian bank to QuickBooks Global. Public sources still say GTBank cannot be connected, but those sources are thin and possibly stale, and this is settled in two minutes on their screen: QuickBooks → Banking → Connect account → search their bank. ASK THIS ON WEDNESDAY. It decides whether the cleaned-bank-CSV export is a monthly chore removed or a nice-to-have.",
-    "BANK STATEMENT FORMAT — reconciliation still needs a real NEEM statement regardless of the above. DOCex reconciles against the STATEMENT, not against QuickBooks, so a working bank feed does not remove this. Ask for one month's export, run /reconciliation/preview, confirm the columns, then pin the mapping.",
-    "DATE FORMAT — if their export writes dates like 03/04/2026 with no day above 12 anywhere in the month, the importer refuses rather than guessing. The screen asks day-first or month-first; confirm which their bank uses.",
-    "AUTO-ADD RULES — if their bank feed IS connected, ask whether they use QuickBooks auto-add rules. An auto-add rule posts a transaction to the books with no human reviewing it, which is precisely how an unauthorised payment gets absorbed. This is the strongest argument for the DOCex control layer and it only exists if they have the feed.",
-    "CHART OF ACCOUNTS — needed to map DOCex categories to their QuickBooks accounts for the payment-register export. Ask for a chart of accounts export; without it every line posts to 'Uncategorised Expense'."
+    "THRESHOLD CONFLICT — the signed Procurement Policy (p6) says three quotes are required from N200,001. The Finance Processes deck (slide 4) says a direct memo suffices up to N499,999 and RFQ starts at N500,000. These disagree across N200,001-N499,999. Ask which governs; the policy is signed, the deck is what staff are trained on.",
+    "MULTI-ACCOUNT — Neem runs roughly 20 bank accounts, one per project (B2, B9, B19, B24...), across GTBank, Zenith and Lotus, plus a separate legal entity (Neem Institute Ltd). Reconciliation currently assumes ONE account. Confirm whether they want per-account reconciliation (correct) or a consolidated view.",
+    "WHT ON EVERY PAYMENT — 5% or 10% withholding tax is a SEPARATE bank transaction, remitted by RRR to FIRS, coded 62010. One vendor invoice therefore produces TWO debits. Reconciliation must expect this or every WHT line reads as unapproved money.",
+    "GTBANK GAPS — payments are batched into a WEEKLY schedule and uploaded to GAPS; the AED gives final release approval inside GAPS. Confirm whether the statement shows one debit per payee or one per batch. This decides individual vs bulk in the payment ledger.",
+    "BANK STATEMENT FORMAT — still needed. Their own reconciliation is BALANCE-based (bank balance vs cashbook balance, plus unpresented, less uncredited). DOCex matches line-by-line. Both are wanted; ours finds what theirs cannot.",
+    "PAYE / PENSION RATES — still not in any document supplied. Payroll stays OFF."
+  ],
+  "_departments_note": "From 'Neem Finance and Procurement Workflow' and the Finance Processes deck. The real chain is: requesting staff -> line manager (signs memo) -> Finance/Audit (checks the pack) -> Admin (forwards) -> AED (reviews, approves) -> Head of Finance (uploads the weekly schedule to GTBank GAPS) -> AED (final approval IN GAPS releases the funds). Admin is a real routing step, not a formality, which is why it is its own department.",
+  "_account_codes": {
+    "_source": "Observed in Neem F_CARE CASHBOOK_BANK REC Sep'23-Feb'24. Real codes in use.",
+    "9600": "Client Support Food",
+    "16000": "Due to / From",
+    "52052": "Transportation Ground",
+    "52054": "Transportation Airfare",
+    "52056": "Per diem",
+    "61011": "Independent Contractor",
+    "61020": "Admin Fees - Operational Expenses",
+    "62010": "WHT Expense",
+    "71010": "Rent Expense",
+    "71013": "Utilities Expense",
+    "71019": "Furniture & Fittings Purchase",
+    "81010": "Client Support Food",
+    "81016": "Client Support Transportation",
+    "81018": "Client Support Educational",
+    "81030": "Client Support Other"
+  },
+  "_project_codes": {
+    "_source": "Neem Account Details.docx. EACH project has its OWN bank account — see NEEM_DOCUMENT_FINDINGS.md, this is architecturally significant. Account numbers deliberately NOT recorded here.",
+    "B2": "Salary Account",
+    "B4": "US Embassy - TSC",
+    "B6": "Admin",
+    "B7": "LOTG",
+    "B9": "Lafiya Sarari",
+    "B14": "Flight Booking",
+    "B15": "HQ Petty Cash",
+    "B16": "UNFPA / UNDP",
+    "B19": "POCI - Karuna",
+    "B20": "GIZ - InAcc",
+    "B21": "ODI",
+    "B22": "French Embassy",
+    "B23": "MacArthur - Mind Care",
+    "B24": "CARE / FCDO"
+  },
+  "_policy_rules_confirmed": [
+    "ADVANCE RETIREMENT: 7 days or 5 working days from receipt of payment. Escalation is explicit — failure blocks further payment to that individual; a collective default blocks the whole project's next activity; persisting to month end means recovery from salary. (Finance Processes deck, slide 10.)",
+    "DSA RETIREMENT: same 5 working days / 7 days after the trip, with a signed Unreceipted Expenses Form. A Travel Approval Form must be submitted BEFORE the trip.",
+    "MEMO DEADLINE: Mondays and Tuesdays before 2pm. Payments run on a weekly cycle.",
+    "PETTY CASH: monthly ledger, must be retired before the next disbursement.",
+    "PAYMENT TERMS: 5 working days upon receipt of a valid invoice (PO template).",
+    "PROCUREMENT COMMITTEE: reviews all procurement above N2,000,000, approves contract variations above N2,000,000, and approves the vendor list."
   ]
 }
