@@ -158,6 +158,7 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
             ("/payments", "Payments screen"),
             ("/audit/summary", "Audit screen"),
             ("/dashboard", "Dashboard"),
+            ("/reconciliation", "Reconciliation screen"),
         ]:
             code = client.get(path, headers=h).status_code
             ok(f"{label} ({code})") if code == 200 else bad(
@@ -168,6 +169,57 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
         else:
             bad("API answers without credentials",
                 "auth middleware is not active — do NOT use real client data")
+        # Reconciliation is the newest thing in the demo and has the most
+        # moving parts: a feature flag, a statement file, column detection and
+        # a date format the file may not settle on its own. Prove the whole
+        # import path here rather than discovering it live.
+        try:
+            import datetime as _dt
+
+            import make_demo_statement as _mds
+
+            csv_text, stats = _mds.build(ORG)
+            if stats["matched_payments"] == 0:
+                warn("demo statement has no payments to match",
+                     "re-run demo_seed.py, then make_demo_statement.py")
+            else:
+                ok(f"demo statement built — {stats['matched_payments']} payment(s) "
+                   "should match")
+
+            files = {"statement": ("demo_bank_statement.csv",
+                                   csv_text.encode(), "text/csv")}
+            period = _dt.date.today().strftime("%Y-%m")
+            r = client.post("/reconciliation/preview", headers=h, files=files)
+            if r.status_code == 422 and "date_format" in r.text:
+                # Expected early in a month: the file cannot prove day-first.
+                # The screen asks; here we answer, and the retry must work.
+                r = client.post("/reconciliation/preview", headers=h, files=files,
+                                data={"date_format": "%d/%m/%Y"})
+                ok("statement dates are ambiguous — the day/month prompt is "
+                   "expected in the UI") if r.status_code == 200 else bad(
+                    f"preview still fails after choosing a date format ({r.status_code})",
+                    "check api/reconciliation_routes.py")
+            if r.status_code == 200:
+                ok(f"statement reads — {r.json()['debits']} payments out")
+                rr = client.post("/reconciliation", headers=h, files=files,
+                                 data={"period": period, "date_format": "%d/%m/%Y"})
+                if rr.status_code == 200:
+                    run = rr.json()
+                    planted = [e for e in run["exceptions"]
+                               if e["code"] == "NOT_IN_SYSTEM" and e["amount"] >= 500_000]
+                    ok(f"reconciles — {run['matched']} matched, "
+                       f"{len(run['exceptions'])} exception(s)")
+                    ok("the unapproved ₦750,000 transfer is caught") if planted else bad(
+                        "the planted unapproved transfer was NOT flagged",
+                        "the demo's main finding is missing — check the matcher")
+                else:
+                    bad(f"reconcile failed ({rr.status_code})", rr.text[:120])
+            else:
+                bad(f"statement preview failed ({r.status_code})", r.text[:120])
+        except Exception as exc:
+            warn(f"reconciliation path not checked: {exc}",
+                 "is bank_reconciliation enabled in the org profile?")
+
     except Exception as exc:
         bad(f"app failed to start: {exc}", "check the API terminal for a traceback")
 

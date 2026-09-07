@@ -27,6 +27,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterator, Optional, Protocol
@@ -156,6 +157,41 @@ def is_configured() -> bool:
     checks this so a test that redirected storage before importing the app
     isn't silently pointed back at the real data directory."""
     return _store is not None
+
+
+def configure_from_env(*, quiet: bool = False) -> str:
+    """Point this process at the same storage the running API uses.
+
+    Every command-line tool needs this and each one used to hand-roll it. When
+    a script forgets, nothing fails: it reads and writes a perfectly healthy
+    JSON store that simply is not the one the app is using. The seeder hit
+    exactly this — it created a demo login the API could not see, and the
+    symptom was a 401 at the login screen, which looks like a wrong password
+    rather than a wrong database.
+
+    Returns a short description of what was selected, for scripts that want to
+    print it. Respects a backend a caller (or a test) already installed.
+    """
+    if is_configured():
+        return "already configured by the caller"
+
+    db = os.environ.get("DOCEX_DATABASE_URL", "").strip()
+    if db:
+        import store_sql
+        set_store(store_sql.PostgresStore(db))
+        return "PostgreSQL (DOCEX_DATABASE_URL)"
+
+    sqlite_path = os.environ.get("DOCEX_DB", "").strip()
+    if sqlite_path:
+        import store_sql
+        set_store(store_sql.SqliteStore(sqlite_path))
+        return f"SQLite at {sqlite_path}"
+
+    if not quiet:
+        print("[store] No DOCEX_DB or DOCEX_DATABASE_URL set — using the local "
+              f"JSON store at {_DEFAULT_ROOT}. If the app is running against "
+              "SQLite, this script will not see the same data.")
+    return f"JSON files at {_DEFAULT_ROOT}"
 
 
 # ─── helpers engines share ──────────────────────────────────────────────────

@@ -546,7 +546,25 @@ def parse_statement(
     else:
         headers, rows = _rows_from_csv(data)
 
-    cmap = column_map or detect_columns(headers)
+    # A PARTIAL mapping supplements detection rather than replacing it. The
+    # common case is a caller who knows only one thing — usually the date
+    # format, because early in a month the file cannot prove day-first — and
+    # making them describe every column in order to say that would be a good
+    # way to get the columns wrong. So: anything named here wins, anything left
+    # blank is detected.
+    if column_map is None:
+        cmap = detect_columns(headers)
+    elif column_map.date or column_map.amount or column_map.debit or column_map.credit:
+        cmap = column_map.model_copy(deep=True)
+    else:
+        cmap = detect_columns(headers)
+        for field in ("date", "description", "reference", "debit", "credit", "amount"):
+            supplied = getattr(column_map, field)
+            if supplied:
+                setattr(cmap, field, supplied)
+        if column_map.date_format:
+            cmap.date_format = column_map.date_format
+
     for field in ("date", "description", "reference", "debit", "credit", "amount"):
         name = getattr(cmap, field)
         if name and name not in headers:

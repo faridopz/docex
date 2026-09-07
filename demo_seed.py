@@ -36,13 +36,16 @@ from datetime import datetime, timedelta, timezone
 # demo login it just created does not exist as far as the API is concerned —
 # and the failure surfaces as a 401 at the login screen, which looks like a
 # password problem rather than a storage one.
-_DB = os.environ.get("DOCEX_DB", "").strip()
-if _DB:
-    import store as _store
-    import store_sql as _store_sql
-    _store.set_store(_store_sql.SqliteStore(_DB))
+import store as _store
+_store.configure_from_env(quiet=True)
 
-ORG = "default"          # matches DOCEX_ORG default, so the UI sees this data
+# Read the org from the environment, exactly as the API does. Hard-coding
+# "default" here while auth.create_user() reads DOCEX_ORG split the demo across
+# two organisations the moment anyone ran this with DOCEX_ORG set: the login
+# landed in one org and every requisition in the other, so the seeded account
+# signed in successfully to a completely empty system. Nothing errored — which
+# is what made it expensive.
+ORG = (os.environ.get("DOCEX_ORG") or "default").strip() or "default"
 DEMO_EMAIL = "demo@neem.org"
 
 
@@ -119,6 +122,22 @@ def seed(reset: bool) -> int:
     # 1. Departments — the defaults already match the workflow below.
     known = {d.key for d in departments.list_departments()}
     print(f"· departments: {', '.join(sorted(known))}")
+
+    # 1b. Feature flags. The nav is driven by these, so a screen that is not
+    #     switched on here simply does not exist for the demo — which is a
+    #     confusing thing to discover with a client watching. Set explicitly
+    #     rather than relying on whatever the last profile applied left behind.
+    _store.get_store().put(ORG, "config", "features", {
+        "modules": ["compliance", "extraction", "knowledge"],
+        "features": {
+            "bank_reconciliation": True,   # NEEM asked for this by name
+            "timesheets": True,
+            "tin_verification": True,
+            "payroll": False,              # no confirmed PAYE bands — see profiles/neem.json
+            "legacy_intake": False,
+        },
+    })
+    print("· features: reconciliation ON, timesheets ON, payroll OFF")
 
     # 2. Approval chain. Explicit rather than default_workflow(), so the demo
     #    doesn't depend on which default happens to be current.

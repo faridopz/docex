@@ -38,6 +38,12 @@ router = APIRouter(prefix="/reconciliation", tags=["reconciliation"])
 _FLAG = "bank_reconciliation"
 _MAX_BYTES = 10 * 1024 * 1024        # a month of statement is kilobytes, not megabytes
 
+# Date formats a caller may select. An allowlist rather than free text: this
+# string reaches strptime, and the set of sane answers to "day first or month
+# first" is small enough to enumerate.
+_ALLOWED_DATE_FORMATS = {"%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y",
+                         "%Y-%m-%d", "%d.%m.%Y"}
+
 
 def _gate(ctx: Ctx) -> Ctx:
     if not org_config.feature_enabled(ctx.org_id, _FLAG):
@@ -63,16 +69,38 @@ async def _read(upload: UploadFile) -> bytes:
     return data
 
 
-def _column_map(saved: Optional[br.ColumnMap], override: str) -> Optional[br.ColumnMap]:
-    """An explicit per-upload mapping wins over the org's saved one."""
+def _column_map(saved: Optional[br.ColumnMap], override: str,
+                date_format: str = "") -> Optional[br.ColumnMap]:
+    """Resolve the mapping for this upload.
+
+    An explicit per-upload mapping wins over the org's saved one. `date_format`
+    is handled separately and deliberately: it is the one thing a user routinely
+    has to supply on its own.
+
+    Early in a month every date on a statement can read both ways — 07/09 is
+    ambiguous, 25/09 is not — so the importer refuses rather than guessing, and
+    the person needs to answer "day first or month first" WITHOUT also having to
+    describe every column. Folding date_format into the full mapping would mean
+    answering that question threw away column auto-detection, which is a poor
+    trade for the user and an easy source of a silently wrong import.
+    """
+    cmap = saved
     if override:
         try:
             import json
-            return br.ColumnMap.model_validate(json.loads(override))
+            cmap = br.ColumnMap.model_validate(json.loads(override))
         except Exception as exc:
             raise HTTPException(status_code=422,
                                 detail=f"Invalid column_map: {exc}")
-    return saved
+    if date_format:
+        if date_format not in _ALLOWED_DATE_FORMATS:
+            raise HTTPException(
+                status_code=422,
+                detail=("Unsupported date format. Use one of: "
+                        + ", ".join(sorted(_ALLOWED_DATE_FORMATS))))
+        cmap = (cmap.model_copy(deep=True) if cmap else br.ColumnMap())
+        cmap.date_format = date_format
+    return cmap
 
 
 # ─── serialisers ────────────────────────────────────────────────────────────
@@ -173,6 +201,7 @@ async def set_columns(payload: dict = Body(...), ctx: Ctx = Depends(request_cont
 async def preview(
     statement: UploadFile = File(...),
     column_map: str = Form(""),
+    date_format: str = Form(""),
     rows: int = Form(10),
     ctx: Ctx = Depends(request_context),
 ):
@@ -182,7 +211,8 @@ async def preview(
     try:
         lines, cmap = br.parse_statement(
             data, filename=statement.filename or "statement.csv",
-            column_map=_column_map(br.get_column_map(ctx.org_id), column_map))
+            column_map=_column_map(br.get_column_map(ctx.org_id), column_map,
+                                   date_format))
     except br.ReconciliationError as exc:
         raise _fail(exc)
 
@@ -209,6 +239,7 @@ async def run_reconciliation(
     period: str = Form(...),
     statement: UploadFile = File(...),
     column_map: str = Form(""),
+    date_format: str = Form(""),
     date_window_days: int = Form(br.DEFAULT_DATE_WINDOW_DAYS),
     settlement_days: int = Form(br.DEFAULT_SETTLEMENT_DAYS),
     ctx: Ctx = Depends(request_context),
@@ -221,7 +252,8 @@ async def run_reconciliation(
         run = br.reconcile(
             ctx.org_id, period, data,
             filename=statement.filename or "statement.csv",
-            column_map=_column_map(br.get_column_map(ctx.org_id), column_map),
+            column_map=_column_map(br.get_column_map(ctx.org_id), column_map,
+                                   date_format),
             date_window_days=date_window_days,
             settlement_days=settlement_days,
             actor=ctx.user_id)

@@ -106,6 +106,28 @@ def test_dates_are_proved_not_guessed() -> None:
            contains="inconsistent")
 
 
+def test_a_partial_column_map_supplements_detection() -> None:
+    print("\nSaying only the date format must not throw away column detection")
+    # Early in a month nothing in the file proves day-first, so the ONLY thing
+    # the user can usefully supply is the format. If that answer replaced
+    # detection wholesale, the import would find no columns and report "no
+    # usable rows" — which reads like a broken file rather than a resolved
+    # question. This is the exact bug that shipped and was caught in the demo.
+    data = statement(["05/06/2026,TRF TO ACME LTD,FT1,250000.00,",
+                      "06/06/2026,TRF TO BETA,FT2,90000.00,"])
+    lines, cmap = br.parse_statement(data, column_map=br.ColumnMap(date_format="%d/%m/%Y"))
+    check("rows are read", len(lines) == 2)
+    check("columns were still detected", cmap.debit == "Debit")
+    check("and the supplied format was honoured", lines[0].date == "2026-06-05")
+
+    # A named column still wins outright.
+    lines, cmap = br.parse_statement(
+        data, column_map=br.ColumnMap(date="Value Date", debit="Debit",
+                                      date_format="%d/%m/%Y"))
+    check("an explicit mapping is used as given", cmap.date == "Value Date")
+    check("and reads the same rows", len(lines) == 2)
+
+
 def test_ambiguous_dates_stop_the_import() -> None:
     print("\nAn ambiguous statement cannot be imported by accident")
     data = statement(["05/06/2026,PAYMENT ABC,REF1,1500.00,"])
@@ -451,6 +473,7 @@ def main() -> int:
         test_amount_parsing,
         test_dates_are_proved_not_guessed,
         test_ambiguous_dates_stop_the_import,
+        test_a_partial_column_map_supplements_detection,
         test_column_detection,
         test_preamble_rows_are_skipped,
         test_reference_match_is_preferred,
