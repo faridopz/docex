@@ -104,8 +104,11 @@
     "accounting_export": true
   },
   "_confirm_before_go_live": [
-    "BANK STATEMENT FORMAT — reconciliation is switched ON, but the importer's column auto-detection has NOT been tested against a real NEEM statement. Ask for one month's export, run POST /reconciliation/preview, confirm the sample rows read correctly, then pin the mapping with PUT /reconciliation/columns. A wrong mapping produces a clean-looking reconciliation over the wrong pairing.",
-    "DATE FORMAT — if their export writes dates like 03/04/2026 with no day above 12 anywhere in the month, the importer will refuse rather than guess. Set date_format to \"%d/%m/%Y\" on the column map.",
-    "PAYROLL is left OFF for NEEM: no deduction rules (PAYE bands, pension rate) have been confirmed, and running payroll without them would pay gross as net."
+    "PAYROLL is left OFF for NEEM: no deduction rules (PAYE bands, pension rate) have been confirmed, and running payroll without them would pay gross as net.",
+    "BANK FEED vs CSV — Farid reports NEEM can connect their Nigerian bank to QuickBooks Global. Public sources still say GTBank cannot be connected, but those sources are thin and possibly stale, and this is settled in two minutes on their screen: QuickBooks → Banking → Connect account → search their bank. ASK THIS ON WEDNESDAY. It decides whether the cleaned-bank-CSV export is a monthly chore removed or a nice-to-have.",
+    "BANK STATEMENT FORMAT — reconciliation still needs a real NEEM statement regardless of the above. DOCex reconciles against the STATEMENT, not against QuickBooks, so a working bank feed does not remove this. Ask for one month's export, run /reconciliation/preview, confirm the columns, then pin the mapping.",
+    "DATE FORMAT — if their export writes dates like 03/04/2026 with no day above 12 anywhere in the month, the importer refuses rather than guessing. The screen asks day-first or month-first; confirm which their bank uses.",
+    "AUTO-ADD RULES — if their bank feed IS connected, ask whether they use QuickBooks auto-add rules. An auto-add rule posts a transaction to the books with no human reviewing it, which is precisely how an unauthorised payment gets absorbed. This is the strongest argument for the DOCex control layer and it only exists if they have the feed.",
+    "CHART OF ACCOUNTS — needed to map DOCex categories to their QuickBooks accounts for the payment-register export. Ask for a chart of accounts export; without it every line posts to 'Uncategorised Expense'."
   ]
 }
