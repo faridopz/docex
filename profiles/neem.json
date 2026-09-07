@@ -139,7 +139,8 @@
     "legacy_intake": false,
     "payroll": false,
     "vendor_register": true,
-    "accounting_export": true
+    "accounting_export": true,
+    "withholding_tax": true
   },
   "_confirm_before_go_live": [
     "THRESHOLD CONFLICT — the signed Procurement Policy (p6) says three quotes are required from N200,001. The Finance Processes deck (slide 4) says a direct memo suffices up to N499,999 and RFQ starts at N500,000. These disagree across N200,001-N499,999. Ask which governs; the policy is signed, the deck is what staff are trained on.",

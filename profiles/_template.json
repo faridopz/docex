@@ -105,6 +105,7 @@
     "legacy_intake": false,
     "payroll": false,
     "vendor_register": false,
-    "accounting_export": false
+    "accounting_export": false,
+    "withholding_tax": false
   }
 }
