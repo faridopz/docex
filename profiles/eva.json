@@ -3,7 +3,7 @@
   "org_id": "eva",
   "name": "Education as a Vaccine",
   "currency": "NGN",
-  "_departments_note": "EVA's finance hierarchy: ED/Board \u2192 Admin/Finance Team Lead (TLFA) \u2192 Finance Coordinator \u2192 Finance Officer. The Compliance Officer sits inside Finance but reports to ED/Board for independence, and reviews EVERY payment. TLFA processes the payment on the bank platform; the ED gives final authorisation afterwards \u2014 which is why 'tlfa' and 'ed' are separate steps.",
+  "_departments_note": "EVA's finance hierarchy: ED/Board → Admin/Finance Team Lead (TLFA) → Finance Coordinator → Finance Officer. The Compliance Officer sits inside Finance but reports to ED/Board for independence, and reviews EVERY payment. TLFA processes the payment on the bank platform; the ED gives final authorisation afterwards — which is why 'tlfa' and 'ed' are separate steps.",
   "departments": [
     {
       "key": "program",
@@ -39,7 +39,7 @@
     {
       "key": "board",
       "name": "Board (Chair + Finance Committee)",
-      "description": "Approves procurements of N10,000,000 or more \u2014 Board Chair plus at least one member of the Finance Committee",
+      "description": "Approves procurements of N10,000,000 or more — Board Chair plus at least one member of the Finance Committee",
       "order": 60,
       "is_final_authority": true
     }
@@ -53,8 +53,8 @@
     "paid": "tlfa"
   },
   "workflow": {
-    "_todo": "Thresholds below are CONFIRMED from the signed Procurement Policy (see _sources). Still unconfirmed: advance limits and retirement windows, petty cash ceiling, statutory rates \u2014 see _open_questions.",
-    "_flow": "Their process map: Program initiates \u2192 Compliance review \u2192 Finance review \u2192 voucher raised \u2192 approval per DOA \u2192 TLFA processes payment \u2192 ED final authorisation \u2192 recorded under project + expense codes \u2192 filed for audit.",
+    "_todo": "Thresholds below are CONFIRMED from the signed Procurement Policy (see _sources). Still unconfirmed: advance limits and retirement windows, petty cash ceiling, statutory rates — see _open_questions.",
+    "_flow": "Their process map: Program initiates → Compliance review → Finance review → voucher raised → approval per DOA → TLFA processes payment → ED final authorisation → recorded under project + expense codes → filed for audit.",
     "steps": [
       {
         "key": "compliance",
@@ -113,7 +113,7 @@
     "approved_vendors": [],
     "duplicate_window_days": 30
   },
-  "_grants_note": "EVA is a prime/pass-through managing sub-recipients, notably USG-funded. Populate from their signed agreements \u2014 donor, project code, value, and the agreement period that drives grant-period blocking.",
+  "_grants_note": "EVA is a prime/pass-through managing sub-recipients, notably USG-funded. Populate from their signed agreements — donor, project code, value, and the agreement period that drives grant-period blocking.",
   "grants": [],
   "admin": {
     "email": "admin@eva.org",
@@ -121,7 +121,7 @@
     "password": "change-me-on-first-login",
     "department": "finance"
   },
-  "_features_note": "Flags for the EVA-specific engines. All false until the engine behind each one exists and is tested \u2014 a flag that turns on nothing is worse than no flag. See EVA_BUILD_PLAN.md for the engine specs (E1\u2013E9).",
+  "_features_note": "Flags for the EVA-specific engines. All false until the engine behind each one exists and is tested — a flag that turns on nothing is worse than no flag. See EVA_BUILD_PLAN.md for the engine specs (E1–E9).",
   "_modules_note": "Top-level product areas this client bought. The nav shows only these. Finance-workflow-only clients don't need the screening or knowledge modules.",
   "modules": [
     "compliance",
@@ -142,24 +142,25 @@
     "kobo_sync": false,
     "tin_verification": false,
     "legacy_intake": false,
-    "timesheets": true
+    "timesheets": true,
+    "bank_reconciliation": false
   },
   "_open_questions": [
-    "DISCREPANCY IN THEIR OWN DOCUMENT: the Procurement Policy reads '300,000 Naira (two hundred thousand Naira)' \u2014 the figure and the words disagree. Every other mention says N300,000, so we configured 300,000, but EVA must confirm and correct their policy text.",
-    "ADVANCE RETIREMENT WINDOW \u2014 not stated in POL-FIN-300.01 (Activity Advances) or 300.04 (Travel Advance). No number appears anywhere in either document. This is a genuine gap in their policy, not a gap in our reading. Ask what the practice is and whether they want it enforced.",
-    "ADVANCE LIMITS \u2014 no maximum advance amount stated in any of POL-FIN-300.01 to .04.",
-    "PETTY CASH CEILING \u2014 POL-FIN-100.02 mentions N40,000, but only inside a worked illustration ('It is assumed that EVA/FCT establishes a Petty Cash Fund...'). That is an example, not a policy limit. Confirm the real ceiling per office.",
-    "REFINANCING SIGN CONVENTION \u2014 blocks payroll (E4). Working interpretation: cost recovery / recharge, salary charged back to a donor grant, shown negative because it offsets the expense line. MUST be confirmed before any payroll code is written.",
-    "STATUTORY RATES \u2014 PAYE bands, pension rate, WHT rates by payment type, VAT treatment. Not in the documents we hold.",
-    "GRANT CODES + AGREEMENT PERIODS \u2014 needed for grant-period blocking. Populate from their signed agreements.",
-    "MULTI-OFFICE \u2014 are HQ / State / field offices a reporting dimension on every transaction, or separate instances?",
-    "QUICKBOOKS EXPORT \u2014 which format, and does it import as a journal or as bills?"
+    "DISCREPANCY IN THEIR OWN DOCUMENT: the Procurement Policy reads '300,000 Naira (two hundred thousand Naira)' — the figure and the words disagree. Every other mention says N300,000, so we configured 300,000, but EVA must confirm and correct their policy text.",
+    "ADVANCE RETIREMENT WINDOW — not stated in POL-FIN-300.01 (Activity Advances) or 300.04 (Travel Advance). No number appears anywhere in either document. This is a genuine gap in their policy, not a gap in our reading. Ask what the practice is and whether they want it enforced.",
+    "ADVANCE LIMITS — no maximum advance amount stated in any of POL-FIN-300.01 to .04.",
+    "PETTY CASH CEILING — POL-FIN-100.02 mentions N40,000, but only inside a worked illustration ('It is assumed that EVA/FCT establishes a Petty Cash Fund...'). That is an example, not a policy limit. Confirm the real ceiling per office.",
+    "REFINANCING SIGN CONVENTION — blocks payroll (E4). Working interpretation: cost recovery / recharge, salary charged back to a donor grant, shown negative because it offsets the expense line. MUST be confirmed before any payroll code is written.",
+    "STATUTORY RATES — PAYE bands, pension rate, WHT rates by payment type, VAT treatment. Not in the documents we hold.",
+    "GRANT CODES + AGREEMENT PERIODS — needed for grant-period blocking. Populate from their signed agreements.",
+    "MULTI-OFFICE — are HQ / State / field offices a reporting dimension on every transaction, or separate instances?",
+    "QUICKBOOKS EXPORT — which format, and does it import as a journal or as bills?"
   ],
   "_sources": {
-    "procurement_three_quotes": "EVA Approved Procurement Policy \u2014 'three quotes for procurements estimated to be 300,000 Naira or more'",
-    "approval_below_300k": "Procurement Policy, Thresholds and Approval \u2014 'Approvals for procurements below N300,000 can be given by departmental heads or their delegates (who should not be below the grade level of a coordinator)'",
-    "approval_300k_plus": "Procurement Policy \u2014 'All procurements involving N300,000 or more ... must be approved by the executive director'",
-    "approval_10m_plus": "Procurement Policy \u2014 'Procurements involving N10,000,000 or more ... must be approved by the board chair and at least a member of the finance committee of the board'",
-    "single_source_waiver": "Procurement Policy \u2014 'A written justification (procurement waiver) should be provided for single source procurement of value of 200,000 Naira'"
+    "procurement_three_quotes": "EVA Approved Procurement Policy — 'three quotes for procurements estimated to be 300,000 Naira or more'",
+    "approval_below_300k": "Procurement Policy, Thresholds and Approval — 'Approvals for procurements below N300,000 can be given by departmental heads or their delegates (who should not be below the grade level of a coordinator)'",
+    "approval_300k_plus": "Procurement Policy — 'All procurements involving N300,000 or more ... must be approved by the executive director'",
+    "approval_10m_plus": "Procurement Policy — 'Procurements involving N10,000,000 or more ... must be approved by the board chair and at least a member of the finance committee of the board'",
+    "single_source_waiver": "Procurement Policy — 'A written justification (procurement waiver) should be provided for single source procurement of value of 200,000 Naira'"
   }
 }

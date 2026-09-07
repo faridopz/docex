@@ -102,6 +102,7 @@
     "bank_reconciliation": false,
     "timesheets": false,
     "advance_aging": false,
-    "legacy_intake": false
+    "legacy_intake": false,
+    "payroll": false
   }
 }

@@ -1,5 +1,5 @@
 {
-  "_comment": "NEEM starter profile \u2014 FILL IN from their documents/flows when they arrive (Sep 10 follow-up). Values here are placeholders from the discovery call, not confirmed. Apply: DOCEX_ORG=neem python3 org_config.py apply profiles/neem.json",
+  "_comment": "NEEM starter profile — FILL IN from their documents/flows when they arrive (Sep 10 follow-up). Values here are placeholders from the discovery call, not confirmed. Apply: DOCEX_ORG=neem python3 org_config.py apply profiles/neem.json",
   "org_id": "neem",
   "name": "NEEM",
   "currency": "NGN",
@@ -95,9 +95,15 @@
     "attendance_payments": false,
     "kobo_sync": false,
     "tin_verification": true,
-    "bank_reconciliation": false,
-    "timesheets": false,
+    "bank_reconciliation": true,
+    "timesheets": true,
     "advance_aging": false,
-    "legacy_intake": false
-  }
+    "legacy_intake": false,
+    "payroll": false
+  },
+  "_confirm_before_go_live": [
+    "BANK STATEMENT FORMAT — reconciliation is switched ON, but the importer's column auto-detection has NOT been tested against a real NEEM statement. Ask for one month's export, run POST /reconciliation/preview, confirm the sample rows read correctly, then pin the mapping with PUT /reconciliation/columns. A wrong mapping produces a clean-looking reconciliation over the wrong pairing.",
+    "DATE FORMAT — if their export writes dates like 03/04/2026 with no day above 12 anywhere in the month, the importer will refuse rather than guess. Set date_format to \"%d/%m/%Y\" on the column map.",
+    "PAYROLL is left OFF for NEEM: no deduction rules (PAYE bands, pension rate) have been confirmed, and running payroll without them would pay gross as net."
+  ]
 }

@@ -60,7 +60,13 @@ class SalaryAllocation(BaseModel):
 
 
 class StaffRecord(BaseModel):
+    # `id` is a storage key, so it cannot contain '@' — but people sign in with
+    # an email, and a timesheet is filed under whoever was signed in. Without
+    # `email` here the two records can never be matched, and every payroll line
+    # would fall back to budgeted percentages while looking like the person
+    # simply had no timesheet. See _find_effort().
     id: str
+    email: str = ""
     org_id: str = ""
     name: str
     position: str = ""
@@ -274,6 +280,35 @@ def compute_deductions(gross: float, policy: PayrollPolicy) -> list[DeductionRes
 # ─── the payroll run ────────────────────────────────────────────────────────
 
 
+def _find_effort(org_id: str, s: "StaffRecord", period: str):
+    """Find this person's timesheet, under either identifier they might use.
+
+    A staff record is keyed by a storage-safe id; a timesheet is filed under
+    whoever was signed in, which is an email. Looking under only one of them
+    silently loses the link — and a lost link does not look like a bug, it
+    looks like "no timesheet submitted", which is a sentence finance believes.
+
+    Returns (timesheet_or_None, disclosure_or_empty). A person who has filed
+    under BOTH identifiers gets the record-id sheet and a disclosure naming the
+    other, because two effort records for one month is a data problem someone
+    has to resolve — not something to resolve by picking one quietly.
+    """
+    import timesheets as _ts
+
+    keys = [s.id] + ([s.email.strip()] if s.email.strip()
+                     and s.email.strip() != s.id else [])
+    found = [(k, _ts.find_timesheet(org_id, k, period)) for k in keys]
+    hits = [(k, sheet) for k, sheet in found if sheet is not None]
+    if not hits:
+        return None, ""
+    if len(hits) > 1:
+        return hits[0][1], (
+            f"Two timesheets exist for {period} under '{hits[0][0]}' and "
+            f"'{hits[1][0]}'. Used the staff-record one; merge them so the "
+            "same hours cannot be charged twice.")
+    return hits[0][1], ""
+
+
 def build_run(org_id: str, period: str, *,
               beneficiaries_direct: int = 0,
               beneficiaries_indirect: int = 0,
@@ -331,7 +366,9 @@ def build_run(org_id: str, period: str, *,
         if use_timesheets:
             try:
                 import timesheets as _ts
-                sheet = _ts.find_timesheet(org, s.id, period)
+                sheet, ambiguous = _find_effort(org, s, period)
+                if ambiguous:
+                    notes.append(ambiguous)
                 if sheet and sheet.status in (_ts.TimesheetStatus.APPROVED,
                                               _ts.TimesheetStatus.PROCESSED):
                     effort = _ts.effort_allocation(sheet)

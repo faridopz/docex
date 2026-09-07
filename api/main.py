@@ -141,6 +141,9 @@ from .attendance_collection_routes import router as attendance_collection_router
 from .bank_verify_routes import router as bank_verify_router  # noqa: E402
 from .compliance_routes import router as compliance_router  # noqa: E402
 from .knowledge_routes import router as knowledge_router  # noqa: E402
+from .timesheet_routes import router as timesheet_router  # noqa: E402
+from .payroll_routes import router as payroll_router  # noqa: E402
+from .reconciliation_routes import router as reconciliation_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -368,6 +371,23 @@ app.include_router(assistant_router)
 # DOCex primitive. Upload .pptx → parsed slide-by-slide → ask questions
 # with slide-N citations. See api/knowledge_routes.py.
 app.include_router(knowledge_router)
+
+# Effort reporting — daily hours per project code, approved by a supervisor.
+# 2 CFR 200.430(i) lets a grant be charged only for work actually performed,
+# so this is what makes a salary allocation defensible rather than budgeted.
+# Gated on the `timesheets` feature flag. See api/timesheet_routes.py.
+app.include_router(timesheet_router)
+
+# Payroll — gross → deductions → net, allocated to donors and project codes,
+# preferring approved timesheets over budgeted percentages. Computing a run
+# pays nobody: payment goes through the same approval workflow as any other
+# payment. Gated on `payroll`. See api/payroll_routes.py.
+app.include_router(payroll_router)
+
+# Month-end bank reconciliation — match what we say we paid against what the
+# bank says left the account, in BOTH directions. Gated on
+# `bank_reconciliation`. See api/reconciliation_routes.py.
+app.include_router(reconciliation_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
