@@ -116,7 +116,107 @@
     ],
     "forbidden_vendors": [],
     "approved_vendors": [],
-    "duplicate_window_days": 30
+    "duplicate_window_days": 30,
+    "_documents_source": "Finance Processes deck slides 8-9 and the workflow document: 'the correct pack depends on whether it concerns goods, services, an activity, an advance, a reimbursement or a final balance payment.'",
+    "documents_by_category": {
+      "equipment": [
+        "memo",
+        "invoice",
+        "purchase_order",
+        "grn"
+      ],
+      "furniture_fittings": [
+        "memo",
+        "invoice",
+        "purchase_order",
+        "grn"
+      ],
+      "consultancy": [
+        "memo",
+        "invoice",
+        "contract",
+        "service_completion_form"
+      ],
+      "independent_contractor": [
+        "memo",
+        "invoice",
+        "contract",
+        "service_completion_form"
+      ],
+      "venue": [
+        "memo",
+        "invoice",
+        "attendance_list",
+        "activity_report"
+      ],
+      "client_support_food": [
+        "memo",
+        "invoice",
+        "attendance_list",
+        "activity_report"
+      ],
+      "client_support_other": [
+        "memo",
+        "invoice",
+        "attendance_list",
+        "activity_report"
+      ],
+      "client_support_transport": [
+        "memo",
+        "invoice",
+        "payment_sheet",
+        "attendance_list"
+      ],
+      "client_support_educational": [
+        "memo",
+        "invoice",
+        "payment_sheet"
+      ],
+      "advance": [
+        "memo",
+        "advance_request_form"
+      ],
+      "dsa": [
+        "memo",
+        "travel_approval_form",
+        "unreceipted_expenses_form"
+      ],
+      "per_diem": [
+        "memo",
+        "travel_approval_form",
+        "payment_sheet"
+      ],
+      "transportation_ground": [
+        "memo",
+        "invoice",
+        "vehicle_log_sheet"
+      ],
+      "transportation_airfare": [
+        "memo",
+        "invoice",
+        "travel_approval_form"
+      ],
+      "rent": [
+        "memo",
+        "invoice",
+        "contract"
+      ],
+      "utilities": [
+        "memo",
+        "invoice"
+      ],
+      "staff_cost": [
+        "memo",
+        "payment_sheet"
+      ],
+      "petty_cash": [
+        "petty_cash_voucher",
+        "invoice"
+      ],
+      "wht_remittance": [
+        "remittance_evidence"
+      ]
+    }
   },
   "grants": [],
   "admin": {
@@ -194,5 +294,11 @@
     "PAYMENT TERMS: 5 working days upon receipt of a valid invoice (PO template).",
     "PROCUREMENT COMMITTEE: reviews all procurement above N2,000,000, approves contract variations above N2,000,000, and approves the vendor list."
   ],
-  "_bank_accounts_note": "Register these with POST /treasury/accounts on first setup — account NUMBERS are deliberately not stored in this repo. Codes and project names come from Neem Account Details.docx. Reconciliation refuses to run without knowing which account a statement belongs to, because a payment of the same amount exists in several of them."
+  "_bank_accounts_note": "Register these with POST /treasury/accounts on first setup — account NUMBERS are deliberately not stored in this repo. Codes and project names come from Neem Account Details.docx. Reconciliation refuses to run without knowing which account a statement belongs to, because a payment of the same amount exists in several of them.",
+  "_reference_format": {
+    "_source": "Observed on every cashbook line: NF/HQ/B24/CARE/SEP23/PV/01",
+    "pattern": "NF/{location}/{project_code}/{donor}/{MONYY}/PV/{seq:02d}",
+    "example": "NF/HQ/B24/CARE/SEP23/PV/01",
+    "_note": "Generating THEIR reference rather than REQ-0001 means DOCex output files straight into their existing system with no translation. Not yet implemented — see DOCEX_IMPROVEMENT_AUDIT.md item 4."
+  }
 }

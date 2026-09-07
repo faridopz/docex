@@ -305,4 +305,50 @@ check("NEEM cannot read an EVA requisition", rq.get_requisition(OTHER, r1.id), N
 print()
 if _fail:
     raise SystemExit(f"{_fail} check(s) failed")
+
+# ─── per-category document packs ────────────────────────────────────────────
+# NEEM's own deck: "the correct pack depends on whether it concerns goods,
+# services, an activity, an advance, a reimbursement or a final balance
+# payment." Asking a N40,000 reimbursement for a GRN trains people to ignore
+# the check, and an ignored check is worse than no check.
+
+_pack_wf = rq.RequisitionWorkflow(
+    org_id=ORG,
+    steps=[rq.WorkflowStep(key="finance", label="Finance", department="finance")],
+    required_documents=["memo", "invoice"],
+    documents_by_category={
+        "equipment": ["memo", "invoice", "purchase_order", "grn"],
+        "dsa": ["memo", "travel_approval_form", "unreceipted_expenses_form"],
+    },
+    allowed_categories=["equipment", "dsa", "utilities"],
+)
+rq.set_workflow(ORG, _pack_wf)
+
+check("goods need a GRN",
+      "grn" in rq.required_documents_for(_pack_wf, "equipment"), True)
+check("a travel allowance does NOT need a GRN",
+      "grn" in rq.required_documents_for(_pack_wf, "dsa"), False)
+check("it needs the travel approval form instead",
+      "travel_approval_form" in rq.required_documents_for(_pack_wf, "dsa"), True)
+check("a category with no pack falls back to the org-wide list",
+      rq.required_documents_for(_pack_wf, "utilities"), ["memo", "invoice"])
+
+_equip = rq.Requisition(id="pack1", org_id=ORG, vendor_name="Laptop Vendor",
+                        amount=900_000, category="equipment", project_code="B24",
+                        documents=["memo", "invoice"])
+_c = next(c for c in rq.run_policy_checks(ORG, _equip) if c.code == "DOCS_COMPLETE")
+check("equipment missing its GRN is flagged", _c.result, rq.CheckResult.WARNING)
+check("and the message names the payment type",
+      "equipment payment" in _c.message, True)
+
+_dsa = rq.Requisition(id="pack2", org_id=ORG, vendor_name="Amina Bello",
+                      amount=60_000, category="dsa", project_code="B24",
+                      documents=["memo", "travel_approval_form",
+                                 "unreceipted_expenses_form"])
+_c = next(c for c in rq.run_policy_checks(ORG, _dsa) if c.code == "DOCS_COMPLETE")
+check("a correctly documented DSA passes without a GRN", _c.result, rq.CheckResult.PASS)
+check("and says so in the payment's own terms",
+      "dsa payment are attached" in _c.message, True)
+
+
 print("All requisition checks passed.")

@@ -132,6 +132,13 @@ class RequisitionWorkflow(BaseModel):
     forbidden_vendors: list[str] = Field(default_factory=list)
     approved_vendors: list[str] = Field(default_factory=list)  # empty = allow all
     required_documents: list[str] = Field(default_factory=list)
+    # Per-category packs. NEEM's own deck says it plainly: "the correct pack
+    # depends on whether it concerns goods, services, an activity, an advance,
+    # a reimbursement or a final balance payment." One flat list asks a
+    # N40,000 reimbursement for the same evidence as a N3m equipment purchase,
+    # which trains people to ignore the check — and an ignored check is worse
+    # than no check. A category with no entry falls back to required_documents.
+    documents_by_category: dict[str, list[str]] = Field(default_factory=dict)
     duplicate_window_days: int = 30
     updated_at: Optional[str] = None
 
@@ -358,6 +365,24 @@ def get_workflow(org_id: str) -> RequisitionWorkflow:
     return RequisitionWorkflow.model_validate(raw) if raw else default_workflow(org)
 
 
+def required_documents_for(wf: RequisitionWorkflow, category: str) -> list[str]:
+    """The document pack for this kind of payment.
+
+    A goods purchase needs a GRN; a workshop needs an attendance list and a
+    payment sheet; a travel advance needs a travel approval form beforehand and
+    an unreceipted expenses form afterwards. Asking for all of them on every
+    payment is how a check becomes noise.
+
+    Falls back to the org-wide list when a category has no pack of its own, so
+    an organisation that has not configured packs is unaffected.
+    """
+    want = (category or "").strip().lower()
+    for key, docs in (wf.documents_by_category or {}).items():
+        if key.strip().lower() == want:
+            return list(docs)
+    return list(wf.required_documents)
+
+
 def _steps_for(wf: RequisitionWorkflow, amount: float) -> list[WorkflowStep]:
     """Only the steps this amount actually has to pass through."""
     return [s for s in wf.steps if _money(amount) >= _money(s.min_amount)]
@@ -451,17 +476,25 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
                      f"Category '{req.category or '(none)'}' is not a permitted spend category."),
         ))
 
-    # 7. Required documents present
-    if wf.required_documents:
+    # 7. Required documents present — for THIS kind of payment
+    required = required_documents_for(wf, req.category)
+    if required:
         have = {d.strip().lower() for d in req.documents}
-        missing = [d for d in wf.required_documents if d.strip().lower() not in have]
+        missing = [d for d in required if d.strip().lower() not in have]
+        specific = (req.category or "").strip().lower() in {
+            k.strip().lower() for k in wf.documents_by_category}
         checks.append(PolicyCheck(
             code="DOCS_COMPLETE", name="Supporting documents attached",
             result=CheckResult.WARNING if missing else CheckResult.PASS,
-            policy_value=", ".join(wf.required_documents),
+            policy_value=", ".join(required),
             actual_value=", ".join(req.documents) or "(none)",
-            message=(f"Missing document(s): {', '.join(missing)}." if missing
-                     else "All required documents attached."),
+            message=(
+                (f"Missing document(s) for a {req.category} payment: "
+                 f"{', '.join(missing)}." if specific else
+                 f"Missing document(s): {', '.join(missing)}.")
+                if missing else
+                (f"All documents required for a {req.category} payment are "
+                 "attached." if specific else "All required documents attached.")),
         ))
 
     # 8. Duplicate detection — same vendor + same amount inside the window
