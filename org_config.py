@@ -354,6 +354,29 @@ def feature_enabled(org_id: str, name: str, default: bool = False) -> bool:
     return bool((raw.get("features") or {}).get(name, default))
 
 
+def set_features(org_id: str, **flags: bool) -> dict:
+    """Turn individual features on or off for a live org.
+
+    Applying a whole profile is the right way to CONFIGURE a client. This is
+    for the other case: an instance is already running, someone needs one
+    screen switched on, and rewriting the approval chain to get there would be
+    absurd — and risky.
+
+    It also exists because of a specific confusion worth preventing. The nav is
+    driven by these flags, so a feature nobody switched on simply does not
+    appear. That reads exactly like "the deploy did not work", and the fix
+    (one flag) looks nothing like the suspected cause (a broken build).
+    """
+    org = store.require_org(org_id)
+    raw = store.get_store().get(org, _CONFIG, _FEATURES_ID) or {}
+    features = dict(raw.get("features") or {})
+    features.update({k: bool(v) for k, v in flags.items()})
+    payload = {"modules": list(raw.get("modules") or _ALL_MODULES),
+               "features": features}
+    store.get_store().put(org, _CONFIG, _FEATURES_ID, payload)
+    return payload
+
+
 def client_config(org_id: str) -> dict:
     """What the frontend needs to decide what this client can see.
 
@@ -428,6 +451,12 @@ def _cli(argv: list[str]) -> int:
     v.add_argument("profile")
     d = sub.add_parser("describe", help="print an org's live config as JSON")
     d.add_argument("org_id", nargs="?", default=None)
+    f = sub.add_parser("features",
+                       help="turn features on/off for a running org, e.g. "
+                            "features timesheets=on bank_reconciliation=on")
+    f.add_argument("settings", nargs="*",
+                   help="name=on / name=off pairs. No pairs = just list them.")
+    f.add_argument("--org", default=None)
     args = p.parse_args(argv)
 
     # Same backend selection as api/main.py, so the CLI writes where the API reads.
@@ -435,6 +464,26 @@ def _cli(argv: list[str]) -> int:
     if db:
         import store_sql
         store.set_store(store_sql.SqliteStore(db))
+
+    if args.cmd == "features":
+        org = args.org or os.environ.get("DOCEX_ORG") or "default"
+        flags = {}
+        for pair in args.settings:
+            if "=" not in pair:
+                print(f"error: expected name=on or name=off, got '{pair}'",
+                      file=sys.stderr)
+                return 2
+            name, _, value = pair.partition("=")
+            flags[name.strip()] = value.strip().lower() in ("on", "true", "1", "yes")
+        if flags:
+            set_features(org, **flags)
+            print(f"Updated {len(flags)} feature(s) for '{org}'.")
+        current = client_config(org)["features"]
+        if not current:
+            print(f"No features set for '{org}' — every optional screen is hidden.")
+        for name in sorted(current):
+            print(f"  {'ON ' if current[name] else 'off'}  {name}")
+        return 0
 
     if args.cmd in ("apply", "validate"):
         try:
