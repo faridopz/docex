@@ -144,11 +144,11 @@
   },
   "_confirm_before_go_live": [
     "THRESHOLD CONFLICT — the signed Procurement Policy (p6) says three quotes are required from N200,001. The Finance Processes deck (slide 4) says a direct memo suffices up to N499,999 and RFQ starts at N500,000. These disagree across N200,001-N499,999. Ask which governs; the policy is signed, the deck is what staff are trained on.",
-    "MULTI-ACCOUNT — Neem runs roughly 20 bank accounts, one per project (B2, B9, B19, B24...), across GTBank, Zenith and Lotus, plus a separate legal entity (Neem Institute Ltd). Reconciliation currently assumes ONE account. Confirm whether they want per-account reconciliation (correct) or a consolidated view.",
-    "WHT ON EVERY PAYMENT — 5% or 10% withholding tax is a SEPARATE bank transaction, remitted by RRR to FIRS, coded 62010. One vendor invoice therefore produces TWO debits. Reconciliation must expect this or every WHT line reads as unapproved money.",
     "GTBANK GAPS — payments are batched into a WEEKLY schedule and uploaded to GAPS; the AED gives final release approval inside GAPS. Confirm whether the statement shows one debit per payee or one per batch. This decides individual vs bulk in the payment ledger.",
     "BANK STATEMENT FORMAT — still needed. Their own reconciliation is BALANCE-based (bank balance vs cashbook balance, plus unpresented, less uncredited). DOCex matches line-by-line. Both are wanted; ours finds what theirs cannot.",
-    "PAYE / PENSION RATES — still not in any document supplied. Payroll stays OFF."
+    "PAYE / PENSION RATES — still not in any document supplied. Payroll stays OFF.",
+    "BANK ACCOUNT REGISTER — build it on day one from Neem Account Details.docx (about 20 accounts across GTBank, Zenith and Lotus, plus Neem Institute Ltd as a separate entity). Until an account is registered, its statement cannot be reconciled — which is deliberate.",
+    "WHT SCHEDULE — their cashbook shows 5% and 10%. Get the actual schedule from their auditor before switching withholding on; DOCex ships no rates and will withhold nothing until it is entered."
   ],
   "_departments_note": "From 'Neem Finance and Procurement Workflow' and the Finance Processes deck. The real chain is: requesting staff -> line manager (signs memo) -> Finance/Audit (checks the pack) -> Admin (forwards) -> AED (reviews, approves) -> Head of Finance (uploads the weekly schedule to GTBank GAPS) -> AED (final approval IN GAPS releases the funds). Admin is a real routing step, not a formality, which is why it is its own department.",
   "_account_codes": {
@@ -193,5 +193,6 @@
     "PETTY CASH: monthly ledger, must be retired before the next disbursement.",
     "PAYMENT TERMS: 5 working days upon receipt of a valid invoice (PO template).",
     "PROCUREMENT COMMITTEE: reviews all procurement above N2,000,000, approves contract variations above N2,000,000, and approves the vendor list."
-  ]
+  ],
+  "_bank_accounts_note": "Register these with POST /treasury/accounts on first setup — account NUMBERS are deliberately not stored in this repo. Codes and project names come from Neem Account Details.docx. Reconciliation refuses to run without knowing which account a statement belongs to, because a payment of the same amount exists in several of them."
 }

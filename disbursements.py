@@ -94,6 +94,12 @@ class Disbursement(BaseModel):
 
     payee_name: str = ""
     payee_account: str = ""
+
+    # WHICH account the money left from. A donor-funded NGO ring-fences each
+    # grant in its own account, so this is part of a payment's identity, not a
+    # label — see bank_accounts.py. Empty means single-account, unchanged.
+    account_id: str = ""
+    account_code: str = ""
     amount: float = 0.0
     currency: str = "NGN"
 
@@ -156,6 +162,8 @@ def record(
     batch_id: str = "",
     settlement: Settlement | str = Settlement.INDIVIDUAL,
     memo: str = "",
+    account_id: str = "",
+    account_code: str = "",
 ) -> Disbursement:
     """Record one payment.
 
@@ -187,6 +195,8 @@ def record(
         batch_id=batch_id,
         settlement=Settlement(settlement),
         memo=memo,
+        account_id=account_id,
+        account_code=account_code,
         created_at=_now_iso(),
     )
     store.get_store().put(org, _DISBURSEMENTS, d.id, d.model_dump())
@@ -205,6 +215,8 @@ def record_batch(
     currency: str = "NGN",
     bulk_reference: str = "",
     bulk_payee: str = "",
+    account_id: str = "",
+    account_code: str = "",
 ) -> list[Disbursement]:
     """Record a payroll run or participant voucher.
 
@@ -234,6 +246,7 @@ def record_batch(
             source_ref=source_ref, payee_name=payee, amount=total,
             paid_at=when, paid_by=paid_by, bank_reference=bulk_reference,
             currency=currency, batch_id=batch_id, settlement=Settlement.BULK,
+            account_id=account_id, account_code=account_code,
             memo=f"Bulk transfer covering {len(rows)} payee(s).")]
 
     return [record(
@@ -246,6 +259,7 @@ def record_batch(
         payee_account=str(r.get("payee_account") or ""),
         currency=currency, batch_id=batch_id,
         settlement=Settlement.INDIVIDUAL,
+        account_id=account_id, account_code=account_code,
         memo=str(r.get("memo") or ""),
     ) for r in rows]
 
@@ -296,8 +310,15 @@ def list_disbursements(
     start: Optional[str] = None,
     end: Optional[str] = None,
     source_kind: Optional[SourceKind | str] = None,
+    account_id: Optional[str] = None,
 ) -> list[Disbursement]:
-    """Every payment in the window, from every path, newest first."""
+    """Every payment in the window, from every path, newest first.
+
+    `account_id` scopes to one bank account. Without it a twenty-account
+    organisation would reconcile one account's statement against every
+    account's payments — and same-amount payments across grants would match
+    each other, producing a clean report about the wrong money.
+    """
     org = store.require_org(org_id)
 
     if period:
@@ -313,6 +334,10 @@ def list_disbursements(
     if source_kind is not None:
         want = SourceKind(source_kind)
         out = [d for d in out if d.source_kind == want]
+    if account_id is not None:
+        # Payments recorded before the register existed carry no account, so
+        # they stay visible rather than vanishing from a client's history.
+        out = [d for d in out if d.account_id in ("", account_id)]
     if start:
         out = [d for d in out if d.paid_date >= start]
     if end:

@@ -146,6 +146,7 @@ from .payroll_routes import router as payroll_router  # noqa: E402
 from .reconciliation_routes import router as reconciliation_router  # noqa: E402
 from .vendor_routes import router as vendor_router  # noqa: E402
 from .accounting_routes import router as accounting_router  # noqa: E402
+from .treasury_routes import router as treasury_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -438,6 +439,12 @@ app.include_router(vendor_router)
 # be connected to QuickBooks bank feeds, so that reformatting is done by hand
 # today. Gated on `accounting_export`. See api/accounting_routes.py.
 app.include_router(accounting_router)
+
+# Treasury — the bank accounts money leaves from, and the tax withheld before
+# it goes. Both exist so a payment can be reconciled: a donor-funded NGO
+# ring-fences each grant in its own account, and every Nigerian vendor payment
+# produces a second debit for withholding tax. See api/treasury_routes.py.
+app.include_router(treasury_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

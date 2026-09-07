@@ -195,6 +195,12 @@ class ReconciliationRun(BaseModel):
     period_start: str = ""
     period_end: str = ""
 
+    # WHICH account. A twenty-account organisation reconciles twenty
+    # statements; a run that cannot say which one it belongs to is not
+    # evidence of anything. Empty means the org has a single account.
+    account_id: str = ""
+    account_label: str = ""
+
     statement_name: str = ""
     statement_sha256: str = ""       # proves WHICH file was reconciled
     statement_lines: int = 0
@@ -672,6 +678,7 @@ def reconcile(
     date_window_days: int = DEFAULT_DATE_WINDOW_DAYS,
     settlement_days: int = DEFAULT_SETTLEMENT_DAYS,
     actor: str = "",
+    account_id: Optional[str] = None,
     transactions: Optional[list] = None,
 ) -> ReconciliationRun:
     """Reconcile one month's payments against the bank statement.
@@ -691,13 +698,31 @@ def reconcile(
     org = store.require_org(org_id)
     start, end = _period_bounds(period)
 
+    # WHICH ACCOUNT. With one account this is a no-op. With twenty — NEEM's
+    # real situation — reconciling a statement against every account's payments
+    # would match a CARE payment to a UNFPA statement line of the same amount
+    # and report both months clean. resolve_for_reconciliation refuses rather
+    # than guessing; see bank_accounts.py.
+    account = None
+    if transactions is None:
+        try:
+            import bank_accounts as _acct
+            account = _acct.resolve_for_reconciliation(
+                org, account_id,
+                detected_number=_acct.detect_account_number(
+                    statement.decode("utf-8-sig", errors="replace")))
+        except ImportError:                                   # pragma: no cover
+            account = None
+
     # EVERY payment path, not just requisitions. Reading only requisitions is
     # what made an approved payroll run appear as "money nobody authorised" —
     # the most serious finding the system produces, fired at a correct payment.
     # disbursements.py is the one place all paths record what actually left.
     import disbursements as _disb
     txns = (transactions if transactions is not None
-            else _disb.list_disbursements(org, start=start, end=end))
+            else _disb.list_disbursements(
+                org, start=start, end=end,
+                account_id=account.id if account else None))
     txns = [t for t in txns if start <= (t.paid_at or "")[:10] <= end]
 
     lines, cmap = parse_statement(statement, filename=filename, column_map=column_map)
@@ -842,6 +867,8 @@ def reconcile(
     run = ReconciliationRun(
         id=uuid.uuid4().hex[:12], org_id=org, period=period,
         period_start=start, period_end=end,
+        account_id=account.id if account else "",
+        account_label=account.label if account else "",
         statement_name=filename,
         statement_sha256=hashlib.sha256(statement).hexdigest(),
         statement_lines=len(lines),
