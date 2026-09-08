@@ -106,7 +106,15 @@ services:
     name: docex-api
     runtime: docker
     plan: free
-    region: oregon
+    # Frankfurt, not Oregon. Every request from Lagos crosses the Atlantic
+    # twice on a US region; Frankfurt is roughly a third of the round trip.
+    # It costs nothing and is the single cheapest latency win available.
+    #
+    # Put the DATABASE in the same region. An app in Frankfurt talking to a
+    # database in Stockholm pays ~20-30ms on every query, and one page load
+    # makes many — that is the difference between a screen that feels instant
+    # and one that feels tired.
+    region: frankfurt
     branch: demo-release
     dockerfilePath: ./api/Dockerfile
     dockerContext: .

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   AlertCircle,
@@ -36,7 +36,34 @@ import {
  * panel that must be dismissed deliberately, never a toast, because they are
  * shown exactly once and losing them means an admin reset.
  */
+/**
+ * `useSearchParams()` opts a page out of static prerendering, and Next refuses
+ * to build unless the boundary is explicit. It is read here only to notice
+ * `?setup=1` — the flag set when sign-in sends someone straight to enrolment —
+ * so the fallback is the same loading state the page shows anyway.
+ *
+ * Worth recording how this was found: `tsc --noEmit` passed, because it is not
+ * a type error. It only appeared when Vercel prerendered the route, and it
+ * failed the whole production build. A frontend that compiles is not a
+ * frontend that deploys.
+ */
 export default function SecurityPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell>
+          <div className="flex items-center gap-2 px-6 py-16 text-sm text-gray-400">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        </AppShell>
+      }
+    >
+      <SecuritySettings />
+    </Suspense>
+  );
+}
+
+function SecuritySettings() {
   const { user, ready } = useAuth();
   const params = useSearchParams();
   const isAdmin = user?.role === "admin";
