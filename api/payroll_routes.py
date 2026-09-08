@@ -55,6 +55,11 @@ def _line_out(l: payroll.PayrollLine) -> dict:
     return {
         "staff_id": l.staff_id,
         "name": l.name,
+        # Employee or consultant. Decides PAYE vs withholding tax, so it is not
+        # a label — a line with both would be a defect.
+        "engagement": l.engagement,
+        "withheld": l.withheld,
+        "withholding_rate": l.withholding_rate,
         "gross": l.gross,
         "deductions": [{"code": d.code, "name": d.name, "amount": d.amount}
                        for d in l.deductions],
@@ -210,6 +215,7 @@ async def submit_run(run_id: str, ctx: Ctx = Depends(request_context)):
 
 @router.post("/runs/{run_id}/paid")
 async def mark_paid(run_id: str, bulk_reference: str = Form(""),
+                    account_id: str = Form(""), account_code: str = Form(""),
                     ctx: Ctx = Depends(request_context)):
     """Record payment. Refused unless the linked transaction actually reached
     'paid' — the gate is the state machine, not this endpoint.
@@ -223,7 +229,9 @@ async def mark_paid(run_id: str, bulk_reference: str = Form(""),
     require_role(ctx, "admin", "approver")
     try:
         run = payroll.mark_paid(ctx.org_id, run_id, paid_by=ctx.user_id,
-                                bulk_reference=bulk_reference)
+                                bulk_reference=bulk_reference,
+                                account_id=account_id,
+                                account_code=account_code)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return _run_detail(run)

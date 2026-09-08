@@ -174,6 +174,43 @@ def test_the_switch_can_be_turned_off() -> None:
     check("no timesheet notes at all", not line.notes)
 
 
+def test_a_consultant_is_withheld_not_paye() -> None:
+    """The fork that makes timesheets, payroll and withholding one system.
+
+    Abvius makes the same distinction — their timesheet module generates
+    "consultants' invoices OR employees' payslips". Same hours, same grid,
+    different tax treatment, and getting it backwards is an over-deduction on
+    one side and an under-remittance on the other.
+    """
+    print("\nSame timesheet, different engagement, different tax")
+    import withholding as wht
+    wht.set_policy(ORG, wht.WHTPolicy(
+        enabled=True, account_code="62010",
+        rules=[wht.WHTRule(category="consultancy", rate_percent=5.0,
+                           payee_type="individual")]))
+    payroll.add_staff(
+        ORG, id="tunde", email="tunde@org", name="Tunde Consultant",
+        gross_salary=400_000, engagement="consultant",
+        allocations=[payroll.SalaryAllocation(project_code="GF-2026-TB",
+                                              donor="Global Fund", percent=100)])
+
+    run = payroll.build_run(ORG, PERIOD)
+    employee = next(l for l in run.lines if l.staff_id == "amina")
+    consultant = next(l for l in run.lines if l.staff_id == "tunde")
+
+    check("the employee has PAYE deducted",
+          employee.total_employee_deductions > 0)
+    check("and no withholding", employee.withheld == 0)
+    check("the consultant has withholding", consultant.withheld == 20_000.0)
+    check("and NO payroll deductions", consultant.total_employee_deductions == 0)
+    check("never both on one line",
+          not (consultant.withheld and consultant.total_employee_deductions))
+    check("the consultant's net is gross less WHT", consultant.net == 380_000.0)
+    check("the rate is recorded on the line", consultant.withholding_rate == 5.0)
+    check("and the engagement is on the record",
+          consultant.engagement == "consultant" and employee.engagement == "employee")
+
+
 def main() -> int:
     print("=" * 64)
     print("Payroll ← timesheets: charge the grant for work actually done")
@@ -185,6 +222,7 @@ def main() -> int:
     test_verified_run_says_so()
     test_hours_on_an_uncoded_project_are_disclosed()
     test_the_switch_can_be_turned_off()
+    test_a_consultant_is_withheld_not_paye()
     print("\n" + "=" * 64)
     print(f"{_passed} passed, {_failed} failed")
     print("=" * 64)

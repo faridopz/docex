@@ -69,6 +69,13 @@ class StaffRecord(BaseModel):
     email: str = ""
     org_id: str = ""
     name: str
+    # THE fork that decides how this person is taxed. An employee has PAYE and
+    # pension deducted from a salary; a consultant invoices and has WITHHOLDING
+    # tax deducted at source. Applying salary deductions to a consultant is an
+    # over-deduction and a dispute; applying withholding to an employee is an
+    # under-remittance of PAYE. NEEM has both — their cashbook codes staff cost
+    # to 16000 and independent contractors to 61011 with 10% WHT.
+    engagement: Literal["employee", "consultant"] = "employee"
     position: str = ""
     office: str = ""                        # HQ / state / field
     gross_salary: float = 0.0               # monthly gross
@@ -123,6 +130,12 @@ class DeductionResult(BaseModel):
 class PayrollLine(BaseModel):
     staff_id: str
     name: str
+    engagement: Literal["employee", "consultant"] = "employee"
+    # Set for consultants only. Salary deductions and withholding tax are
+    # alternatives, never both — a line carrying both is a defect, not a
+    # rounding difference.
+    withheld: float = 0.0
+    withholding_rate: float = 0.0
     position: str = ""
     office: str = ""
     gross: float = 0.0
@@ -339,12 +352,35 @@ def build_run(org_id: str, period: str, *,
 
     for s in people:
         flags: list[str] = []
+        notes: list[str] = []
         gross = _money(s.gross_salary)
-        deductions = compute_deductions(gross, policy)
+        # A consultant is not on payroll deductions. They invoice for their
+        # time and the organisation withholds tax at source, exactly as it
+        # would for any other vendor — the fact that the hours came from a
+        # timesheet does not change the tax treatment.
+        withheld = 0.0
+        wht_rate = 0.0
+        if getattr(s, "engagement", "employee") == "consultant":
+            deductions = []
+            try:
+                import withholding as _wht
+                _r = _wht.compute(org, gross=gross, category="consultancy",
+                                  payee_type="individual")
+                withheld, wht_rate = _r.withheld, _r.rate_percent
+                if not _r.applies:
+                    notes.append(
+                        f"Consultant, but no withholding was applied: {_r.reason}")
+            except ImportError:                                # pragma: no cover
+                notes.append("Consultant, but the withholding engine is "
+                             "unavailable — no tax was deducted.")
+        else:
+            deductions = compute_deductions(gross, policy)
 
         employee_total = _money(sum(d.amount for d in deductions if not d.employer_paid))
         employer_total = _money(sum(d.amount for d in deductions if d.employer_paid))
-        net = _money(gross - employee_total)
+        # A consultant's net is gross less WITHHOLDING; an employee's is gross
+        # less payroll deductions. Never both — see StaffRecord.engagement.
+        net = _money(gross - (withheld if withheld else employee_total))
         if net < 0:
             flags.append("Deductions exceed gross — check the rates.")
             net = 0.0
@@ -357,7 +393,6 @@ def build_run(org_id: str, period: str, *,
         # percentages sit on the staff record, and the line records which was
         # used — because "how do you know they worked that much on it" is the
         # first question an auditor asks about a payroll line.
-        notes: list[str] = []
         allocations = list(s.allocations)
         source: str = "budget" if allocations else "none"
         timesheet_id: Optional[str] = None
@@ -429,6 +464,8 @@ def build_run(org_id: str, period: str, *,
 
         lines.append(PayrollLine(
             staff_id=s.id, name=s.name, position=s.position, office=s.office,
+            engagement=getattr(s, "engagement", "employee"),
+            withheld=withheld, withholding_rate=wht_rate,
             gross=gross, deductions=deductions,
             total_employee_deductions=employee_total,
             total_employer_contributions=employer_total,
@@ -538,6 +575,7 @@ def submit_for_approval(org_id: str, run_id: str, *,
 
 def mark_paid(org_id: str, run_id: str, *, paid_by: str = "",
               bulk_reference: str = "",
+              account_id: str = "", account_code: str = "",
               references: Optional[dict[str, str]] = None) -> PayrollRun:
     """Record that an APPROVED run has been paid. Refuses unless the linked
     transaction actually reached 'paid' — the approval gate is the state
@@ -590,6 +628,10 @@ def mark_paid(org_id: str, run_id: str, *, paid_by: str = "",
             currency=run.currency,
             bulk_reference=bulk_reference,
             bulk_payee=f"Payroll {run.period}",
+            # WHICH account salaries left from. NEEM runs a dedicated salary
+            # account (B2) separate from each project's; without this the run's
+            # payments are out of scope for every account's reconciliation.
+            account_id=account_id, account_code=account_code,
             lines=[{"payee_name": l.name or l.staff_id,
                     "amount": l.net,
                     "bank_reference": refs.get(l.staff_id, ""),
