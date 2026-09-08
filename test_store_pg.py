@@ -132,6 +132,94 @@ def test_path_traversal_still_refused(pg) -> None:
             check(f"{why} rejected", True)
 
 
+# ─── it is not published to the internet ────────────────────────────────────
+
+
+def test_records_are_not_in_the_public_schema(pg) -> None:
+    print("\nSupabase publishes `public` over HTTPS — our table is not in it")
+    import psycopg
+    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+        cur.execute("SELECT schemaname, rowsecurity FROM pg_tables "
+                    "WHERE tablename = 'records'")
+        rows = {r[0]: r[1] for r in cur.fetchall()}
+
+    check("the table lives in a private schema", pg.schema in rows,
+          f"found in: {sorted(rows) or 'nowhere'}")
+    check("and NOT in public", "public" not in rows,
+          "a public.records table would be readable over HTTPS with the "
+          "project's anon key — no password, no session, no audit entry")
+    check("row-level security is on as a second line of defence",
+          rows.get(pg.schema) is True)
+
+    # 'public' as a schema name must be refused outright, not quietly accepted.
+    import os
+    import store_sql
+    os.environ["DOCEX_PG_SCHEMA"] = "public"
+    try:
+        store_sql.PostgresStore(DSN)
+        check("'public' is refused as a schema name", False, "it was accepted")
+    except Exception as exc:                                     # noqa: BLE001
+        check("'public' is refused as a schema name",
+              "public" in str(exc).lower())
+    os.environ["DOCEX_PG_SCHEMA"] = "docex_evil'; DROP TABLE records; --"
+    try:
+        store_sql.PostgresStore(DSN)
+        check("an injected schema name is refused", False, "it was accepted")
+    except Exception as exc:                                     # noqa: BLE001
+        check("an injected schema name is refused", "invalid" in str(exc).lower())
+    finally:
+        os.environ.pop("DOCEX_PG_SCHEMA", None)
+
+
+def test_the_api_role_cannot_read_it(pg) -> None:
+    """Simulate Supabase's `anon` role and try to read a payment."""
+    print("\nA Supabase anon key, pointed straight at the payments table")
+    import psycopg
+    with psycopg.connect(DSN) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'docex_anon_probe'")
+            if not cur.fetchone():
+                cur.execute("CREATE ROLE docex_anon_probe NOLOGIN")
+            # Exactly what Supabase grants its API roles by default.
+            cur.execute("GRANT USAGE ON SCHEMA public TO docex_anon_probe")
+
+    pg.put(ORG, "payments", "secret", {"id": "secret", "payee": "Zenith Ltd",
+                                       "amount": 4_500_000})
+
+    with psycopg.connect(DSN) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SET ROLE docex_anon_probe")
+            try:
+                cur.execute(f"SELECT count(*) FROM {pg.schema}.records")
+                n = cur.fetchone()[0]
+                check("the API role cannot read payment records", False,
+                      f"it read {n} rows — this data is one HTTP request away")
+            except psycopg.errors.InsufficientPrivilege:
+                check("the API role is refused: permission denied", True)
+            except Exception as exc:                             # noqa: BLE001
+                check("the API role is refused", True, type(exc).__name__)
+
+    with psycopg.connect(DSN) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM %s.records" % pg.schema)
+            check("but the application itself still reads normally",
+                  cur.fetchone()[0] > 0)
+    # Cleanup is best effort: roles are cluster-wide, so a grant left in
+    # another database on the same server blocks the drop. That is tidiness,
+    # not a finding — never fail the suite on it.
+    try:
+        with psycopg.connect(DSN) as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("REVOKE ALL ON SCHEMA public FROM docex_anon_probe")
+                cur.execute("DROP ROLE IF EXISTS docex_anon_probe")
+    except Exception:
+        pass
+
+
 # ─── it holds up under twenty people ────────────────────────────────────────
 
 
@@ -300,6 +388,8 @@ if __name__ == "__main__":
     test_upsert_does_not_duplicate(pg)
     test_a_big_record(pg)
     test_path_traversal_still_refused(pg)
+    test_records_are_not_in_the_public_schema(pg)
+    test_the_api_role_cannot_read_it(pg)
     test_connections_are_pooled(pg)
     test_twenty_people_saving_at_once(pg)
     test_concurrent_writes_to_one_record(pg)

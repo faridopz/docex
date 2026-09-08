@@ -52,8 +52,26 @@ CREATE INDEX IF NOT EXISTS idx_records_org_collection
     ON records (org_id, collection);
 """
 
+# NOT IN THE `public` SCHEMA — this is a security control, not tidiness.
+#
+# Supabase (and any Postgres fronted by PostgREST) publishes every table in
+# `public` as an HTTPS REST endpoint, readable with the project's `anon` key.
+# That key is designed to be public: it ships inside frontend bundles and is
+# printed in the dashboard. A `public.records` table would therefore put every
+# requisition, approval, vendor bank detail and payment amount one HTTP request
+# away from anyone who learned the project URL — no password, no session, no
+# trace in our audit log.
+#
+# The Data API only exposes schemas it has been told to expose, and `docex` is
+# not one of them. So the table lives here, and the grants below remove it from
+# the API roles as well. Two independent controls, because the cost of getting
+# this wrong is a client's entire payment history.
+_PG_SCHEMA_DEFAULT = "docex"
+
 _SCHEMA_POSTGRES = """
-CREATE TABLE IF NOT EXISTS records (
+CREATE SCHEMA IF NOT EXISTS {schema};
+
+CREATE TABLE IF NOT EXISTS {schema}.records (
     org_id     TEXT NOT NULL,
     collection TEXT NOT NULL,
     record_id  TEXT NOT NULL,
@@ -62,7 +80,30 @@ CREATE TABLE IF NOT EXISTS records (
     PRIMARY KEY (org_id, collection, record_id)
 );
 CREATE INDEX IF NOT EXISTS idx_records_org_collection
-    ON records (org_id, collection);
+    ON {schema}.records (org_id, collection);
+
+-- Row-level security with no policies: a belt to the schema's braces. Even if
+-- someone later exposes this schema to the Data API, RLS denies every read to
+-- the API roles because no policy grants one. The owning role we connect as
+-- bypasses RLS, so the application is unaffected.
+ALTER TABLE {schema}.records ENABLE ROW LEVEL SECURITY;
+"""
+
+# Revoke from the roles PostgREST authenticates as. Wrapped in a DO block that
+# checks each role exists first, because on a plain Postgres — a laptop, a CI
+# runner, Render's own database — `anon` and `authenticated` do not exist and a
+# bare REVOKE would abort the whole schema setup.
+_REVOKE_API_ROLES = """
+DO $$
+DECLARE r TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'public'] LOOP
+        IF r = 'public' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('REVOKE ALL ON SCHEMA {schema} FROM %I', r);
+            EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM %I', r);
+        END IF;
+    END LOOP;
+END $$;
 """
 
 
@@ -263,7 +304,23 @@ class PostgresStore:
             ) from exc
 
         import os
+        import re as _re
         self.dsn = dsn
+        # Identifier, not a value — it is interpolated into DDL, so it is
+        # restricted rather than escaped.
+        raw_schema = (os.environ.get("DOCEX_PG_SCHEMA", "").strip()
+                      or _PG_SCHEMA_DEFAULT)
+        if not _re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", raw_schema):
+            raise StoreError(
+                f"Invalid DOCEX_PG_SCHEMA {raw_schema!r}: lowercase letters, "
+                "digits and underscores only.")
+        if raw_schema == "public":
+            raise StoreError(
+                "DOCEX_PG_SCHEMA must not be 'public'. A Data API (Supabase, "
+                "PostgREST) publishes every table in the public schema over "
+                "HTTPS with a key that is designed to be public — that would "
+                "make every payment record readable without a session.")
+        self.schema = raw_schema
         if max_size is None:
             try:
                 max_size = int(os.environ.get("DOCEX_PG_POOL_MAX", "") or self.DEFAULT_MAX)
@@ -324,7 +381,13 @@ class PostgresStore:
         one case — the connection was closed by the server between the health
         check and the query — and deliberately does not cover query errors,
         which must surface.
+
+        `{t}` in the SQL becomes the fully qualified table name. Every query
+        goes through here, so the schema cannot be forgotten in a new method —
+        and a bare `records` would not silently resolve to a `public` table
+        that a Data API might publish, it would simply fail.
         """
+        sql = sql.format(t=f"{self.schema}.records")
         import psycopg
         last: Exception | None = None
         for attempt in (1, 2):
@@ -347,7 +410,38 @@ class PostgresStore:
 
     def _init_schema(self) -> None:
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(_SCHEMA_POSTGRES)
+            cur.execute(_SCHEMA_POSTGRES.format(schema=self.schema))
+            try:
+                cur.execute(_REVOKE_API_ROLES.format(schema=self.schema))
+            except Exception as exc:                  # pragma: no cover
+                # Not fatal: the schema itself already keeps this table off the
+                # Data API. Say so loudly rather than silently, because "we
+                # thought it was locked down" is how data gets published.
+                print(f"[store] Note: could not revoke API-role access "
+                      f"({exc}). The '{self.schema}' schema is still not "
+                      "exposed by default — verify in the provider's API "
+                      "settings.", flush=True)
+
+        # Prove it, rather than assume the DDL did what it said. One cheap
+        # query at boot, and a wrong answer here means client records are
+        # reachable over the internet.
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT schemaname, rowsecurity FROM pg_tables "
+                "WHERE tablename = 'records' AND schemaname IN ('public', %s)",
+                (self.schema,))
+            found = {row[0]: row[1] for row in cur.fetchall()}
+        if "public" in found:
+            print("[store] WARNING: a `public.records` table exists. If this "
+                  "database is fronted by a Data API (Supabase, PostgREST), "
+                  "that table is readable over HTTPS with the project's public "
+                  "anon key. It is NOT the table DOCex uses — drop it.",
+                  flush=True)
+        if self.schema not in found:
+            raise StoreError(
+                f"Schema setup did not create {self.schema}.records. Refusing "
+                "to continue rather than fall back to a table that may be "
+                "publicly readable.")
 
     def close(self) -> None:
         """Release pooled connections. Call on shutdown; safe to call twice."""
@@ -363,7 +457,7 @@ class PostgresStore:
         payload = {**data, "org_id": org}
         self._run(
             """
-            INSERT INTO records (org_id, collection, record_id, data, updated_at)
+            INSERT INTO {t} (org_id, collection, record_id, data, updated_at)
             VALUES (%s, %s, %s, %s, now())
             ON CONFLICT (org_id, collection, record_id)
             DO UPDATE SET data = EXCLUDED.data, updated_at = now()
@@ -375,7 +469,7 @@ class PostgresStore:
 
     def get(self, org_id: str, collection: str, record_id: str) -> Optional[dict]:
         row = self._run(
-            "SELECT data FROM records WHERE org_id=%s AND collection=%s AND record_id=%s",
+            "SELECT data FROM {t} WHERE org_id=%s AND collection=%s AND record_id=%s",
             (_validate(org_id, "org id"), _validate(collection, "collection"),
              _validate(record_id, "record id")),
             fetch="one",
@@ -384,7 +478,7 @@ class PostgresStore:
 
     def list(self, org_id: str, collection: str) -> list[dict]:
         rows = self._run(
-            "SELECT data FROM records WHERE org_id=%s AND collection=%s ORDER BY record_id",
+            "SELECT data FROM {t} WHERE org_id=%s AND collection=%s ORDER BY record_id",
             (_validate(org_id, "org id"), _validate(collection, "collection")),
             fetch="all",
         )
@@ -392,7 +486,7 @@ class PostgresStore:
 
     def delete(self, org_id: str, collection: str, record_id: str) -> bool:
         n = self._run(
-            "DELETE FROM records WHERE org_id=%s AND collection=%s AND record_id=%s",
+            "DELETE FROM {t} WHERE org_id=%s AND collection=%s AND record_id=%s",
             (_validate(org_id, "org id"), _validate(collection, "collection"),
              _validate(record_id, "record id")),
             fetch="rowcount",
@@ -401,7 +495,7 @@ class PostgresStore:
 
     def collections(self, org_id: str) -> list[str]:
         rows = self._run(
-            "SELECT DISTINCT collection FROM records WHERE org_id=%s ORDER BY collection",
+            "SELECT DISTINCT collection FROM {t} WHERE org_id=%s ORDER BY collection",
             (_validate(org_id, "org id"),),
             fetch="all",
         )
@@ -411,10 +505,10 @@ class PostgresStore:
 
     def count(self, org_id: Optional[str] = None) -> int:
         if org_id:
-            row = self._run("SELECT COUNT(*) FROM records WHERE org_id=%s",
+            row = self._run("SELECT COUNT(*) FROM {t} WHERE org_id=%s",
                             (_validate(org_id, "org id"),), fetch="one")
         else:
-            row = self._run("SELECT COUNT(*) FROM records", (), fetch="one")
+            row = self._run("SELECT COUNT(*) FROM {t}", (), fetch="one")
         return int(row[0]) if row else 0
 
     def backup(self, destination: Path | str) -> str:
@@ -432,7 +526,7 @@ class PostgresStore:
         dest = Path(destination)
         dest.parent.mkdir(parents=True, exist_ok=True)
         rows = self._run(
-            "SELECT org_id, collection, record_id, data FROM records "
+            "SELECT org_id, collection, record_id, data FROM {t} "
             "ORDER BY org_id, collection, record_id", (), fetch="all")
         with dest.open("w", encoding="utf-8") as fh:
             for org, coll, rid, data in rows:
