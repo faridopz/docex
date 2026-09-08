@@ -201,6 +201,59 @@ ask when you last did one, and "we have backups" is not an answer.
 |---|---|---|---|---|
 | 2026-09-08 | dev verification, SQLite + Postgres | 2 / 273 | verified — restored, both paths | pre-launch |
 
+### Durability log
+
+The redeploy test, which is the only proof that counts.
+
+| Date | Instance | Result |
+|---|---|---|
+| 2026-09-08 | docex-g0up (Frankfurt) → Supabase eu-central-1 | **PASSED** — NEEM admin + config survived a full redeploy; `/auth/status` returned `needs_setup:false` before and after |
+
+---
+
+## A second client
+
+The whole architecture exists so this is an afternoon, not a fork. What NEEM's
+launch actually took, and what changes for client two:
+
+| | NEEM | Client two |
+|---|---|---|
+| Code | — | **identical, no branch** |
+| Supabase project | own, Frankfurt | **own, new** |
+| Render service | own | **own, new** |
+| Vercel project | own | **own, new** |
+| Profile | `profiles/neem.json` | `profiles/<client>.json` |
+| `DOCEX_ORG` | `neem` | `<client>` |
+
+**One instance per client, one shared engine.** Not one instance with two
+tenants — the org-scoped store makes that safe, but separate instances mean a
+bad deploy for one client cannot touch the other, and a client asking "who else
+is on this database" has a clean answer.
+
+The sequence, roughly two hours:
+
+1. `docex-client-onboarding` — triage their asks into config / core / custom
+2. `docex-policy-to-profile` — read their signed policies into
+   `profiles/<client>.json`, with page citations and a list of values to confirm
+3. `python3 org_config.py validate profiles/<client>.json` — before any write
+4. New Supabase project, same region as their Render service
+5. New Render service from `render.yaml`, `DOCEX_ORG=<client>`, **fresh**
+   `AUTH_SECRET` and `DOCEX_SIGNING_KEY` (never shared between clients)
+6. `org_config.py apply` → `describe` → read it against their policy
+7. The redeploy test. Every time. It is the only check that catches silent
+   storage loss, and it takes four minutes.
+8. Add their `DOCEX_DATABASE_URL` to the backup workflow
+
+**A feature they need and the engine lacks is a feature request for the
+engine** — built once, behind a flag, available to everyone. The moment you
+copy a file to make a client-specific version, you have two codebases and every
+future fix costs double.
+
+**What does NOT scale, and will decide your pace:** support hours. Model spend
+is ~₦32k/month at NEEM's volume; hosting is ~₦11k. Your time is the binding
+constraint, which is why staging and the recurring checks matter more with two
+clients than with one.
+
 ---
 
 ## 6. Deploy
@@ -281,3 +334,4 @@ Honest list. None blocks Wednesday; all are owed.
 | Date | What | By |
 |---|---|---|
 | 2026-09-08 | Production hardening: Postgres wired and pooled, boot guards, user management with forced password change, verified backups | pre-launch |
+| 2026-09-08 | **NEEM live.** Supabase eu-central-1 + Render Frankfurt. Config applied, redeploy test passed. Found and fixed: apply_profile silently dropped documents_by_category, so all 19 document packs were missing | go-live |
