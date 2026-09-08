@@ -86,14 +86,25 @@ except Exception as _obs_err:   # never let monitoring setup break the boot
     print(f"[DOCex] Notice: error reporting not started: {_obs_err}", flush=True)
 
 # ─── Storage initialization ──────────────────────────────────────────────────
-# Wire up durable SQL storage if DOCEX_DB is set; otherwise use JSON files.
-# This must happen before any routes are imported, so all engines see the
-# correct store immediately.
+# Choose the backend BEFORE any route is imported, so every engine sees the
+# same store from its first line.
+#
+# Order: Postgres (DOCEX_DATABASE_URL) → SQLite (DOCEX_DB) → JSON files.
+#
+# DOCEX_DATABASE_URL used to be missing from this block entirely. The effect
+# was quiet and expensive: an instance with a managed Postgres correctly wired
+# up would ignore it and write JSON files to the container's local disk, which
+# the platform replaces on every deploy. Nothing errored, because writing a
+# file always succeeds — the records simply were not there the next morning.
+# That is why the production guard below refuses to boot rather than warn.
 try:
     import store
     import store_sql
 
-    _db_path = os.environ.get("DOCEX_DB")
+    _pg_url = (os.environ.get("DOCEX_DATABASE_URL") or "").strip()
+    _db_path = (os.environ.get("DOCEX_DB") or "").strip()
+    _is_production = (os.environ.get("DOCEX_ENV", "").strip().lower() == "production")
+
     # True when WE own storage setup, i.e. the normal server boot. False when a
     # test or embedding process installed a backend before importing the app.
     _owns_storage = not store.is_configured()
@@ -102,18 +113,53 @@ try:
         # writes into the developer's real data/ directory, which then made
         # /auth/status report "already set up" and locked out first-run.
         print("[DOCex] Store already configured by caller; leaving it alone", flush=True)
+    elif _pg_url:
+        # Managed Postgres: the multi-user production path. Pooled and health
+        # checked — see store_sql.PostgresStore for why that is not optional.
+        print("[DOCex] Initializing PostgreSQL storage", flush=True)
+        store.set_store(store_sql.PostgresStore(_pg_url))
     elif _db_path:
-        # Production/cloud: use SQLite at a persistent path (requires mounted volume)
+        # SQLite at a persistent path. Durable ONLY if that path is a mounted
+        # volume; on a container's own disk it is wiped with everything else.
         print(f"[DOCex] Initializing SQLite storage at {_db_path}", flush=True)
         store.set_store(store_sql.SqliteStore(_db_path))
+    elif _is_production:
+        # The whole point of the guard. A finance system that starts up happily
+        # and loses March on the April deploy is worse than one that refuses to
+        # start, because the first failure is discovered by the client.
+        raise RuntimeError(
+            "Refusing to start: DOCEX_ENV=production but neither "
+            "DOCEX_DATABASE_URL nor DOCEX_DB is set, so records would be "
+            "written to the container's local disk and destroyed on the next "
+            "deploy. Set DOCEX_DATABASE_URL to the managed database, or "
+            "DOCEX_DB to a path on a mounted volume.")
     else:
-        # Development: use JSON file store (backward compatible)
+        # Development: JSON files, backward compatible.
         from pathlib import Path as PathlibPath
         _json_root = PathlibPath(__file__).parent.parent / "data"
-        print(f"[DOCex] Using JSON file store at {_json_root} (set DOCEX_DB for SQLite)", flush=True)
+        print(f"[DOCex] Using JSON file store at {_json_root} "
+              "(set DOCEX_DATABASE_URL or DOCEX_DB for durable storage)", flush=True)
         store.set_store(store.JsonFileStore(_json_root))
+
+    # Secrets that are silently generated when absent. Both are fine to leave
+    # unset on a laptop and both cause real damage in production, so they are
+    # checked here rather than discovered later.
+    if _is_production and _owns_storage:
+        if not (os.environ.get("AUTH_SECRET") or "").strip():
+            raise RuntimeError(
+                "Refusing to start: AUTH_SECRET is not set in production. "
+                "Without it each container invents its own signing secret, so "
+                "every user is signed out on every deploy and two instances "
+                "never agree on a session.")
+        if not (os.environ.get("DOCEX_SIGNING_KEY") or "").strip():
+            raise RuntimeError(
+                "Refusing to start: DOCEX_SIGNING_KEY is not set in "
+                "production. It signs the append-only audit chain; a "
+                "per-container key means verify_audit_chain() fails on records "
+                "written by any other container. Set it ONCE and never rotate "
+                "it — rotating invalidates every historical record.")
 except Exception as _store_err:
-    print(f"[DOCex] WARNING: failed to initialize store: {_store_err}", flush=True)
+    print(f"[DOCex] FATAL: {_store_err}", flush=True)
     raise
 
 # One-time import of accounts/departments from the pre-store file layout, so an
@@ -124,7 +170,15 @@ except Exception as _store_err:
 # directory imported into its fixture — which silently made the "first
 # registered user becomes admin" path untestable, because a user already
 # existed. Guarding on _owns_storage keeps the migration where it belongs.
-if _owns_storage:
+#
+# And NOT in production. The legacy directory is a developer's laptop artefact:
+# on this machine it held a `demo@neem.org` admin created for a rehearsal,
+# with a password nobody now remembers. Importing that into a client's live
+# database would create a working administrator account outside the client's
+# control — the kind of thing an auditor finds and you cannot explain. Render
+# builds from git and the directory is gitignored, so it should never be
+# present; this makes "should never" into "cannot".
+if _owns_storage and not _is_production:
     try:
         import auth as _auth
         import departments as _departments
@@ -132,6 +186,12 @@ if _owns_storage:
         _departments.migrate_legacy_registry()
     except Exception as _mig_err:  # never block boot on a migration hiccup
         print(f"[DOCex] Notice: legacy import skipped: {_mig_err}", flush=True)
+elif _is_production:
+    from pathlib import Path as _P
+    if (_P(__file__).parent.parent / "users").is_dir():
+        print("[DOCex] WARNING: a legacy users/ directory is present in a "
+              "production image and was NOT imported. It should not have been "
+              "shipped — check .dockerignore.", flush=True)
 
 from models import ApplicantExtraction, ExtractionAnswer, Question  # noqa: E402
 from screener import extract_applicant, extract_batch  # noqa: E402

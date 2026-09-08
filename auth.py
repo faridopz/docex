@@ -205,6 +205,9 @@ def public(user: User) -> UserPublic:
     return UserPublic(
         id=user.id, email=user.email, name=user.name, department=user.department,
         role=user.role, active=user.active, created_at=user.created_at,
+        must_change_password=user.must_change_password,
+        last_login_at=user.last_login_at, invited_by=user.invited_by,
+        deactivated_at=user.deactivated_at,
     )
 
 
@@ -259,6 +262,9 @@ def create_user(
     department: Department,
     role: Role = "reviewer",
     org_id: Optional[str] = None,
+    *,
+    must_change_password: bool = False,
+    invited_by: str = "",
 ) -> User:
     org = _org(org_id)
     email = (email or "").strip().lower()
@@ -284,8 +290,240 @@ def create_user(
         role=role,
         password_hash=pw_hash,
         password_salt=pw_salt,
+        must_change_password=must_change_password,
+        password_set_at=_now_iso(),
+        invited_by=(invited_by or "").strip().lower() or None,
     )
     return _save(user, org)
+
+
+# ─── onboarding twenty people ───────────────────────────────────────────────
+#
+# An organisation does not sign up user by user; one administrator sets up the
+# whole finance team in an afternoon. That shape has three requirements the
+# original single-admin bootstrap never had: somebody other than the account
+# holder must be able to create a working password, that password must stop
+# working the moment it has been used once, and a leaver's access must end the
+# same day they leave rather than whenever their session expires.
+
+# Deliberately excludes 0/O/1/l/I. These passwords get read aloud on a call or
+# copied off a screen, and a character nobody can transcribe turns into a
+# support message and, eventually, into a weaker password chosen out of
+# frustration.
+_TEMP_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+
+
+def generate_temp_password(length: int = 14) -> str:
+    """A strong one-time password a human can read out without mistakes.
+
+    Long rather than cryptic: length is what resists guessing, and a password
+    that survives being dictated over a bad phone line is a password that
+    actually gets used instead of written on a sticky note.
+    """
+    import secrets
+    while True:
+        raw = "".join(secrets.choice(_TEMP_ALPHABET) for _ in range(max(12, length)))
+        # Group into readable blocks: "Kf7p-Rm2q-Tn8w".
+        candidate = "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+        try:
+            check_password_strength(candidate)
+            return candidate
+        except ValueError:  # pragma: no cover - vanishingly rare
+            continue
+
+
+def invite_user(
+    email: str,
+    name: str,
+    department: Department,
+    role: Role = "reviewer",
+    org_id: Optional[str] = None,
+    *,
+    invited_by: str = "",
+) -> tuple[User, str]:
+    """Create an account with a one-time password. Returns (user, password).
+
+    The password is returned ONCE, here, and never stored in readable form —
+    so it exists in the administrator's hands and nowhere else. If they lose
+    it before passing it on, the answer is reset_password(), not recovery.
+    """
+    temp = generate_temp_password()
+    user = create_user(email, name, temp, department, role, org_id,
+                       must_change_password=True, invited_by=invited_by)
+    return user, temp
+
+
+def set_password(
+    user: User,
+    new_password: str,
+    org_id: Optional[str] = None,
+    *,
+    revoke_sessions: bool = True,
+) -> User:
+    """Replace a password and, by default, end every existing session.
+
+    Revoking on change is the point. Someone changes their password precisely
+    when they think another person may have it; leaving that person's session
+    alive would make the change theatre.
+    """
+    check_password_strength(new_password)
+    pw_hash, pw_salt = hash_password(new_password)
+    user.password_hash = pw_hash
+    user.password_salt = pw_salt
+    user.must_change_password = False
+    user.password_set_at = _now_iso()
+    saved = _save(user, org_id)
+    if revoke_sessions:
+        logout(saved, org_id)
+    return saved
+
+
+def change_own_password(
+    user: User,
+    current_password: str,
+    new_password: str,
+    org_id: Optional[str] = None,
+) -> User:
+    """A user changing their own password must prove they know the old one.
+
+    Without this check, anyone who finds an unlocked laptop takes the account
+    permanently rather than temporarily.
+    """
+    if not verify_password(current_password, user.password_hash, user.password_salt):
+        raise AuthError("Current password is incorrect.")
+    if verify_password(new_password, user.password_hash, user.password_salt):
+        raise AuthError("The new password must be different from the current one.")
+    return set_password(user, new_password, org_id)
+
+
+def reset_password(
+    user_id: str,
+    org_id: Optional[str] = None,
+    *,
+    reset_by: str = "",
+) -> tuple[User, str]:
+    """Administrator issues a fresh one-time password. Returns (user, password).
+
+    This is the whole password-recovery story, and it is deliberate: emailed
+    reset links need a mail provider, a token store and a domain nobody can
+    spoof, and each of those is a way to lose an account to someone who owns
+    the mailbox. A named administrator handing over a one-time password is
+    weaker against a careless administrator and stronger against everything
+    else — and for a twenty-person finance team, it is the right trade.
+    """
+    org = _org(org_id)
+    user = get_by_id(user_id, org)
+    if user is None:
+        raise AuthError("No such user.")
+    temp = generate_temp_password()
+    check_password_strength(temp)
+    pw_hash, pw_salt = hash_password(temp)
+    user.password_hash = pw_hash
+    user.password_salt = pw_salt
+    user.must_change_password = True
+    user.password_set_at = _now_iso()
+    saved = _save(user, org)
+    # Kill live sessions AND clear the lockout — a reset is exactly the moment
+    # a locked-out user needs to be able to try again.
+    logout(saved, org)
+    _clear_failed_logins(saved.email, org)
+    return saved, temp
+
+
+def set_active(
+    user_id: str,
+    active: bool,
+    org_id: Optional[str] = None,
+    *,
+    actor: str = "",
+) -> User:
+    """Enable or disable an account.
+
+    Deactivation, not deletion. A finance system must still be able to answer
+    "who approved this payment in March" about someone who left in April, so
+    the record stays and only the access ends. Sessions are revoked
+    immediately: an account disabled at 10am must not still be approving
+    payments at 3pm on a token issued yesterday.
+    """
+    org = _org(org_id)
+    user = get_by_id(user_id, org)
+    if user is None:
+        raise AuthError("No such user.")
+    if active and user.active:
+        return user
+    if not active and not user.active:
+        return user
+    if not active and user.role == "admin":
+        remaining = [u for u in _iter_all(org)
+                     if u.role == "admin" and u.active and u.id != user.id]
+        if not remaining:
+            raise AuthError(
+                "This is the only active administrator. Promote someone else "
+                "first — an organisation locked out of its own finance system "
+                "has no way back in.")
+    user.active = bool(active)
+    user.deactivated_at = None if active else _now_iso()
+    user.deactivated_by = None if active else ((actor or "").strip().lower() or None)
+    saved = _save(user, org)
+    if not active:
+        logout(saved, org)
+    else:
+        _clear_failed_logins(saved.email, org)
+    return saved
+
+
+def update_user(
+    user_id: str,
+    org_id: Optional[str] = None,
+    *,
+    name: Optional[str] = None,
+    department: Optional[Department] = None,
+    role: Optional[Role] = None,
+    actor_id: str = "",
+) -> User:
+    """Change a person's name, department or role.
+
+    People move between departments and get promoted; without this the only
+    way to reflect that is a second account, which quietly breaks the approval
+    trail. An administrator cannot remove their own admin role — that is the
+    other way to lock an organisation out of its own system.
+    """
+    org = _org(org_id)
+    user = get_by_id(user_id, org)
+    if user is None:
+        raise AuthError("No such user.")
+    if department is not None and department != user.department:
+        try:
+            import departments as _departments
+            _departments.require(department, org_id=org)
+        except ImportError:  # pragma: no cover
+            pass
+        except Exception as exc:
+            raise AuthError(str(exc)) from exc
+        user.department = department
+    if name is not None and name.strip():
+        user.name = name.strip()
+    if role is not None and role != user.role:
+        if user.role == "admin" and role != "admin":
+            if actor_id and actor_id == user.id:
+                raise AuthError("You cannot remove your own administrator role.")
+            remaining = [u for u in _iter_all(org)
+                         if u.role == "admin" and u.active and u.id != user.id]
+            if not remaining:
+                raise AuthError(
+                    "This is the only administrator. Promote someone else first.")
+        user.role = role
+    return _save(user, org)
+
+
+def record_login(user: User, org_id: Optional[str] = None) -> None:
+    """Stamp the last sign-in. Best effort — a storage hiccup here must never
+    stop somebody signing in."""
+    try:
+        user.last_login_at = _now_iso()
+        _save(user, org_id)
+    except Exception:  # pragma: no cover
+        pass
 
 
 def authenticate(email: str, password: str, org_id: Optional[str] = None) -> User:

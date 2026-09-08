@@ -1,0 +1,99 @@
+# Nightly backup of the production database, taken from OUTSIDE the production
+# host, and verified by restoring it.
+#
+# WHY HERE RATHER THAN ON THE SERVER
+# A backup job running on the machine that holds the database shares that
+# machine's fate. If the container is wiped, the volume is deleted, or the
+# provider has a bad night, the job and its output go with it. GitHub Actions
+# runs somewhere else entirely and stores the artefact somewhere else again,
+# which is the whole point of the word "backup".
+#
+# WHAT IT PRODUCES
+# One JSON Lines file per run: every record, one per line, readable with any
+# text editor. Deliberately not a provider snapshot — those are faster to
+# restore into the SAME provider and useless for answering "can we read our
+# own records if you disappear", which is the question a client's auditor
+# actually asks.
+#
+# THE VERIFY STEP IS NOT OPTIONAL
+# Every run restores the file it just made into a throwaway database and
+# checks the records come back — including that at least one active
+# administrator exists, because a restore nobody can sign in to is not a
+# recovery. A backup that has never been restored is a belief.
+#
+# SETUP
+#   Settings → Secrets and variables → Actions → Secrets:
+#     DOCEX_DATABASE_URL   the production Postgres connection string
+#   Nothing else. If the secret is absent the job skips loudly rather than
+#   reporting a green tick for work it did not do.
+#
+# RETENTION
+#   Artefacts are kept 90 days here. That covers "we noticed at month end" and
+#   most of "the auditor asked in October about August". For the multi-year
+#   copy, download one a month and keep it somewhere you control — the
+#   scheduled reminder in DEPLOYMENT.md exists for exactly that.
+
+name: backup
+
+on:
+  schedule:
+    # 02:30 UTC = 03:30 Lagos. After the working day, before anyone starts.
+    - cron: "30 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install "psycopg[binary,pool]" pydantic
+
+      - name: Take the backup and verify it by restoring
+        env:
+          DOCEX_DATABASE_URL: ${{ secrets.DOCEX_DATABASE_URL }}
+          DOCEX_BACKUP_DIR: ./backups
+        run: |
+          if [ -z "$DOCEX_DATABASE_URL" ]; then
+            echo "::error::DOCEX_DATABASE_URL is not set. No backup was taken."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          python3 backup.py create --verify
+
+      - name: Name the artefact after the date
+        id: stamp
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docex-backup-${{ steps.stamp.outputs.date }}
+          path: backups/*.jsonl
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Say what happened
+        if: always()
+        run: |
+          echo "### Backup ${{ steps.stamp.outputs.date }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d backups ]; then
+            for f in backups/*.jsonl; do
+              echo "- \`$(basename "$f")\` — $(wc -l < "$f") records, $(du -h "$f" | cut -f1)" \
+                >> "$GITHUB_STEP_SUMMARY"
+            done
+          else
+            echo "- no backup produced" >> "$GITHUB_STEP_SUMMARY"
+          fi

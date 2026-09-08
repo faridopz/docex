@@ -79,6 +79,25 @@ export async function apiFetch<T>(
   if (res.status === 401) {
     clearSession();
   }
+  // A one-time password is still a valid session — it just cannot reach
+  // anything except the change-password screen. Signing the user out here
+  // would throw away the credential they are in the middle of replacing, so
+  // this redirects instead of clearing.
+  if (res.status === 403) {
+    const raw = await res.clone().text().catch(() => "");
+    if (raw.includes("must_change_password")) {
+      try {
+        if (
+          typeof window !== "undefined" &&
+          window.location.pathname !== "/change-password"
+        ) {
+          window.location.href = "/change-password";
+        }
+      } catch {
+        /* non-browser context — fall through to the thrown error */
+      }
+    }
+  }
   if (!res.ok) {
     const raw = await res.text().catch(() => "");
     const fe = friendlyError(res.status, raw);

@@ -8,6 +8,7 @@ import {
   BookOpen,
   CalendarCheck,
   FileSearch,
+  KeyRound,
   Landmark,
   Layers,
   Scale,
@@ -282,6 +283,15 @@ export function AppShell({
             <Users className="h-4 w-4 shrink-0 text-gray-400" />
             Departments &amp; team
           </Link>
+          {user.role === "admin" && (
+            <Link
+              href="/settings/users"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+            >
+              <KeyRound className="h-4 w-4 shrink-0 text-gray-400" />
+              People &amp; access
+            </Link>
+          )}
 
           <div className="mt-2 flex items-center justify-between gap-2 rounded-lg px-2.5 py-2">
             <div className="min-w-0">

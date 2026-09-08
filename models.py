@@ -1452,6 +1452,22 @@ class User(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+    # An administrator setting up twenty accounts has to put SOME password on
+    # each one, which means for a while the administrator knows every user's
+    # password. That is only acceptable if it expires on first use: the user
+    # cannot reach any other screen until they have replaced it. In a system
+    # where a signature releases money, "who could have been logged in as this
+    # approver" must have exactly one answer.
+    must_change_password: bool = False
+    password_set_at: Optional[str] = None
+
+    # Operational history. last_login_at is what tells an administrator which
+    # of the twenty invited accounts were never actually used.
+    last_login_at: Optional[str] = None
+    invited_by: Optional[str] = None
+    deactivated_at: Optional[str] = None
+    deactivated_by: Optional[str] = None
+
 
 class UserPublic(BaseModel):
     """Safe user view returned by the API — no credential material."""
@@ -1462,6 +1478,10 @@ class UserPublic(BaseModel):
     role: Role
     active: bool = True
     created_at: Optional[str] = None
+    must_change_password: bool = False
+    last_login_at: Optional[str] = None
+    invited_by: Optional[str] = None
+    deactivated_at: Optional[str] = None
 
 
 class DashboardSummary(BaseModel):

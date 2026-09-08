@@ -1,8 +1,11 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-python-multipart>=0.0.9
-pdfplumber>=0.11.0
-python-docx>=1.1.2
-anthropic>=0.50.0
-pydantic>=2.0.0
-python-dotenv>=1.0.0
+# NOT THE FILE THE IMAGE INSTALLS.
+#
+# api/Dockerfile builds with the repository root as its context and runs
+# `COPY requirements.txt .` — which picks up /requirements.txt, not this one.
+# This file is a leftover from an earlier layout and drifted: it was missing
+# sentry-sdk, psycopg, pymupdf, openpyxl and more, so anyone reading it to find
+# out what production runs got a wrong answer.
+#
+# Edit /requirements.txt. This file exists only so that nobody else loses an
+# hour to the same discovery.
+-r ../requirements.txt

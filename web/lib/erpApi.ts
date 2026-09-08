@@ -16,7 +16,10 @@ import type {
 
 // ─── auth ───────────────────────────────────────────────────────────────────
 
-export async function login(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+export async function login(
+  email: string,
+  password: string,
+): Promise<{ token: string; user: AuthUser; must_change_password?: boolean }> {
   return apiFetch("/auth/login", {
     method: "POST",
     auth: false,

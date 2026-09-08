@@ -324,10 +324,18 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
         if auth.get_by_email(admin["email"], org_id):
             res.admin_existing = True
         else:
+            # Forced change on first use. WE choose this password — it is typed
+            # on a command line, lands in a shell history, and is handed to the
+            # client's administrator in a message. All three are fine for a
+            # password that works once and cannot be used again. None of them
+            # are fine for the standing credential of the person who can
+            # release payments, and in a finance system "who could have been
+            # signed in as this approver" must have exactly one answer.
             auth.create_user(
                 email=admin["email"], name=admin.get("name", ""),
                 password=admin["password"], department=admin["department"],
                 role="admin", org_id=org_id,
+                must_change_password=True,
             )
             res.admin_created = True
 

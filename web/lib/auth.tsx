@@ -34,7 +34,10 @@ import type { AuthUser } from "@/types/erp";
 type AuthState = {
   ready: boolean;
   user: AuthUser | null;
-  signIn: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  signIn: (
+    email: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string; mustChangePassword?: boolean }>;
   signOut: () => Promise<void>;
 };
 
@@ -67,10 +70,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function signIn(email: string, password: string) {
     try {
-      const { token, user: u } = await apiLogin(email.trim(), password);
+      const res = await apiLogin(email.trim(), password);
+      const { token, user: u } = res;
       setSession(token, u);
       setUser(u);
-      return { ok: true };
+      // Flagged at the top level as well as on the user, because the caller
+      // has to route on it immediately and should not have to know that the
+      // answer is nested.
+      return {
+        ok: true,
+        mustChangePassword: res.must_change_password ?? u.must_change_password ?? false,
+      };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : "Sign in failed." };
     }

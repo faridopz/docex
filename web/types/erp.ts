@@ -138,4 +138,11 @@ export interface AuthUser {
   role: Role;
   active?: boolean;
   created_at?: string | null;
+  /** True while the account is still on the one-time password an admin issued.
+   *  The API refuses every other route until it is cleared. */
+  must_change_password?: boolean;
+  /** Null means invited but never signed in — the list an admin chases. */
+  last_login_at?: string | null;
+  invited_by?: string | null;
+  deactivated_at?: string | null;
 }

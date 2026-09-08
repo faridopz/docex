@@ -1,35 +1,81 @@
-# Render Blueprint for the DOCex API.
+# Render Blueprint for DOCex — production.
 #
-# One-time setup:
-#   1. Push this file to the `demo-release` branch on GitHub.
-#   2. Render dashboard → New → Blueprint → connect the docex repo.
-#   3. Render reads this file and creates the `docex-api` web service.
-#   4. Set the required secret env vars below in the dashboard (they are sync:false
-#      so they are NOT stored in git):
-#        - ANTHROPIC_API_KEY : your Claude API key
-#        - ALLOWED_ORIGINS   : your Vercel frontend URL,
-#                              e.g. https://docex.vercel.app
-#        - DOCEX_DATABASE_URL (optional): Postgres connection string for durable cloud storage.
-#                              If not set, data persists in SQLite at /data/docex.db
-#                              (requires persistent disk or paid tier).
+# WHAT CHANGED, AND WHY IT MATTERS
+# This file used to describe a free-tier demo: no database, no persistent disk,
+# an instance that slept after fifteen minutes. That was honest for a demo. It
+# is not survivable for a client entering real payments, for two reasons that
+# are easy to miss because neither shows up as an error:
 #
-# Notes:
-#   - DURABLE STORAGE CHOICE:
-#     * SQLite (default, DOCEX_DB=/data/docex.db): requires persistent disk on Render
-#       (free tier loses data on redeploy; upgrade to start: $7/mo for persistence).
-#     * Postgres (DOCEX_DATABASE_URL=postgres://...): managed cloud database
-#       (use Render Postgres, Railway, or other managed provider for ~$5-15/mo).
-#     If neither is set, storage falls back to JSON files and resets on redeploy.
-#   - Free web services sleep after ~15 min idle and cold-start in ~30-50s.
-#     The keep-warm workflow (.github/workflows/keep-warm.yml) mitigates this.
-#   - The Dockerfile already respects $PORT (Render injects it) and exposes
-#     /health, so no start command is needed here.
+#   1. Data was written to JSON files on the container's local disk, which
+#      Render replaces on every deploy. Every requisition, every approval,
+#      every user account disappeared each time the code changed — silently,
+#      with no error and no warning, because writing a file always succeeds.
+#   2. A free web service sleeps and cold-starts in 30-50 seconds. A finance
+#      officer meeting a blank screen concludes the system is broken, and they
+#      are not wrong to.
+#
+# So: a managed Postgres, a paid always-on web service, and DOCEX_DATABASE_URL
+# wired from one to the other by Render itself.
+#
+# ─── one-time setup ────────────────────────────────────────────────────────
+#
+#   1. Push this to `demo-release`.
+#   2. Render → New → Blueprint → connect the docex repo. Render creates BOTH
+#      the database and the web service and links them.
+#   3. Set the secrets marked `sync: false` in the dashboard (they are not in
+#      git and must never be):
+#
+#        ANTHROPIC_API_KEY   the Claude key
+#        AUTH_SECRET         signs session tokens. Unset means a random secret
+#                            per container: every user is signed out on every
+#                            deploy, and two instances never agree on a session.
+#        DOCEX_SIGNING_KEY   signs the hash-chained audit log. See the warning.
+#        ALLOWED_ORIGINS     the exact frontend origin, e.g.
+#                            https://docex-neem.vercel.app  (no trailing slash)
+#        SENTRY_DSN          optional, but this is how you hear about a crash
+#                            before the client tells you about it.
+#
+#      Generate the two keys with:
+#        python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+#
+#   4. Store both keys in a password manager BEFORE pasting them into Render.
+#
+# ⚠️ DOCEX_SIGNING_KEY MUST NEVER BE ROTATED.
+#    It signs the append-only audit chain. Change it and verify_audit_chain()
+#    fails on every historical record — the immutability guarantee, which is
+#    the product's core claim to an auditor, evaporates in one edit. There is
+#    no recovery: the old records cannot be re-signed without invalidating the
+#    very property the chain exists to prove. Set it once. Keep it for years.
+#
+# ─── cost ──────────────────────────────────────────────────────────────────
+#   Web (starter)      ~$7/month   always on, no cold starts
+#   Postgres (basic)   ~$7/month   managed, with the provider's own snapshots
+#   Roughly $14/month per client instance. At NEEM's ₦450k/month that is noise;
+#   see docex-margin-review before quoting the next client.
+#
+# ─── what this file does NOT do ────────────────────────────────────────────
+#   Render's own database snapshots are the fast path back to last Tuesday.
+#   They are not a backup you can read without Render — .github/workflows/
+#   backup.yml handles that, nightly, off this infrastructure, and verifies
+#   each one by restoring it.
+
+databases:
+  - name: docex-db
+    databaseName: docex
+    user: docex
+    plan: basic-256mb
+    region: oregon
+    # Point-in-time recovery on the provider's side. Complements the nightly
+    # portable export; neither replaces the other.
+    postgresMajorVersion: "16"
 
 services:
   - type: web
     name: docex-api
     runtime: docker
-    plan: free
+    # Starter, not free: free instances sleep, and a sleeping finance system
+    # is indistinguishable from a broken one.
+    plan: starter
     region: oregon
     branch: demo-release
     dockerfilePath: ./api/Dockerfile
@@ -37,7 +83,35 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      # Storage. Render fills this in from the database above, so the app and
+      # the database can never drift apart by hand-editing one of them.
+      - key: DOCEX_DATABASE_URL
+        fromDatabase:
+          name: docex-db
+          property: connectionString
+
+      # Which client this instance serves. Every record is stored under this
+      # org id, so changing it hides all existing data rather than migrating
+      # it. One instance, one client.
+      - key: DOCEX_ORG
+        value: neem
+
+      # Keep the pool well under the plan's connection cap, leaving room for a
+      # psql session and a backup job.
+      - key: DOCEX_PG_POOL_MAX
+        value: "10"
+
+      - key: DOCEX_ENV
+        value: production
+
+      # Secrets — set in the dashboard, never in git.
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: DOCEX_SIGNING_KEY
+        sync: false
       - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SENTRY_DSN
         sync: false

@@ -47,3 +47,14 @@ requests>=2.31,<3.0
 
 # Error reporting. Inert unless SENTRY_DSN is set.
 sentry-sdk>=2.0,<3.0
+
+# Durable multi-user storage (store_sql.PostgresStore).
+#
+# NOT optional in production. Without it, an instance with DOCEX_DATABASE_URL
+# set raises StoreError on the first request — and an instance WITHOUT the URL
+# falls back to JSON files on the container disk, which look fine until the
+# next deploy wipes every requisition. The pool extra is required, not
+# cosmetic: PostgresStore opens a checked connection pool because a connection
+# per operation exhausts a managed database's connection cap under twenty
+# users. See store_sql.PostgresStore.
+psycopg[binary,pool]>=3.1,<4.0

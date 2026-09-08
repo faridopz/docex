@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Iterable
+from typing import Iterable, Optional
 
 # ─── the allowlist ──────────────────────────────────────────────────────────
 
@@ -55,6 +55,26 @@ def is_public(path: str) -> bool:
     if path in PUBLIC_EXACT:
         return True
     return any(p.match(path) for p in PUBLIC_PATTERNS)
+
+
+# ─── the forced password change ─────────────────────────────────────────────
+#
+# An administrator inviting twenty colleagues has to choose each starting
+# password, so for a short while the administrator knows every user's password.
+# That is only tolerable if the password expires the first time it is used.
+#
+# Enforced HERE, in the default-deny middleware, for the same reason the
+# authentication check lives here: a rule applied route by route protects the
+# routes somebody remembered. This one covers every route that exists and every
+# route anyone adds later. While a change is pending the session can reach only
+# the handful of paths below — enough to see who you are, set a new password,
+# and sign out. Nothing that reads a payment, and nothing that approves one.
+
+PASSWORD_CHANGE_ALLOWED: frozenset[str] = frozenset({
+    "/auth/me",
+    "/auth/password",
+    "/auth/logout",
+})
 
 
 # ─── middleware ─────────────────────────────────────────────────────────────
@@ -95,17 +115,20 @@ class AuthMiddleware:
             ]
         return []
 
-    async def _reject(self, scope, send, detail: str) -> None:
-        body = json.dumps({"detail": detail}).encode()
+    async def _reject(self, scope, send, detail: str, status: int = 401,
+                      extra: Optional[dict] = None) -> None:
+        body = json.dumps({"detail": detail, **(extra or {})}).encode()
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+            *self._cors_headers(scope),
+        ]
+        if status == 401:
+            headers.insert(2, (b"www-authenticate", b"Bearer"))
         await send({
             "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-                (b"www-authenticate", b"Bearer"),
-                *self._cors_headers(scope),
-            ],
+            "status": status,
+            "headers": headers,
         })
         await send({"type": "http.response.body", "body": body})
 
@@ -137,13 +160,28 @@ class AuthMiddleware:
 
         try:
             import auth
-            auth.verify_token(token)
+            user = auth.verify_token(token)
         except Exception as exc:
             # auth.AuthError carries a message safe to show ("Session expired —
             # please sign in again"). Anything else is reported generically.
             import auth as _auth
             detail = str(exc) if isinstance(exc, _auth.AuthError) else "Invalid session."
             await self._reject(scope, send, detail)
+            return
+
+        # A one-time password gets you exactly far enough to replace it.
+        # 403 with a machine-readable flag, not 401: the session is valid, so
+        # the frontend must redirect to the change-password screen rather than
+        # sign the user out and lose the credential they just used.
+        if getattr(user, "must_change_password", False) \
+                and scope.get("path", "") not in PASSWORD_CHANGE_ALLOWED:
+            await self._reject(
+                scope, send,
+                "Set a new password before using DOCex. The password you were "
+                "given works once.",
+                status=403,
+                extra={"must_change_password": True},
+            )
             return
 
         await self.app(scope, receive, send)

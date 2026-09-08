@@ -21,7 +21,10 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (ready && user) router.replace("/dashboard");
+    if (!ready || !user) return;
+    // Somebody still on the one-time password an administrator gave them: the
+    // API will refuse the dashboard anyway, so send them somewhere that works.
+    router.replace(user.must_change_password ? "/change-password" : "/dashboard");
   }, [ready, user, router]);
 
   // A brand-new instance has no accounts yet — send the first person to setup
@@ -47,7 +50,7 @@ export default function LoginPage() {
       setBusy(false);
       return;
     }
-    router.push("/dashboard");
+    router.push(res.mustChangePassword ? "/change-password" : "/dashboard");
   }
 
   return (

@@ -14,6 +14,30 @@ __pycache__/
 # Secrets — these must come via env vars, never baked into the image
 .env
 .env.local
+.auth_secret
+
+# Local data. These are gitignored, so a Render build (which comes from git)
+# never sees them — but `docker build` from a working copy would, and
+# auth.migrate_legacy_users() imports users/ into whatever org the container
+# serves. That would have created a stale developer admin account, with a
+# password nobody remembers, inside a client's production database.
+users/
+data/
+backups/
+*.db
+*.db-wal
+*.db-shm
+checks/
+rulebooks/
+transactions/
+notifications/
+vouchers/
+verifications/
+attendance_runs/
+diagnostics/
+decks/
+demo_docs/
+demov2/
 
 # Version control + editor
 .git/
