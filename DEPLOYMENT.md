@@ -15,8 +15,8 @@ The whole list exists because each item, left undone, fails silently.
 
 - [ ] `python3 verify_deployment.py https://<api>` — no failures
 - [ ] **Data survived a redeploy** — the one check no script can do for you
-- [ ] Paid plan; the instance does not sleep
 - [ ] Nightly backup ran, and one has been **restored**
+- [ ] Keep-warm workflow green (free tier only — it is what hides the cold start)
 - [ ] `AUTH_SECRET` and `DOCEX_SIGNING_KEY` set, and saved in a password manager
 - [ ] `ALLOWED_ORIGINS` is the exact production frontend origin
 - [ ] Profile applied; the client's administrator can sign in
@@ -25,10 +25,44 @@ The whole list exists because each item, left undone, fails silently.
 
 ---
 
+## 0. What this costs
+
+Launch stack, chosen so that nothing a client would notice as a loss is being
+risked:
+
+| | | |
+|---|---|---|
+| Frontend | Vercel | free |
+| API | Render free | free — sleeps when idle, kept warm by a workflow |
+| Database | Supabase free | free — 500 MB, durable, pauses only after 7 idle days |
+| Backups | GitHub Actions | free — nightly, off-box, verified by restoring |
+
+**The free tier costs a cold start, not data.** The first request after fifteen
+idle minutes waits 30-50 seconds. Data loss ends a client relationship; a slow
+first click does not. The database is deliberately hosted away from the web
+service, so upgrading compute later is one word in `render.yaml` and moves
+nothing.
+
+Upgrade order, by what actually goes wrong:
+
+1. **Render starter, $7** — the day money arrives. Removes the cold start.
+2. **External uptime check** — Sentry reports crashes; nothing yet reports
+   unreachable.
+3. **Render standard, $25** — when bulk document extraction starts. Measured on
+   this app: 139 MB idle, ~250 MB peak extracting a scanned PDF. Starter is
+   comfortable for approvals and tight for bulk.
+
+`python3 go_live.py` walks the whole thing with the values filled in.
+
+---
+
 ## 1. Storage
 
-Postgres, managed, wired by `render.yaml` — the app reads
-`DOCEX_DATABASE_URL`.
+Postgres, managed and external, reached through `DOCEX_DATABASE_URL`.
+
+Supabase's free tier holds it today. It is a real Postgres, so nothing about
+the application changes when it moves to a paid one — including moving to
+Render's own managed database later.
 
 Two failures this replaced, both silent:
 

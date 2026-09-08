@@ -271,11 +271,36 @@ class PostgresStore:
                 max_size = self.DEFAULT_MAX
         self.max_size = max(1, int(max_size))
 
+        # PREPARED STATEMENTS AND POOLERS
+        # psycopg3 promotes a query to a server-side prepared statement after
+        # it has run a few times. That is a straight win against a real
+        # Postgres and a hard failure against a transaction-mode connection
+        # pooler (Supabase's port 6543, PgBouncer, Supavisor): the pooler hands
+        # the next query to a different backend, which has never heard of the
+        # prepared statement, and you get "prepared statement _pg3_0 does not
+        # exist" — intermittently, under load, never on a laptop.
+        #
+        # Detected from the DSN rather than left as a flag somebody must
+        # remember, because the failure appears weeks later and looks like a
+        # database fault rather than a configuration one.
+        lowered = dsn.lower()
+        pooled_upstream = (":6543" in lowered or "pooler" in lowered
+                           or "pgbouncer" in lowered)
+        override = os.environ.get("DOCEX_PG_PREPARE", "").strip().lower()
+        if override in ("0", "off", "false", "no"):
+            pooled_upstream = True
+        elif override in ("1", "on", "true", "yes"):
+            pooled_upstream = False
+        self.prepared_statements = not pooled_upstream
+
+        kwargs = {} if self.prepared_statements else {"prepare_threshold": None}
+
         from psycopg_pool import ConnectionPool as _Pool
         self._pool = _Pool(
             dsn,
             min_size=min(min_size, self.max_size),
             max_size=self.max_size,
+            kwargs=kwargs,
             # Hand out a connection only after checking it is alive. Costs one
             # cheap round trip; saves handing a finance user a dead socket after
             # the database was restarted.
@@ -284,6 +309,9 @@ class PostgresStore:
             max_lifetime=30 * 60,
             name="docex",
         )
+        if pooled_upstream:
+            print("[store] Connection pooler detected — server-side prepared "
+                  "statements disabled.", flush=True)
         self._pool.wait(timeout=30.0)
         self._init_schema()
 

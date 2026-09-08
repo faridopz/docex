@@ -48,34 +48,64 @@
 #    very property the chain exists to prove. Set it once. Keep it for years.
 #
 # ─── cost ──────────────────────────────────────────────────────────────────
-#   Web (starter)      ~$7/month   always on, no cold starts
-#   Postgres (basic)   ~$7/month   managed, with the provider's own snapshots
-#   Roughly $14/month per client instance. At NEEM's ₦450k/month that is noise;
-#   see docex-margin-review before quoting the next client.
+#   Render web (free)      $0   sleeps after 15 min idle; kept warm by workflow
+#   Supabase Postgres      $0   500 MB, unlimited requests, pauses only after
+#                               SEVEN DAYS of no activity — so daily client use
+#                               never pauses it
+#   Vercel frontend        $0
+#   GitHub Actions backup  $0
+#   ───────────────────────────
+#   $0/month to launch. See DEPLOYMENT.md for what to upgrade first, and when.
 #
-# ─── what this file does NOT do ────────────────────────────────────────────
-#   Render's own database snapshots are the fast path back to last Tuesday.
-#   They are not a backup you can read without Render — .github/workflows/
-#   backup.yml handles that, nightly, off this infrastructure, and verifies
-#   each one by restoring it.
+# ─── backups ───────────────────────────────────────────────────────────────
+#   The free tier has NO provider backups. That gap is covered by
+#   .github/workflows/backup.yml: nightly, off this infrastructure, and each
+#   one verified by actually restoring it. It produces plain JSON Lines, which
+#   is the copy a client's auditor is really asking about — the one readable
+#   without the provider and without us.
+#
+#   Because there is no provider snapshot to fall back on, that workflow is
+#   not optional here. Check it is green before the first client payment.
 
-databases:
-  - name: docex-db
-    databaseName: docex
-    user: docex
-    plan: basic-256mb
-    region: oregon
-    # Point-in-time recovery on the provider's side. Complements the nightly
-    # portable export; neither replaces the other.
-    postgresMajorVersion: "16"
+# ─── the database is NOT declared here, on purpose ─────────────────────────
+#
+# Render's managed Postgres has no free tier. The database therefore lives
+# somewhere with one — Supabase today — and arrives as DOCEX_DATABASE_URL, set
+# by hand in the dashboard.
+#
+# That is not a compromise on the thing that matters. Read this next part
+# carefully, because it is the whole argument:
+#
+#   The failure that loses a client is DATA LOSS. It is silent, it is
+#   discovered by them, and it is unrecoverable.
+#   The failure this free tier actually has is a COLD START — the first
+#   request after fifteen idle minutes waits 30-50 seconds.
+#
+# One of those ends the relationship. The other is embarrassing for under a
+# minute, and .github/workflows/keep-warm.yml already pings /health every ten
+# minutes so it rarely happens during a working day.
+#
+# So: free compute, durable external database, our own verified nightly
+# backups. Records survive every redeploy. Nothing is being risked that a
+# client would notice as a loss.
+#
+# ─── upgrading, when the first invoice clears ──────────────────────────────
+#
+#   plan: starter    $7/mo   512MB / 0.5 CPU — no sleeping, no cold starts
+#   plan: standard   $25/mo  2GB / 1 CPU     — headroom for bulk document work
+#
+# Measured on this app: 139 MB baseline, ~250 MB peak while extracting a
+# scanned PDF. Starter is comfortable for requisitions and approvals and tight
+# for bulk extraction; standard is comfortable for everything.
+#
+# Change the one word below and redeploy. The database is external, so nothing
+# migrates and no data moves. Delete keep-warm.yml at the same time.
 
 services:
   - type: web
     name: docex-api
     runtime: docker
-    # Starter, not free: free instances sleep, and a sleeping finance system
-    # is indistinguishable from a broken one.
-    plan: starter
+    plan: free
     region: oregon
     branch: demo-release
     dockerfilePath: ./api/Dockerfile
@@ -83,12 +113,16 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      # Storage. Render fills this in from the database above, so the app and
-      # the database can never drift apart by hand-editing one of them.
+      # THE ONE THAT MATTERS. Without it the app refuses to boot in production
+      # (api/main.py), because the alternative is writing records to a disk
+      # Render replaces on every deploy — silently, with no error.
+      #
+      # From Supabase: Project Settings → Database → Connection string → URI.
+      # Prefer the SESSION pooler (port 5432) over the transaction pooler
+      # (6543); DOCex detects a pooler either way and turns off server-side
+      # prepared statements, which transaction poolers cannot support.
       - key: DOCEX_DATABASE_URL
-        fromDatabase:
-          name: docex-db
-          property: connectionString
+        sync: false
 
       # Which client this instance serves. Every record is stored under this
       # org id, so changing it hides all existing data rather than migrating
@@ -96,10 +130,11 @@ services:
       - key: DOCEX_ORG
         value: neem
 
-      # Keep the pool well under the plan's connection cap, leaving room for a
-      # psql session and a backup job.
+      # Keep the pool well under the provider's connection cap, leaving room
+      # for a psql session and the nightly backup job. Supabase's free tier is
+      # meaner about connections than a dedicated instance, so 5, not 10.
       - key: DOCEX_PG_POOL_MAX
-        value: "10"
+        value: "5"
 
       - key: DOCEX_ENV
         value: production

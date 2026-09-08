@@ -12,8 +12,10 @@ Written plainly. Where something is not yet done, it says so.
 
 ## Where your data lives
 
-A managed PostgreSQL database in Oregon (United States), operated by Render, on
-infrastructure you can inspect: <https://render.com/security>.
+A managed PostgreSQL database operated by Supabase, hosted in the European
+Union. The application that reads it runs on Render. Both publish their
+security practices: <https://supabase.com/security> and
+<https://render.com/security>.
 
 Every record — requisitions, approvals, payments, the audit log, user accounts
 — is stored under NEEM's organisation identifier. That identifier is part of
@@ -35,7 +37,7 @@ beyond the record they belong to.
 | Your administrator | All NEEM records; can create and remove accounts |
 | DOCex (the supplier) | Full database access — see the section below |
 | Anthropic | Document text sent for extraction only. Not used to train models. |
-| Render | Infrastructure operator; encrypted at rest and in transit |
+| Supabase / Render | Infrastructure operators; encrypted at rest and in transit |
 | Anyone else | Nothing. There is no route that returns data without a valid session. |
 
 ### The uncomfortable one
@@ -120,8 +122,11 @@ threshold changed in June does not silently rewrite what happened in March.
 - Retained 90 days, plus monthly copies kept longer.
 - Format is plain JSON Lines — one record per line, readable in a text editor.
   Deliberately not a proprietary snapshot, so **you can read your own records
-  without DOCex and without Render**.
-- Render additionally keeps its own database snapshots.
+  without DOCex and without our hosting provider**.
+
+These backups are currently the only ones — the database tier we launch on does
+not include provider snapshots. That is why every one is verified rather than
+assumed, and it is the first thing we upgrade.
 
 Last verified restore: **8 September 2026**. Ask us for this date at any time;
 it is recorded in our deployment log and refreshed quarterly.
@@ -152,6 +157,12 @@ somebody attack it.
 
 Listed because you should decide with the real picture.
 
+- **The first request after a quiet period is slow.** DOCex launches on
+  infrastructure that idles the application when nobody is using it, so the
+  first click after about fifteen minutes can take up to a minute while it
+  wakes. A scheduled ping keeps it awake through the working day, so you should
+  rarely see it. It affects speed only — **no data is lost when it sleeps**,
+  and it is the first thing we remove.
 - **No staging environment.** Changes are tested by us and then deployed. A
   second instance for rehearsing changes is next; until then we deploy
   cautiously and can roll back within minutes.
