@@ -19,6 +19,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Second step. Only shown once the server has confirmed the password was
+  // right and this account has a second factor — asking for a code first would
+  // tell an attacker which accounts exist and which of them approve payments.
+  const [mfaCode, setMfaCode] = useState("");
+  const [needsCode, setNeedsCode] = useState(false);
 
   useEffect(() => {
     if (!ready || !user) return;
@@ -44,13 +49,24 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setBusy(true);
-    const res = await signIn(email, password);
+    const res = await signIn(email, password, needsCode ? mfaCode : undefined);
     if (!res.ok) {
-      setError(res.error ?? "Sign in failed.");
+      if (res.mfaRequired) {
+        setNeedsCode(true);
+        // A fresh attempt is a fresh code — leaving the old one in the box is
+        // how somebody resubmits a code that has already been spent.
+        setMfaCode("");
+        setError(needsCode ? (res.error ?? "That code was not accepted.") : null);
+      } else {
+        setNeedsCode(false);
+        setError(res.error ?? "Sign in failed.");
+      }
       setBusy(false);
       return;
     }
-    router.push(res.mustChangePassword ? "/change-password" : "/dashboard");
+    if (res.mustChangePassword) router.push("/change-password");
+    else if (res.mfaSetupRequired) router.push("/settings/security?setup=1");
+    else router.push("/dashboard");
   }
 
   return (
@@ -105,6 +121,28 @@ export default function LoginPage() {
                 required
               />
             </div>
+
+            {needsCode && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">
+                  6-digit code
+                </label>
+                <input
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  placeholder="123456"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-center text-lg tracking-[0.4em] text-gray-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                  required
+                />
+                <p className="mt-1.5 text-[11px] text-gray-500">
+                  From your authenticator app. Lost your phone? Use one of your
+                  recovery codes instead.
+                </p>
+              </div>
+            )}
 
             {error && (
               <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">

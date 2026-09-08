@@ -1,0 +1,178 @@
+# Is the client's system reachable right now?
+#
+# WHY THIS IS NOT THE SAME AS SENTRY
+# Sentry reports when the code raises an exception. It is silent about every
+# way a system goes down without executing any of our code: the container is
+# dead, the platform is having an incident, the database refused the connection
+# at boot, the build failed and the service never came up, the domain expired.
+#
+# In all of those, the client discovers the outage. That is the difference
+# between a supplier ("we had a 20-minute outage this morning, it's fixed") and
+# a problem ("your system has been down since 9am — did you know?").
+#
+# WHY IT RUNS HERE
+# A check that runs on the machine being checked cannot report that machine
+# being gone. GitHub Actions is somewhere else entirely, which is the whole
+# point.
+#
+# WHAT IT DOES WHEN IT FAILS
+# Opens a GitHub issue — which sends you an email and a phone notification if
+# you have the GitHub app — and reuses the same issue for a continuing outage
+# rather than opening one every five minutes. It closes the issue automatically
+# when the service comes back, so the issue list is an outage log you did not
+# have to keep.
+#
+# ONE CONFIRMATION BEFORE ALERTING
+# A single failed request is usually a network blip, and an alert that cries
+# wolf is an alert you learn to swipe away. This retries after 30 seconds and
+# only raises if both attempts fail.
+#
+# SETUP
+#   Settings → Secrets and variables → Actions → Variables:
+#     DOCEX_API_URL   https://docex-api.onrender.com
+#   Optional, for a real pager:
+#     SLACK_WEBHOOK_URL as a Secret — posts to a channel as well.
+#
+# NOTE ON THE FREE TIER
+#   A free Render instance sleeps and cold-starts in 30-50s, which is not an
+#   outage. The timeout below is deliberately generous so a waking container is
+#   not reported as down. On a paid instance, tighten it to 15s — a healthy
+#   always-on service answers /health in well under a second.
+
+name: uptime
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub delays scheduled runs under load, so treat this
+    # as "roughly every 5-15 minutes" — enough to catch an outage inside the
+    # working day, which is what matters.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Probe /health, twice before believing it
+        id: probe
+        env:
+          API_URL: ${{ vars.DOCEX_API_URL }}
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "::warning::DOCEX_API_URL is not set — nothing to check."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          probe() {
+            curl -sS -o /tmp/body -w "%{http_code} %{time_total}" \
+                 --max-time 90 "${API_URL}/health" 2>/dev/null || echo "000 0"
+          }
+
+          read -r CODE TIME <<< "$(probe)"
+          if [ "$CODE" != "200" ]; then
+            echo "First attempt: HTTP ${CODE}. Waiting 30s before confirming."
+            sleep 30
+            read -r CODE TIME <<< "$(probe)"
+          fi
+
+          echo "code=$CODE"  >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"  >> "$GITHUB_OUTPUT"
+          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+
+          if [ "$CODE" = "200" ]; then
+            echo "status=up" >> "$GITHUB_OUTPUT"
+            echo "UP — ${TIME}s"
+          else
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            echo "::error::DOWN — HTTP ${CODE} from ${API_URL}/health"
+          fi
+
+      - name: Open or update the outage issue
+        if: steps.probe.outputs.status == 'down'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.probe.outputs.url }}';
+            const code = '${{ steps.probe.outputs.code }}';
+            const title = 'DOCex API is not responding';
+            const { owner, repo } = context.repo;
+
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'outage',
+            });
+            const now = new Date().toISOString();
+            const body = [
+              `**${url}/health** returned \`${code}\` on two attempts 30 seconds apart.`,
+              ``,
+              `Checked at ${now} from GitHub Actions — outside the hosting, so this`,
+              `is not a problem with the check itself.`,
+              ``,
+              `**\`000\` means no response at all** — the service is gone, not erroring.`,
+              ``,
+              `First: Render dashboard → is the service live? Did the last deploy fail?`,
+              `Then: \`python3 verify_deployment.py ${url}\``,
+              `Rollback and the rest: DEPLOYMENT.md`,
+              ``,
+              `This issue closes itself when /health answers 200 again.`,
+            ].join('\n');
+
+            if (open.data.length) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: open.data[0].number,
+                body: `Still down at ${now} — HTTP \`${code}\`.`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo, title, body, labels: ['outage'],
+              });
+            }
+
+      - name: Close the outage issue when it recovers
+        if: steps.probe.outputs.status == 'up'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const open = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: 'outage',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `Back up at ${new Date().toISOString()} — `
+                    + `/health answered 200 in ${{ steps.probe.outputs.time }}s.`
+                    + `\n\nWorth a note in DEPLOYMENT.md's change log, and worth `
+                    + `telling the client before they ask.`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number, state: 'closed',
+              });
+            }
+
+      - name: Also tell Slack, if configured
+        if: steps.probe.outputs.status == 'down' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"🔴 DOCex API not responding — HTTP ${{ steps.probe.outputs.code }} from ${{ steps.probe.outputs.url }}/health\"}" \
+            || echo "::warning::Slack notification failed."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Uptime check" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: **${{ steps.probe.outputs.status }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "- http: \`${{ steps.probe.outputs.code }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- response time: ${{ steps.probe.outputs.time }}s" >> "$GITHUB_STEP_SUMMARY"

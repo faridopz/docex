@@ -19,11 +19,19 @@ import type {
 export async function login(
   email: string,
   password: string,
-): Promise<{ token: string; user: AuthUser; must_change_password?: boolean }> {
+  mfaCode?: string,
+): Promise<{
+  token: string;
+  user: AuthUser;
+  must_change_password?: boolean;
+  mfa_setup_required?: boolean;
+}> {
   return apiFetch("/auth/login", {
     method: "POST",
     auth: false,
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(
+      mfaCode ? { email, password, mfa_code: mfaCode } : { email, password },
+    ),
   });
 }
 

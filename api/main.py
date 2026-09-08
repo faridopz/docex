@@ -184,6 +184,17 @@ if _owns_storage and not _is_production:
         import departments as _departments
         _auth.migrate_legacy_users()
         _departments.migrate_legacy_registry()
+        # The three engines that used to write loose files. Each import runs
+        # only when the store holds nothing for the org, so this is a no-op on
+        # every boot after the first. transactions carries its counter across
+        # too, so references continue rather than restarting at 1 and colliding
+        # with history.
+        import notification_center as _nc
+        import transactions as _tx
+        import vouchers as _vouchers
+        _nc.migrate_legacy_notifications()
+        _tx.migrate_legacy_transactions()
+        _vouchers.migrate_legacy_vouchers()
     except Exception as _mig_err:  # never block boot on a migration hiccup
         print(f"[DOCex] Notice: legacy import skipped: {_mig_err}", flush=True)
 elif _is_production:

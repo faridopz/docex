@@ -15,30 +15,31 @@ Totals are summed in code (never by an LLM). Persisted as JSON under
 from __future__ import annotations
 
 import datetime as dt
+import os
 import uuid
 from pathlib import Path
 from typing import Optional
 
+import store
 import transactions as tx
 from models import Voucher, VoucherLine, VoucherSummary
 from per_diem import ParticipantPayable
 
 _ROOT = Path(__file__).parent
-_VOUCHER_DIR = _ROOT / "vouchers"
+_VOUCHER_DIR = _ROOT / "vouchers"          # legacy, read once at migration
+_VOUCHERS = "vouchers"                     # store collection
+
+
+def _org(org_id: Optional[str] = None) -> str:
+    explicit = (org_id or "").strip()
+    if explicit:
+        return store.require_org(explicit)
+    return store.require_org((os.environ.get("DOCEX_ORG") or "default").strip()
+                             or "default")
 
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
-def _ensure_dir() -> None:
-    _VOUCHER_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _path(voucher_id: str) -> Path:
-    if not voucher_id or "/" in voucher_id or "\\" in voucher_id or ".." in voucher_id:
-        raise ValueError(f"Invalid voucher id: {voucher_id!r}")
-    return _VOUCHER_DIR / f"{voucher_id}.json"
 
 
 def _line_from_payable(p: ParticipantPayable, role: Optional[str] = None) -> VoucherLine:
@@ -89,37 +90,58 @@ def build_voucher(
     return _save(voucher)
 
 
-def _save(voucher: Voucher) -> Voucher:
-    _ensure_dir()
+def _save(voucher: Voucher, org_id: Optional[str] = None) -> Voucher:
     voucher.updated_at = _now_iso()
     if not voucher.created_at:
         voucher.created_at = voucher.updated_at
-    _path(voucher.id).write_text(voucher.model_dump_json(indent=2))
+    store.get_store().put(_org(org_id), _VOUCHERS, voucher.id, voucher.model_dump())
     return voucher
 
 
-def load(voucher_id: str) -> Voucher:
-    path = _path(voucher_id)
-    if not path.exists():
+def load(voucher_id: str, org_id: Optional[str] = None) -> Voucher:
+    raw = store.get_store().get(_org(org_id), _VOUCHERS, voucher_id)
+    if raw is None:
         raise ValueError(f"Voucher '{voucher_id}' not found.")
-    return Voucher.model_validate_json(path.read_text())
+    return Voucher.model_validate(raw)
 
 
-def list_all() -> list[VoucherSummary]:
-    _ensure_dir()
+def list_all(org_id: Optional[str] = None) -> list[VoucherSummary]:
     out: list[VoucherSummary] = []
-    for p in _VOUCHER_DIR.glob("*.json"):
+    for raw in store.get_store().list(_org(org_id), _VOUCHERS):
         try:
-            v = Voucher.model_validate_json(p.read_text())
+            v = Voucher.model_validate(raw)
             out.append(VoucherSummary(
                 id=v.id, event_name=v.event_name, total=v.total, currency=v.currency,
                 participant_count=v.participant_count, flagged_count=v.flagged_count,
                 txn_ref=v.txn_ref, created_at=v.created_at,
             ))
         except Exception as exc:
-            print(f"Warning: skipping corrupt voucher {p.name}: {exc}")
+            print(f"Warning: skipping corrupt voucher {raw.get('id', '?')}: {exc}")
     out.sort(key=lambda s: s.created_at or "", reverse=True)
     return out
+
+
+def migrate_legacy_vouchers(org_id: Optional[str] = None) -> int:
+    """One-time import from the pre-store {root}/vouchers/ layout."""
+    if not _VOUCHER_DIR.is_dir():
+        return 0
+    org = _org(org_id)
+    st = store.get_store()
+    if st.list(org, _VOUCHERS):
+        return 0
+    imported = 0
+    for path in sorted(_VOUCHER_DIR.glob("*.json")):
+        try:
+            v = Voucher.model_validate_json(path.read_text())
+        except Exception as exc:
+            print(f"Warning: skipping legacy voucher {path.name}: {exc}")
+            continue
+        st.put(org, _VOUCHERS, v.id, v.model_dump())
+        imported += 1
+    if imported:
+        print(f"[vouchers] Imported {imported} from the legacy directory "
+              f"into org '{org}'.")
+    return imported
 
 
 def submit(voucher_id: str, *, created_by: Optional[str] = None) -> Voucher:

@@ -91,6 +91,17 @@ browser sends. A reviewer cannot approve a payment by editing the page.
   able to say who authorised a payment in March about someone who left in
   April.
 
+**Two-factor authentication** is available and can be required for anyone who
+approves payments. Each person scans a code into an authenticator app on their
+phone; signing in then needs the password *and* a six-digit code that changes
+every thirty seconds. A stolen password is no longer enough. Ten single-use
+recovery codes cover a lost phone, and your administrator can reset anyone who
+is locked out.
+
+We recommend switching this on once your team has settled in — not on day one,
+because requiring it of twenty people mid-payment-run is how a payment run gets
+missed.
+
 There is no "forgot password" email. That is a decision, not an oversight:
 reset links depend on a mail provider and a mailbox, and whoever controls the
 mailbox controls the account. Your administrator issuing a one-time password
@@ -131,8 +142,9 @@ assumed, and it is the first thing we upgrade.
 Last verified restore: **8 September 2026**. Ask us for this date at any time;
 it is recorded in our deployment log and refreshed quarterly.
 
-**If you want your own copy**, we will hand you an export on request, in that
-same readable format. It is your data.
+**You get your own copy every month**, unasked — a folder of spreadsheets your
+finance team can open in Excel, plus the full audit trail. No software needed,
+no charge, and ask for one any time in between. It is your data.
 
 ---
 
@@ -142,6 +154,12 @@ HTTPS everywhere. The API accepts requests only from NEEM's DOCex address; a
 page on any other site cannot call it with your session.
 
 ---
+
+## If it goes down
+
+The system is checked every few minutes from outside our hosting. If it stops
+responding we are alerted immediately — so in almost every case you will hear
+it from us before you notice it.
 
 ## Errors and monitoring
 
@@ -163,15 +181,11 @@ Listed because you should decide with the real picture.
   wakes. A scheduled ping keeps it awake through the working day, so you should
   rarely see it. It affects speed only — **no data is lost when it sleeps**,
   and it is the first thing we remove.
-- **No staging environment.** Changes are tested by us and then deployed. A
-  second instance for rehearsing changes is next; until then we deploy
-  cautiously and can roll back within minutes.
-- **No external uptime monitoring.** We are alerted to crashes, not yet to the
-  system being unreachable. Being built.
-- **Notifications and vouchers are not yet on durable storage.** Requisitions,
-  approvals, payments, the audit log and user accounts all are. Notifications
-  and vouchers are still written as files and could be lost in a redeploy. They
-  are working records, not financial ones, and the fix is scheduled.
+- **Staging is being set up.** Until it is, changes are tested by us and then
+  deployed. We deploy cautiously and can roll back within minutes.
+- **One person operates DOCex.** If continuity matters to you — and for a
+  finance system it should — you now receive a complete, readable copy of your
+  own records every month, unasked. Ask for one any time.
 - **Tax ID checking is a format check.** DOCex verifies a TIN is well-formed,
   not that it is registered. There is no free official lookup — the Joint Tax
   Board became the Joint Revenue Board in January 2026 and the portals are web
@@ -182,9 +196,6 @@ Listed because you should decide with the real picture.
 - **Payroll is switched off for NEEM.** We do not have your confirmed PAYE
   bands or pension rate, and running payroll without them would produce
   confidently wrong numbers. It stays off until you supply them.
-- **One person operates DOCex.** If continuity matters to you — and for a
-  finance system it should — ask us about escrow of the source code and a
-  standing data export. Both are reasonable and neither is expensive.
 
 ---
 

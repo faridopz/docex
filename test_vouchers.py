@@ -2,23 +2,30 @@
 Run: python test_vouchers.py"""
 from __future__ import annotations
 
+import os
 import tempfile
-from pathlib import Path
 
-import notification_center as nc
-import transactions as tx
-import vouchers as vouchers_mod
-from models import ReceiptItem
-from per_diem import PerDiemPolicy, build_participant_payable, uniform_days
+import store
 
-# Redirect all three stores to temp dirs.
-_v = Path(tempfile.mkdtemp(prefix="docex_v_"))
-_t = Path(tempfile.mkdtemp(prefix="docex_t_"))
-_n = Path(tempfile.mkdtemp(prefix="docex_n_"))
-vouchers_mod._VOUCHER_DIR = _v
-tx._TXN_DIR = _t
-tx._COUNTER_FILE = _t / ".counter"
-nc._NOTIF_DIR = _n
+# One isolated backend for all three engines, installed BEFORE they are
+# imported. Vouchers, transactions and notifications used to be loose files, so
+# this suite redirected three module-level directories. Those directories are
+# gone — the records now live in the store so they survive a redeploy — and
+# leaving the old redirection in place meant the suite quietly read and wrote
+# the developer's real data/ directory, counting notifications from every
+# previous run.
+store.set_store(store.JsonFileStore(tempfile.mkdtemp(prefix="docex_vouch_")))
+os.environ["DOCEX_ORG"] = "vouchertest"
+
+import notification_center as nc  # noqa: E402
+import transactions as tx  # noqa: E402
+import vouchers as vouchers_mod  # noqa: E402
+from models import ReceiptItem  # noqa: E402
+from per_diem import (  # noqa: E402
+    PerDiemPolicy,
+    build_participant_payable,
+    uniform_days,
+)
 
 _fail = 0
 

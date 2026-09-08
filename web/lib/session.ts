@@ -101,7 +101,15 @@ export async function apiFetch<T>(
   if (!res.ok) {
     const raw = await res.text().catch(() => "");
     const fe = friendlyError(res.status, raw);
-    throw Object.assign(new Error(fe.message), { cause: raw, reason: fe.reason, status: res.status });
+    throw Object.assign(new Error(fe.message), {
+      cause: raw,
+      reason: fe.reason,
+      status: res.status,
+      // The sign-in screen needs to tell "wrong password" apart from "now show
+      // the code box". A header rather than string-matching the message,
+      // because error wording changes and a login flow should not depend on it.
+      mfaRequired: res.headers.get("X-DOCex-MFA") === "required",
+    });
   }
   // 204 / empty bodies
   const text = await res.text();

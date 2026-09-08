@@ -9,14 +9,17 @@ owns three deterministic concerns:
      persisted so references never collide or reset across restarts.
   2. The state machine — the legal transitions between workflow states, and
      which department owns each state. Illegal moves raise, they don't corrupt.
-  3. Persistence — JSON files under {root}/transactions/, mirroring the existing
-     rulebook / check / run pattern.
+  3. Persistence — records in the org-scoped store (store.py), so a transaction
+     in flight and the reference counter both survive a redeploy. They used to
+     be files beside the code, which the platform replaces on every deploy: the
+     counter reset to zero and began reissuing references that already existed.
 
 Design rules honoured here:
   - History is append-only; existing events are never mutated (audit-grade).
   - Nothing here calls an LLM. Workflow state is pure, testable logic.
-  - Concurrency: the reference counter is bumped under an OS file lock so two
-    near-simultaneous creates can't hand out the same number.
+  - Concurrency: the counter is bumped under a process lock AND the resulting
+    reference is checked against existing records before it is used, because a
+    duplicate lands on a payment voucher.
 
 Notifications are emitted by callers (see api/transaction_routes.py) rather than
 here, to keep this module free of side effects and trivially unit-testable.
@@ -24,18 +27,14 @@ here, to keep this module free of side effects and trivially unit-testable.
 from __future__ import annotations
 
 import datetime as dt
+import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
 
-# fcntl is POSIX-only (the Render/Linux target). Guarded so imports never fail
-# on a dev machine without it; the lock simply becomes a no-op there.
-try:
-    import fcntl  # type: ignore
-except Exception:  # pragma: no cover - non-POSIX fallback
-    fcntl = None  # type: ignore
-
 import departments
+import store
 from models import (
     Department,
     Transaction,
@@ -46,8 +45,10 @@ from models import (
 )
 
 _ROOT = Path(__file__).parent
-_TXN_DIR = _ROOT / "transactions"
-_COUNTER_FILE = _TXN_DIR / ".counter"
+_TXN_DIR = _ROOT / "transactions"          # legacy, read once at migration
+_COUNTER_FILE = _TXN_DIR / ".counter"      # legacy
+_TXNS = "transactions"                     # store collection
+_COUNTER = "transaction_counter"           # store collection
 
 # Human-reference prefix per kind. Compliance = "C" (matches the team's "C24").
 _PREFIX: dict[str, str] = {
@@ -99,89 +100,145 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
 
 
-def _ensure_dir() -> None:
-    _TXN_DIR.mkdir(parents=True, exist_ok=True)
+def _org(org_id: Optional[str] = None) -> str:
+    explicit = (org_id or "").strip()
+    if explicit:
+        return store.require_org(explicit)
+    return store.require_org((os.environ.get("DOCEX_ORG") or "default").strip()
+                             or "default")
 
 
-def _txn_path(txn_id: str) -> Path:
-    # Guard against path traversal — ids are uuids, but never trust input.
-    if not txn_id or "/" in txn_id or "\\" in txn_id or ".." in txn_id:
-        raise TransactionError(f"Invalid transaction id: {txn_id!r}")
-    return _TXN_DIR / f"{txn_id}.json"
+# ─── reference counter (monotonic, and checked) ─────────────────────────────
 
 
-# ─── reference counter (locked, monotonic) ──────────────────────────────────
+_ref_lock = threading.Lock()
 
 
-def _next_number() -> int:
-    """Return the next global sequence number, incrementing the persisted
-    counter atomically. One shared counter keeps references unique across
-    kinds; the prefix distinguishes them (C24 vs P24 are different items)."""
-    _ensure_dir()
-    # Open for read+write, create if missing.
-    with open(_COUNTER_FILE, "a+") as fh:
-        if fcntl is not None:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            fh.seek(0)
-            raw = fh.read().strip()
-            current = int(raw) if raw.isdigit() else 0
-            nxt = current + 1
-            fh.seek(0)
-            fh.truncate()
-            fh.write(str(nxt))
-            fh.flush()
-            return nxt
-        finally:
-            if fcntl is not None:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+def _next_number(org_id: Optional[str] = None) -> int:
+    """Next sequence number for this org, from the durable counter.
+
+    One shared counter keeps references unique across kinds; the prefix
+    distinguishes them (C24 and P24 are different items).
+
+    The old version locked a file with fcntl, which was correct on one machine
+    and meaningless the moment the file itself stopped surviving a redeploy —
+    the counter reset to zero and started handing out references that already
+    existed. The counter is now a store record, so it persists.
+
+    Concurrency: a process-level lock covers threads inside one instance, which
+    is the deployment today. Two app instances could still interleave, so the
+    caller re-checks uniqueness below rather than trusting the number. If DOCex
+    ever runs more than one instance, this wants a real database sequence — it
+    is written down here because that failure would otherwise appear as two
+    payments sharing a voucher number.
+    """
+    org = _org(org_id)
+    with _ref_lock:
+        st = store.get_store()
+        raw = st.get(org, _COUNTER, "transaction") or {"value": 0}
+        nxt = int(raw.get("value", 0)) + 1
+        st.put(org, _COUNTER, "transaction", {"value": nxt})
+        return nxt
 
 
-def next_ref(kind: TxnKind) -> str:
-    """Generate the next human reference for a kind, e.g. 'C24'."""
+def next_ref(kind: TxnKind, org_id: Optional[str] = None) -> str:
+    """Generate the next human reference for a kind, e.g. 'C24'.
+
+    Verifies the reference is genuinely unused before returning it. A duplicate
+    here is not cosmetic: this reference goes on the payment voucher, and two
+    payments sharing one is the kind of thing an auditor finds.
+    """
     prefix = _PREFIX.get(kind, "TX")
-    return f"{prefix}{_next_number()}"
+    org = _org(org_id)
+    taken = {t.ref.lower() for t in _iter_all(org)}
+    for _ in range(50):
+        ref = f"{prefix}{_next_number(org)}"
+        if ref.lower() not in taken:
+            return ref
+    raise TransactionError(
+        "Could not allocate an unused transaction reference after 50 attempts. "
+        "The counter is behind the records it should be ahead of — check the "
+        "transaction_counter record for this org.")
 
 
 # ─── persistence ────────────────────────────────────────────────────────────
 
 
-def save(txn: Transaction) -> Transaction:
-    _ensure_dir()
+def save(txn: Transaction, org_id: Optional[str] = None) -> Transaction:
     now = _now_iso()
     if not txn.created_at:
         txn.created_at = now
     txn.updated_at = now
-    _txn_path(txn.id).write_text(txn.model_dump_json(indent=2))
+    store.get_store().put(_org(org_id), _TXNS, txn.id, txn.model_dump())
     return txn
 
 
-def load(txn_id: str) -> Transaction:
-    path = _txn_path(txn_id)
-    if not path.exists():
+def load(txn_id: str, org_id: Optional[str] = None) -> Transaction:
+    raw = store.get_store().get(_org(org_id), _TXNS, txn_id)
+    if raw is None:
         raise TransactionError(f"Transaction '{txn_id}' not found.")
-    return Transaction.model_validate_json(path.read_text())
+    return Transaction.model_validate(raw)
 
 
-def load_by_ref(ref: str) -> Transaction:
+def load_by_ref(ref: str, org_id: Optional[str] = None) -> Transaction:
     """Look up a transaction by its human reference (C24). Linear scan — fine
     at the volumes DOCex handles; swap for an index if it ever isn't."""
     want = (ref or "").strip().lower()
-    for txn in _iter_all():
+    for txn in _iter_all(org_id):
         if txn.ref.lower() == want:
             return txn
     raise TransactionError(f"Transaction '{ref}' not found.")
 
 
-def _iter_all() -> list[Transaction]:
-    _ensure_dir()
+def _iter_all(org_id: Optional[str] = None) -> list[Transaction]:
     out: list[Transaction] = []
-    for path in _TXN_DIR.glob("*.json"):
+    for raw in store.get_store().list(_org(org_id), _TXNS):
         try:
-            out.append(Transaction.model_validate_json(path.read_text()))
+            out.append(Transaction.model_validate(raw))
         except Exception as exc:  # skip corrupt records, don't crash the list
-            print(f"Warning: skipping corrupt transaction {path.name}: {exc}")
+            print(f"Warning: skipping corrupt transaction "
+                  f"{raw.get('id', '?')}: {exc}")
     return out
+
+
+def migrate_legacy_transactions(org_id: Optional[str] = None) -> int:
+    """One-time import from the pre-store {root}/transactions/ layout.
+
+    Also carries the old file counter across, so references continue from where
+    they left off instead of restarting at 1 and colliding with history.
+    """
+    if not _TXN_DIR.is_dir():
+        return 0
+    org = _org(org_id)
+    st = store.get_store()
+    if st.list(org, _TXNS):
+        return 0
+    imported = 0
+    highest = 0
+    for path in sorted(_TXN_DIR.glob("*.json")):
+        try:
+            txn = Transaction.model_validate_json(path.read_text())
+        except Exception as exc:
+            print(f"Warning: skipping legacy transaction {path.name}: {exc}")
+            continue
+        st.put(org, _TXNS, txn.id, txn.model_dump())
+        imported += 1
+        digits = "".join(c for c in txn.ref if c.isdigit())
+        if digits.isdigit():
+            highest = max(highest, int(digits))
+    if _COUNTER_FILE.exists():
+        try:
+            raw = _COUNTER_FILE.read_text().strip()
+            if raw.isdigit():
+                highest = max(highest, int(raw))
+        except Exception:
+            pass
+    if highest:
+        st.put(org, _COUNTER, "transaction", {"value": highest})
+    if imported:
+        print(f"[transactions] Imported {imported} from the legacy directory "
+              f"into org '{org}' (counter at {highest}).")
+    return imported
 
 
 def list_all(
@@ -219,12 +276,13 @@ def create(
     currency: str = "NGN",
     created_by: Optional[str] = None,
     initial_state: TxnState = "submitted",
+    org_id: Optional[str] = None,
 ) -> Transaction:
     """Open a new transaction with a fresh reference and a 'created' event."""
     now = _now_iso()
     txn = Transaction(
         id=uuid.uuid4().hex,
-        ref=next_ref(kind),
+        ref=next_ref(kind, org_id),
         kind=kind,
         title=title.strip() or "Untitled",
         state=initial_state,
@@ -243,7 +301,7 @@ def create(
     if source_id:
         txn.history.append(TxnEvent(type="linked", timestamp=now, actor=created_by,
                                     note=f"Linked to {source_kind or 'source'} {source_id}"))
-    return save(txn)
+    return save(txn, org_id)
 
 
 def can_transition(current: TxnState, target: TxnState) -> bool:
@@ -261,6 +319,7 @@ def transition(
     actor: Optional[str] = None,
     department: Optional[Department] = None,
     note: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> Transaction:
     """Move a transaction to a new state, enforcing the state machine. Appends
     an event, updates the owning department, and persists. Raises
@@ -286,7 +345,7 @@ def transition(
     ))
     txn.state = to_state
     txn.owner_department = _state_owner(to_state)
-    return save(txn)
+    return save(txn, org_id)
 
 
 def record_view(
@@ -294,6 +353,7 @@ def record_view(
     *,
     department: Optional[Department] = None,
     actor: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> Transaction:
     """Record that a department/actor looked at this transaction. Idempotent per
     viewer — the 'viewed by compliance' signal, not a full history spam."""
@@ -303,7 +363,7 @@ def record_view(
         txn.history.append(TxnEvent(
             type="viewed", timestamp=_now_iso(), actor=actor, department=department,
         ))
-        return save(txn)
+        return save(txn, org_id)
     return txn
 
 
@@ -313,9 +373,10 @@ def add_note(
     *,
     actor: Optional[str] = None,
     department: Optional[Department] = None,
+    org_id: Optional[str] = None,
 ) -> Transaction:
     txn.history.append(TxnEvent(
         type="noted", timestamp=_now_iso(), actor=actor,
         department=department, note=note,
     ))
-    return save(txn)
+    return save(txn, org_id)

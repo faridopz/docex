@@ -1,0 +1,84 @@
+# Staging — the copy you are allowed to break.
+#
+# WHY
+# Today every change goes from a laptop straight onto the system a client uses
+# to pay people. That works until it does not, and the day it does not, the
+# person who finds out is the client. A second instance costs nothing on the
+# free tier and changes where mistakes land.
+#
+# It matters more the moment there are two clients: a change made for NEEM now
+# ships to EVA as well, and "I tested it on my laptop" stops being an answer.
+#
+# ─── setting it up (10 minutes, once) ──────────────────────────────────────
+#
+#   1. A SECOND free Supabase project — "docex-staging". Never point staging at
+#      the production database. Not "carefully", not "read-only": a staging
+#      instance that can reach real records will eventually write to them.
+#
+#   2. Render → New → Blueprint → this repo → this file
+#      (Blueprint file path: render.staging.yaml)
+#
+#   3. Set the env vars below. Use DIFFERENT secrets from production — a
+#      staging key that leaks must not open the real system.
+#
+#   4. Seed it with fake data:
+#        DOCEX_DATABASE_URL='<staging url>' DOCEX_ORG=neem \
+#          python3 org_config.py apply profiles/neem.json
+#        DOCEX_DATABASE_URL='<staging url>' DOCEX_ORG=neem \
+#          python3 demo_seed.py --reset
+#
+# ─── how it is used ────────────────────────────────────────────────────────
+#
+#   Push to `staging`  → deploys here automatically.
+#   Merge to `demo-release` → deploys to the client.
+#
+#     git push origin HEAD:staging
+#     python3 verify_deployment.py https://docex-api-staging.onrender.com
+#     # click through the change yourself
+#     git push origin demo-release
+#
+# ─── the rule ──────────────────────────────────────────────────────────────
+#
+#   NEVER put real client data here. Not a copy of it, not "just to test the
+#   reconciliation". Staging has weaker secrets, no backups and looser access
+#   on purpose; real payment records in it are a breach waiting to be
+#   explained. If you need real data to reproduce a bug, ask the client for a
+#   redacted extract and delete it afterwards.
+
+services:
+  - type: web
+    name: docex-api-staging
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: staging
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # The STAGING database. A different Supabase project entirely.
+      - key: DOCEX_DATABASE_URL
+        sync: false
+
+      - key: DOCEX_ORG
+        value: neem
+
+      # Deliberately NOT "production". This is what keeps the two apart in
+      # Sentry, so a staging crash never looks like a client incident.
+      - key: DOCEX_ENV
+        value: staging
+
+      - key: DOCEX_PG_POOL_MAX
+        value: "3"
+
+      # Different values from production. Same secret in both means a staging
+      # session token works against the client's real system.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: DOCEX_SIGNING_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

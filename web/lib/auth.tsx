@@ -37,7 +37,16 @@ type AuthState = {
   signIn: (
     email: string,
     password: string,
-  ) => Promise<{ ok: boolean; error?: string; mustChangePassword?: boolean }>;
+    mfaCode?: string,
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    mustChangePassword?: boolean;
+    /** The server accepted the password and now wants the 6-digit code. */
+    mfaRequired?: boolean;
+    /** Signed in, but this role must enrol a second factor. */
+    mfaSetupRequired?: boolean;
+  }>;
   signOut: () => Promise<void>;
 };
 
@@ -68,9 +77,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  async function signIn(email: string, password: string) {
+  async function signIn(email: string, password: string, mfaCode?: string) {
     try {
-      const res = await apiLogin(email.trim(), password);
+      const res = await apiLogin(email.trim(), password, mfaCode);
       const { token, user: u } = res;
       setSession(token, u);
       setUser(u);
@@ -80,9 +89,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return {
         ok: true,
         mustChangePassword: res.must_change_password ?? u.must_change_password ?? false,
+        mfaSetupRequired: res.mfa_setup_required ?? false,
       };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Sign in failed." };
+      // A 401 carrying the MFA flag is not a failed sign-in — it is the second
+      // step. Passed through so the screen shows the code box rather than
+      // "wrong password", which would be both wrong and alarming.
+      const mfaRequired =
+        typeof e === "object" && e !== null && "mfaRequired" in e
+          ? Boolean((e as { mfaRequired?: boolean }).mfaRequired)
+          : false;
+      return {
+        ok: false,
+        mfaRequired,
+        error: e instanceof Error ? e.message : "Sign in failed.",
+      };
     }
   }
 

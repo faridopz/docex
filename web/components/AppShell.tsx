@@ -283,6 +283,13 @@ export function AppShell({
             <Users className="h-4 w-4 shrink-0 text-gray-400" />
             Departments &amp; team
           </Link>
+          <Link
+            href="/settings/security"
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+          >
+            <ShieldCheck className="h-4 w-4 shrink-0 text-gray-400" />
+            Security
+          </Link>
           {user.role === "admin" && (
             <Link
               href="/settings/users"

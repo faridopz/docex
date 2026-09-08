@@ -88,6 +88,10 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+    # Sent on the second step. The sign-in screen asks for it only after the
+    # server has said this account needs it — so an attacker with a password
+    # learns nothing new, and everyone else sees one field at a time.
+    mfa_code: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -98,6 +102,9 @@ class LoginResponse(BaseModel):
     # deliberately so the client never has to reach into the nested object to
     # answer a question this important.
     must_change_password: bool = False
+    # This account's role requires a second factor and it is not set up yet.
+    # They ARE signed in — the client routes them to enrolment.
+    mfa_setup_required: bool = False
 
 
 class InviteRequest(BaseModel):
@@ -178,10 +185,37 @@ def login(body: LoginRequest) -> LoginResponse:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except auth_mod.AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    # ── second factor ──────────────────────────────────────────────────────
+    # Checked AFTER the password, deliberately. Asking for a code before the
+    # password is right would tell an attacker which accounts exist and which
+    # of them can approve payments.
+    import mfa as mfa_mod
+    if mfa_mod.is_enrolled(user.id):
+        if not body.mfa_code:
+            # 401 with a flag, not an error: the client shows the code box.
+            raise HTTPException(
+                status_code=401,
+                detail="Enter the 6-digit code from your authenticator app.",
+                headers={"X-DOCex-MFA": "required"},
+            )
+        try:
+            if not mfa_mod.verify(user.id, body.mfa_code):
+                raise HTTPException(
+                    status_code=401,
+                    detail="That code is not right, or has already been used.",
+                    headers={"X-DOCex-MFA": "required"})
+        except mfa_mod.MfaError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
     token = auth_mod.issue_token(user)
     auth_mod.record_login(user)
-    return LoginResponse(token=token, user=auth_mod.public(user),
-                         must_change_password=user.must_change_password)
+    return LoginResponse(
+        token=token, user=auth_mod.public(user),
+        must_change_password=user.must_change_password,
+        mfa_setup_required=(mfa_mod.is_required_for(user.role)
+                            and not mfa_mod.is_enrolled(user.id)),
+    )
 
 
 @router.post("/auth/logout")
@@ -291,6 +325,119 @@ def update_user(user_id: str, body: UpdateUserRequest,
             role=body.role, actor_id=admin.id))
     except auth_mod.AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ─── two-factor authentication ──────────────────────────────────────────────
+
+
+class MfaConfirmRequest(BaseModel):
+    code: str
+
+
+class MfaPolicyRequest(BaseModel):
+    enabled: bool = True
+    required_roles: Optional[list[Role]] = None
+    grace_days: int = 7
+
+
+@router.get("/auth/mfa", response_model=dict)
+def mfa_status(user: User = Depends(current_user)) -> dict:
+    import mfa as mfa_mod
+    st = mfa_mod.status(user.id)
+    st["required_for_you"] = mfa_mod.is_required_for(user.role)
+    st["policy"] = mfa_mod.get_policy()
+    return st
+
+
+@router.post("/auth/mfa/begin", response_model=dict)
+def mfa_begin(user: User = Depends(current_user)) -> dict:
+    """Issue a secret and the QR data. Not active until confirmed.
+
+    Deliberately two steps: a secret that went live the moment it was created
+    would lock out anyone whose app failed to scan it properly — and the people
+    required to use this are the ones who approve payments.
+    """
+    import mfa as mfa_mod
+    try:
+        return mfa_mod.begin_enrolment(user.id, user.email)
+    except mfa_mod.MfaError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/auth/mfa/confirm", response_model=dict)
+def mfa_confirm(body: MfaConfirmRequest,
+                user: User = Depends(current_user)) -> dict:
+    """Prove the app works, switch it on, return the recovery codes ONCE."""
+    import mfa as mfa_mod
+    try:
+        codes = mfa_mod.confirm_enrolment(user.id, body.code)
+    except mfa_mod.MfaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "recovery_codes": codes,
+        "note": ("Save these somewhere other than your phone. Each works once, "
+                 "and they are the only way back in if you lose the device. "
+                 "They are shown now and never again."),
+    }
+
+
+@router.post("/auth/mfa/recovery-codes", response_model=dict)
+def mfa_new_recovery_codes(user: User = Depends(current_user)) -> dict:
+    import mfa as mfa_mod
+    try:
+        return {"recovery_codes": mfa_mod.regenerate_recovery_codes(user.id)}
+    except mfa_mod.MfaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/auth/mfa", response_model=dict)
+def mfa_disable_own(body: MfaConfirmRequest,
+                    user: User = Depends(current_user)) -> dict:
+    """Turn off your own second factor — requires a current code.
+
+    Without that check, an unlocked laptop is enough to remove the control that
+    exists to protect against exactly that.
+    """
+    import mfa as mfa_mod
+    try:
+        if not mfa_mod.verify(user.id, body.code):
+            raise HTTPException(status_code=400, detail="That code is not right.")
+    except mfa_mod.MfaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    mfa_mod.disable(user.id, actor=user.email)
+    return {"ok": True, "detail": "Two-factor authentication turned off."}
+
+
+@router.post("/auth/users/{user_id}/mfa/reset", response_model=dict)
+def mfa_admin_reset(user_id: str, admin: User = Depends(require_admin)) -> dict:
+    """Administrator clears a locked-out person's second factor.
+
+    The recovery path for a lost phone. Recorded with who did it, because
+    switching off a control on an account that can release money is precisely
+    what an auditor looks for.
+    """
+    import mfa as mfa_mod
+    target = auth_mod.get_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user.")
+    mfa_mod.disable(user_id, actor=admin.email)
+    auth_mod.logout(target)          # end their sessions too
+    return {"ok": True,
+            "detail": f"Two-factor authentication reset for {target.email}. "
+                      "They will be asked to set it up again at next sign-in."}
+
+
+@router.put("/auth/mfa/policy", response_model=dict)
+def mfa_set_policy(body: MfaPolicyRequest,
+                   admin: User = Depends(require_admin)) -> dict:
+    """Require a second factor for some roles. Admin only."""
+    import mfa as mfa_mod
+    return mfa_mod.set_policy(
+        enabled=body.enabled,
+        required_roles=list(body.required_roles) if body.required_roles else None,
+        grace_days=body.grace_days,
+    )
 
 
 @router.post("/auth/password", response_model=dict)

@@ -2,18 +2,24 @@
 notifications to the right departments. Run: python test_notifications_flow.py"""
 from __future__ import annotations
 
+import os
 import tempfile
-from pathlib import Path
 
-import notification_center as nc
-import transactions as tx
+import store
 
-# Redirect both stores to temp dirs.
-_t1 = Path(tempfile.mkdtemp(prefix="docex_txn_"))
-_t2 = Path(tempfile.mkdtemp(prefix="docex_notif_"))
-tx._TXN_DIR = _t1
-tx._COUNTER_FILE = _t1 / ".counter"
-nc._NOTIF_DIR = _t2
+# Install an isolated backend BEFORE importing the engines.
+#
+# This used to reassign tx._TXN_DIR and nc._NOTIF_DIR — module-level paths that
+# no longer exist, because transactions and notifications now persist through
+# the store layer so they survive a redeploy. Left as it was, the suite wrote
+# into the developer's real data/ directory and counted notifications left over
+# from the previous run, which showed up as an off-by-one that had nothing to
+# do with the code under test.
+store.set_store(store.JsonFileStore(tempfile.mkdtemp(prefix="docex_notif_")))
+os.environ["DOCEX_ORG"] = "notiftest"
+
+import notification_center as nc  # noqa: E402
+import transactions as tx  # noqa: E402
 
 _fail = 0
 

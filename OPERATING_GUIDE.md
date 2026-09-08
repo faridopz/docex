@@ -111,9 +111,10 @@ failure mode is an approval trail that cannot be reconstructed.
 What we take instead: PBKDF2 at 200k iterations, constant-time comparison,
 server-side session revocation, brute-force lockout, no account enumeration.
 
-The real cost, said plainly: no reset email, no social sign-in, **no MFA for
-client users**. MFA is the one that will matter as NEEM grows, and it is the
-honest next thing to build.
+The real cost, said plainly: no reset email and no social sign-in. **MFA was
+the third item on that list and is now built** — see below. Password recovery
+stays with a named administrator, deliberately: a reset link is only ever as
+strong as the mailbox it lands in.
 
 ### Do this once in the Supabase dashboard
 
@@ -167,6 +168,8 @@ python3 backup.py list       # warns if the newest is over 36h old
 - [ ] `python3 verify_deployment.py https://<api>` — 51 routes, CORS, error
       leaks, login throttling.
 - [ ] Re-read the profile's `_confirm_before_go_live`. Have any been answered?
+- [ ] **Send the client their export.** Unasked.
+      `python3 client_export.py --org neem --zip`
 
 ## Before every deploy
 
@@ -229,16 +232,61 @@ The full incident procedure is the `docex-incident` skill; rollback is in
 
 ---
 
+## Two-factor authentication
+
+Off until an organisation turns it on. When it is on, it is required for
+**approvers and administrators** — the people who can release money. Viewers
+and reviewers are not asked, because a control that feels gratuitous is one
+people work around.
+
+- `/settings/security` — a person enrols, or an admin sets the policy
+- `/settings/users` — reset a locked-out colleague's second factor
+- Ten recovery codes at enrolment, shown once, single use
+- Codes are checked against RFC 6238's published vectors in `test_mfa.py`, so
+  Google Authenticator, Microsoft Authenticator and 1Password all agree with us
+
+**Turn it on for NEEM once their team is settled**, not on day one — switching
+it on for twenty people mid-payment-run is how a payment run gets missed.
+
+## Staging
+
+`render.staging.yaml` + a second free Supabase project. Push to `staging`,
+click through the change, then merge to `demo-release`.
+
+**Never put real client data in staging.** It has weaker secrets, no backups
+and looser access on purpose. If you need real data to reproduce a bug, ask for
+a redacted extract and delete it afterwards.
+
+## The monthly export to the client
+
+```bash
+DOCEX_DATABASE_URL='...' python3 client_export.py --org neem --zip
+```
+
+CSVs their finance team can open in Excel, plus the raw JSON including the full
+audit trail, plus a README explaining every file. Passwords, two-factor secrets
+and sign-in logs are excluded — verify that with a grep before sending, which
+the script's own output makes easy.
+
+Send it monthly, unasked. It turns "what happens if you disappear" from a
+difficult question into a boring one, and it removes the worst kind of
+lock-in — the sort where a client stays because leaving would cost them their
+records.
+
 ## The honest gaps
 
 Say these plainly. Each is more credible than a hedge.
 
 - **One person operates this**, and that person can read the database. It is in
   `NEEM_SECURITY_SUMMARY.md` because they will work it out anyway.
-- **No staging.** Changes are tested locally and then on production.
-- **No external uptime alerting.** You hear about crashes, not unreachability.
-- **Notifications and vouchers still write files** and are lost on redeploy.
-  Requisitions, approvals, payments, users and the audit log are all durable.
-- **The first click after a quiet spell is slow** on the free tier.
+- **The first click after a quiet spell is slow** on the free tier. Fixed by
+  ₦11k/month whenever you want it gone.
+- **Staging exists but is not yet set up** — the blueprint is written, the
+  second Supabase project is not created.
+- **Payroll is off for NEEM.** No confirmed PAYE rates, and guessing them
+  produces confidently wrong payslips.
+- **Tax ID checking is format-only.** Bank account verification is real, and it
+  is the one that catches diverted payments.
 
-Fix in that order. The first two are the ones that will actually bite.
+Closed since the last pass: notifications, transactions and vouchers now
+survive a redeploy; MFA exists; uptime is monitored from outside.
