@@ -464,6 +464,14 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
         if vendor_check is not None:
             checks.append(vendor_check)
 
+    # 5c. Outstanding advances. Checked here, on a NEW request, because that is
+    #     where the policy costs the person the thing they want at the moment
+    #     they want it. A rule enforced only in a month-end report is a rule
+    #     nobody changes their behaviour for.
+    advance_check = _check_outstanding_advances(org_id, req)
+    if advance_check is not None:
+        checks.append(advance_check)
+
     # 6. Category allowed
     if wf.allowed_categories:
         ok = req.category.strip().lower() in {c.lower() for c in wf.allowed_categories}
@@ -631,6 +639,46 @@ def _check_vendor_register(org_id: str, req: Requisition) -> Optional[PolicyChec
         policy_value=bank.resolved_name,
         message=(f"Bank account {bank.account_number} confirmed as "
                  f"'{bank.resolved_name}'; {tin_note}."),
+    )
+
+
+def _check_outstanding_advances(org_id: str,
+                                req: Requisition) -> Optional[PolicyCheck]:
+    """Does an unretired advance bar this payment?
+
+    NEEM's policy, written down in their own deck: an overdue advance means no
+    further payment to that individual; a collective default blocks the
+    project's next activity. This turns both into a FAIL that an authorised
+    approver can still override with a written reason — because sometimes the
+    activity genuinely cannot wait, and that decision should carry a name.
+
+    Silent when the feature is off or no advance is outstanding.
+    """
+    try:
+        import org_config
+        if not org_config.feature_enabled(org_id, "advance_retirement"):
+            return None
+        import advances as _adv
+    except ImportError:                                        # pragma: no cover
+        return None
+
+    try:
+        block = _adv.payment_block(org_id, staff_id=req.submitted_by,
+                                   project_code=req.project_code)
+    except Exception:                                          # pragma: no cover
+        return None
+    if not block:
+        return None
+
+    return PolicyCheck(
+        code="ADVANCE_OUTSTANDING",
+        name="No unretired advance blocking payment",
+        result=CheckResult.FAIL,
+        policy_value=("No further payment while an advance is overdue"
+                      if block["scope"] == "staff" else
+                      "No payment for a project in collective default"),
+        actual_value=(block.get("advance_ref") or block.get("project_code", "")),
+        message=block["reason"],
     )
 
 

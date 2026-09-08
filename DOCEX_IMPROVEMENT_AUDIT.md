@@ -13,8 +13,12 @@ with.
 - **Withholding tax** — one approval, two debits, both reconcilable
 - **Bank accounts** — twenty of them, reconciliation scoped per account, the
   account read out of the statement header
+- **Document packs per payment type** — nineteen for NEEM, from their own deck
+- **Advance retirement** — the clock and NEEM's three-rung escalation ladder,
+  enforced on new requisitions rather than reported at month end
+- **Consultant vs employee** — the fork that decides PAYE or withholding tax
 
-Both were found in these documents and both were shipping blockers.
+All were found in these documents, and the first two were shipping blockers.
 
 ---
 
@@ -165,6 +169,37 @@ DOCex has no link between an advance and its balance. So:
 The PO template also states **"Terms of Delivery: 100% Delivery"** and
 **"5 Working Days Upon Receipt of Valid Invoice"** — real terms that could be
 checked against rather than filed.
+
+---
+
+## 6b. Inter-account transfers appear on TWO statements · HIGH value · MEDIUM effort
+
+Found while wiring payroll to bank accounts, and it is the same shape as the
+withholding-tax problem that nearly broke reconciliation.
+
+NEEM's cashbook charges staff cost to the project account — ₦11,033,000 to
+CARE in one month, coded 16000 "Due to / From" — while also running a dedicated
+salary account (B2). That implies money moving *between their own accounts*:
+the project account reimburses the salary account for the share of payroll that
+grant funded. Their payroll engine already has the concept, called refinancing.
+
+An inter-account transfer appears on **two statements**:
+
+- a **debit** on the project account
+- a **credit** on the salary account
+
+Reconciliation currently understands neither side. The debit has no
+requisition behind it, so it reports as *"money left the account with no
+approved request"*; the credit is money in, so it is ignored, and the salary
+account never shows where its funding came from.
+
+One event, two statement lines, two accounts — exactly the WHT pattern, and the
+fix is the same shape: record the transfer once, as a pair, so both halves are
+expected.
+
+**This will surface the first time NEEM reconciles two accounts in the same
+month.** It is not urgent this week, and it is the next real gap after the
+weekly schedule.
 
 ---
 

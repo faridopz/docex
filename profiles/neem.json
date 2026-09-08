@@ -240,7 +240,8 @@
     "payroll": false,
     "vendor_register": true,
     "accounting_export": true,
-    "withholding_tax": true
+    "withholding_tax": true,
+    "advance_retirement": true
   },
   "_confirm_before_go_live": [
     "THRESHOLD CONFLICT — the signed Procurement Policy (p6) says three quotes are required from N200,001. The Finance Processes deck (slide 4) says a direct memo suffices up to N499,999 and RFQ starts at N500,000. These disagree across N200,001-N499,999. Ask which governs; the policy is signed, the deck is what staff are trained on.",
@@ -300,5 +301,19 @@
     "pattern": "NF/{location}/{project_code}/{donor}/{MONYY}/PV/{seq:02d}",
     "example": "NF/HQ/B24/CARE/SEP23/PV/01",
     "_note": "Generating THEIR reference rather than REQ-0001 means DOCex output files straight into their existing system with no translation. Not yet implemented — see DOCEX_IMPROVEMENT_AUDIT.md item 4."
+  },
+  "advance_policy": {
+    "_source": "NEEM_Finance_Processes.pptx slide 10, verbatim: 'must be retired within 7 days or 5 working days from the date of receipt of payment. Failure ... no payment will be made to that individual ... collective default ... no payment for the implementation of that project ... persist till the end of the month ... recovered from the salary(ies).'",
+    "enabled": true,
+    "retirement_days": 7,
+    "working_days": 5,
+    "use_working_days": true,
+    "warn_days_before": 2,
+    "block_staff_after_days": 0,
+    "block_project_after_days": 0,
+    "collective_default_count": 2,
+    "recover_at_month_end": true,
+    "_dsa_note": "DSA runs the same clock but from the END of the trip — 'retired within 5 working days or 7 days after the event/trip has been concluded'. A travel approval form must exist BEFORE the trip.",
+    "_confirm": "collective_default_count is set to 2 as a working assumption. Their policy says 'a collective default' without defining how many. Ask."
   }
 }

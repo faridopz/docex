@@ -106,6 +106,7 @@
     "payroll": false,
     "vendor_register": false,
     "accounting_export": false,
-    "withholding_tax": false
+    "withholding_tax": false,
+    "advance_retirement": false
   }
 }
