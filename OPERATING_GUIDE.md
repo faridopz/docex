@@ -67,6 +67,54 @@ expose, and additionally:
 Verified by `test_store_pg.py`, which creates a role with Supabase's default
 grants and tries to read a payment. It gets permission denied.
 
+### Check it, don't trust it
+
+```bash
+export DOCEX_DATABASE_URL='postgresql://...'
+python3 check_supabase.py                  # database + repo + dashboard list
+python3 check_supabase.py --sql            # the hardening SQL, to paste and read
+python3 check_supabase.py --repo --history # full git-history secret sweep
+```
+
+This runs the security checklist against the **actual database and actual
+repo**, not against a document claiming it was done. It reads what the Data API
+publishes, finds anything left in `public` that the `anon` role can read,
+confirms RLS, and scans the frontend and git history for keys by shape.
+
+Where each checklist item is proved:
+
+| Item | Proved by |
+|---|---|
+| Row-level security | `check_supabase.py` |
+| Data API exposure | `check_supabase.py` |
+| No API keys in the frontend | `check_supabase.py` |
+| Connection details hidden | `check_supabase.py` + `verify_deployment.py` |
+| Authentication & access control | `test_auth.py`, `test_user_management.py` |
+| Rate limiting | `test_auth.py`, `verify_deployment.py` |
+| Errors reveal nothing | `test_observability.py`, `verify_deployment.py` |
+| Every route needs a session | `test_auth_coverage.py`, `verify_deployment.py` |
+
+### One checklist item we deliberately do not satisfy
+
+**"Use Supabase Auth for authentication handling."** DOCex uses its own, and
+that is a decision worth being able to defend.
+
+An approval here is not "a logged-in user did something". It is a named person,
+in a named department, holding an authority limit, whose identity is hashed
+into an append-only chain that must still verify in three years. Supabase Auth
+issues identity; it does not model departments, approval limits, override
+authority, or a leaver whose March approvals must stay attributable after their
+access ends in April. Bolting those onto an external identity provider makes
+the audit chain depend on two systems agreeing about who somebody was — and the
+failure mode is an approval trail that cannot be reconstructed.
+
+What we take instead: PBKDF2 at 200k iterations, constant-time comparison,
+server-side session revocation, brute-force lockout, no account enumeration.
+
+The real cost, said plainly: no reset email, no social sign-in, **no MFA for
+client users**. MFA is the one that will matter as NEEM grows, and it is the
+honest next thing to build.
+
 ### Do this once in the Supabase dashboard
 
 - [ ] **Settings → API → Data API:** confirm exposed schemas is `public` only,
@@ -99,6 +147,7 @@ dashboard. It is downtime, not loss.
 
 ## Weekly, ten minutes
 
+- [ ] `python3 check_supabase.py` — nothing newly exposed, no key committed.
 - [ ] GitHub → Actions → **backup** is green all week. Red is an incident.
 - [ ] Sentry: any error you have not seen before.
 - [ ] Supabase → Database → size, against 500 MB.
