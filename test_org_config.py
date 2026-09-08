@@ -261,6 +261,71 @@ def test_feature_flags() -> None:
     check("flag is per-org", oc.feature_enabled("beta", "kobo_sync") is False)
 
 
+def test_no_workflow_field_is_silently_dropped() -> None:
+    """The bridge from profile to engine must carry EVERY workflow field.
+
+    Written after `documents_by_category` was missing from apply_profile for
+    weeks. The profile carried nineteen document packs, the engine supported
+    them, and the mapping between the two quietly omitted the field — so NEEM
+    would have been asked for the same two documents on a ₦40,000
+    reimbursement as on a ₦3,000,000 equipment purchase.
+
+    Nothing errored, and nothing could: an unmapped field just takes its
+    default. That is the failure mode of "one engine, one config file" and it
+    deserves a test that fails for the NEXT field somebody forgets, not only
+    for this one.
+    """
+    print("\nEvery workflow field a profile can set must reach the engine")
+    import re
+    import requisitions as rq
+
+    engine_fields = set(rq.RequisitionWorkflow.model_fields.keys())
+    src = (Path(__file__).parent / "org_config.py").read_text()
+    block = src[src.index("new = requisitions.RequisitionWorkflow("):]
+    block = block[:block.index(")\n")]
+    mapped = set(re.findall(r"^\s*(\w+)=", block, re.M))
+
+    # Set by the engine itself, never by a profile.
+    derived = {"org_id", "updated_at"}
+    dropped = engine_fields - mapped - derived
+    if dropped:
+        print(f"       dropped: {sorted(dropped)}")
+    check("no workflow field is dropped by apply_profile", not dropped)
+
+
+def test_document_packs_reach_the_engine() -> None:
+    """The specific case, end to end: packs in a profile become packs in use."""
+    print("\nPer-category document packs survive apply()")
+    import requisitions as rq
+
+    org = "packtest"
+    oc.apply_profile({
+        "org_id": org,
+        "name": "Pack Test",
+        "departments": [{"key": "finance", "name": "Finance"}],
+        "state_owners": {"approval": "finance"},
+        "workflow": {
+            "steps": [{"key": "finance", "label": "Finance", "department": "finance"}],
+            "required_documents": ["memo", "invoice"],
+            "documents_by_category": {
+                "equipment": ["memo", "invoice", "purchase_order", "grn"],
+                "advance": ["memo", "advance_request_form"],
+            },
+        },
+    })
+
+    wf = rq.get_workflow(org)
+    check("the packs were stored", len(wf.documents_by_category) == 2)
+    check("equipment needs a goods-received note",
+          "grn" in rq.required_documents_for(wf, "equipment"))
+    check("an advance does NOT need a GRN",
+          "grn" not in rq.required_documents_for(wf, "advance"))
+    check("an unlisted category falls back to the org-wide list",
+          sorted(rq.required_documents_for(wf, "stationery")) == ["invoice", "memo"])
+    # An ignored check is worse than no check: asking for a purchase order on a
+    # ₦40,000 reimbursement is how people learn to click past the warning.
+
+
 def main() -> int:
     print("=" * 64)
     print("Client profiles — one engine, one config per organisation")
@@ -275,6 +340,8 @@ def main() -> int:
     test_client_config_drives_what_each_client_sees()
     test_two_clients_see_different_systems()
     test_feature_flags()
+    test_no_workflow_field_is_silently_dropped()
+    test_document_packs_reach_the_engine()
     print("\n" + "=" * 64)
     print(f"{_passed} passed, {_failed} failed")
     print("=" * 64)

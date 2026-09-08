@@ -290,6 +290,15 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             forbidden_vendors=wf.get("forbidden_vendors", current.forbidden_vendors),
             approved_vendors=wf.get("approved_vendors", current.approved_vendors),
             required_documents=wf.get("required_documents", current.required_documents),
+            # The per-category document packs. Omitted here until now, which is
+            # the quietest kind of configuration bug: the profile carried
+            # nineteen packs, the engine supported them, and the bridge between
+            # the two dropped the field. Nothing errored. NEEM would have been
+            # asked for the same two documents on a ₦40,000 reimbursement as on
+            # a ₦3,000,000 equipment purchase — the exact behaviour the packs
+            # were written to replace.
+            documents_by_category=wf.get("documents_by_category",
+                                         current.documents_by_category),
             duplicate_window_days=int(wf.get("duplicate_window_days", current.duplicate_window_days)),
         )
         bad = requisitions.unroutable_steps(org_id, new)
