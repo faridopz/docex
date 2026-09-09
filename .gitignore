@@ -46,10 +46,26 @@ analytics/*
 *.log
 
 # ERP runtime data — created at runtime, ephemeral on Render, never source.
-transactions/
-notifications/
-users/
-vouchers/
+# Local JSON data stores at the REPO ROOT — anchored with a leading slash.
+#
+# These were bare patterns (`users/`, `transactions/`…), and a bare pattern
+# matches a directory of that name at ANY depth. So they silently swallowed
+# three real source directories:
+#
+#   web/app/settings/users/      — People & access, the user-management screen
+#   web/app/transactions/[ref]/  — transaction detail
+#   web/app/vouchers/new/        — voucher builder
+#
+# Those pages existed, compiled, passed tsc, and 404'd in production, because
+# they were never committed. `git status` stayed clean the whole time, which is
+# what made it invisible: nothing was ever reported as missing.
+#
+# The leading slash confines each pattern to the repo root, which is the only
+# place the data directories ever were.
+/transactions/
+/notifications/
+/users/
+/vouchers/
 
 # Auth / signing secrets — MUST never be committed.
 .auth_secret
