@@ -82,6 +82,32 @@ check("audit log started", len(r1.audit_log) >= 3, True)
 check("audit chain valid", rq.verify_audit_chain(r1), True)
 
 # compliance approves
+# ─── THE ONE THAT MATTERED: only the step's department may act ──────────
+#
+# This block did not exist, and the engine did not check. A reviewer in
+# Programmes could approve the compliance step, then finance, then the
+# executive step — the whole chain alone. The approval route was decorative.
+#
+# Every earlier test drove the chain with the RIGHT actor at each step and
+# never asked whether the WRONG one would be refused. That is the difference
+# between testing that a control works and testing that it cannot be walked
+# around. Only the second one is a test of a control.
+expect_err("the submitter's own department cannot approve the compliance step",
+    lambda: rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
+                      actor="program@eva.org", department="program",
+                      notes="Approving my own request."))
+expect_err("finance cannot act while it sits with compliance",
+    lambda: rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
+                      actor="amara@eva.org", department="finance",
+                      notes="Jumping the queue."))
+expect_err("nor can they decline it out of turn",
+    lambda: rq.decide(ORG, r1.id, decision=rq.Decision.DECLINED,
+                      actor="amara@eva.org", department="finance"))
+check("nothing was recorded by the refused attempts",
+      len([a for a in rq.get_requisition(ORG, r1.id).approvals]), 0)
+check("still parked on compliance",
+      rq.get_requisition(ORG, r1.id).current_step, "compliance")
+
 r1 = rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
                actor="chioma@eva.org", department="compliance",
                notes="Donor-aligned, documentation complete.")

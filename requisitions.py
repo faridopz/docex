@@ -1077,6 +1077,27 @@ def decide(
     if step is None:
         raise RequisitionError(f"{req.ref} has no active approval step.")
 
+    # ─── the step belongs to a department; only that department may act ────
+    #
+    # This check was missing. `department or step.department` below quietly
+    # accepted whoever showed up, so a reviewer in Programmes could approve the
+    # Finance/Audit step, then Admin, then the AED — the whole chain, alone,
+    # in one role. The approval route was decorative, and the only thing
+    # between that and money leaving was the role check on payment.
+    #
+    # No test caught it, because every test drove the engine with one actor
+    # and never asked whether a SECOND person from the wrong department would
+    # be refused. Found by walking the product as two users would.
+    #
+    # Deliberately no administrator bypass. An admin who needs to unstick a
+    # requisition sitting with the wrong department should reassign it — a
+    # visible, recorded act — not silently stand in for that department.
+    if department and step.department and department != step.department:
+        raise RequisitionError(
+            f"{req.ref} is with {step.department} ({step.label or step.key}); "
+            f"you are in {department}. Only {step.department} can act at this step."
+        )
+
     overrides = list(overrides or [])
 
     # ─── apply overrides (authority-checked) ────────────────────────────────
