@@ -21,6 +21,7 @@ from pathlib import Path
 
 import requisitions as rq
 import store
+import departments
 
 _base = Path(tempfile.mkdtemp(prefix="docex_req_"))
 store.set_store(store.JsonFileStore(_base / "data"))
@@ -107,6 +108,7 @@ check("nothing was recorded by the refused attempts",
       len([a for a in rq.get_requisition(ORG, r1.id).approvals]), 0)
 check("still parked on compliance",
       rq.get_requisition(ORG, r1.id).current_step, "compliance")
+
 
 r1 = rq.decide(ORG, r1.id, decision=rq.Decision.APPROVED,
                actor="chioma@eva.org", department="compliance",
@@ -376,5 +378,64 @@ check("a correctly documented DSA passes without a GRN", _c.result, rq.CheckResu
 check("and says so in the payment's own terms",
       "dsa payment are attached" in _c.message, True)
 
+
+# ─── nobody approves or pays their own request ─────────────────────────────
+# Own org, so the counts asserted elsewhere in this file are untouched.
+SOD = "sod-test"
+departments.save(departments.default_registry(), SOD)
+_wf = rq.default_workflow(SOD, size="medium")
+_wf.allowed_categories = ["supplies"]
+_wf.required_documents = ["receipt"]
+rq.set_workflow(SOD, _wf)
+#
+# The department check is necessary and not sufficient. A compliance officer
+# raises a requisition; compliance is the first step; the same person approves
+# it. Right department, wrong person. Separately: the person who raised it
+# must not be the one who releases the money, whatever happened in between.
+# These are the first two questions an auditor asks.
+own = rq.create_requisition(
+    SOD,
+    submitted_by="chioma@eva.org", department="compliance",
+    vendor_name="Supply Store Ltd", amount=20_000,
+    category="supplies", project_code="P-EVA-001",
+    grant_code="GR-USAID-2024", vendor_account="UBA 1234567890",
+    description="Raised by the compliance officer herself", documents=["receipt"],
+)
+check("own request parked on the submitter's own department", own.current_step, "compliance")
+expect_err("she cannot approve what she raised, even at her own step",
+    lambda: rq.decide(SOD, own.id, decision=rq.Decision.APPROVED,
+                      actor="chioma@eva.org", department="compliance",
+                      notes="Looks fine to me."))
+own = rq.decide(SOD, own.id, decision=rq.Decision.RETURNED,
+                actor="chioma@eva.org", department="compliance",
+                notes="Withdrawing to fix the amount.")
+check("but she CAN return her own request — withdrawing is not a conflict",
+      own.status, rq.ReqStatus.RETURNED)
+
+# And the payment side: fully approved by others, the submitter still may not
+# release it.
+own2 = rq.create_requisition(
+    SOD,
+    submitted_by="amara@eva.org", department="finance",
+    vendor_name="Supply Store Ltd", amount=20_000,
+    category="supplies", project_code="P-EVA-001",
+    grant_code="GR-USAID-2024", vendor_account="UBA 1234567890",
+    description="Raised by finance", documents=["receipt"],
+)
+own2 = rq.decide(SOD, own2.id, decision=rq.Decision.APPROVED,
+                 actor="chioma@eva.org", department="compliance", notes="ok")
+# finance step: amara raised it, so a DIFFERENT finance person must approve
+expect_err("finance colleague who raised it cannot approve at the finance step",
+    lambda: rq.decide(SOD, own2.id, decision=rq.Decision.APPROVED,
+                      actor="amara@eva.org", department="finance", notes="ok"))
+own2 = rq.decide(SOD, own2.id, decision=rq.Decision.APPROVED,
+                 actor="tunde@eva.org", department="finance", notes="ok")
+check("another finance officer can", own2.status, rq.ReqStatus.APPROVED)
+expect_err("the submitter cannot release the payment",
+    lambda: rq.mark_paid(SOD, own2.id, actor="amara@eva.org",
+                         bank_reference="GTB/000"))
+paid_by_other = rq.mark_paid(SOD, own2.id, actor="tunde@eva.org",
+                             bank_reference="GTB/001")
+check("someone else can", paid_by_other.paid_by, "tunde@eva.org")
 
 print("All requisition checks passed.")

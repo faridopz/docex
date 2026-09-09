@@ -1098,6 +1098,21 @@ def decide(
             f"you are in {department}. Only {step.department} can act at this step."
         )
 
+    # ─── nobody approves their own request ──────────────────────────────────
+    #
+    # The department check above is not enough on its own. A finance officer
+    # raises a requisition; finance is the first step; they approve it. Same
+    # person, both sides of the control. This is the first question an
+    # auditor asks and it needed to be a refusal, not a convention.
+    #
+    # Declining or returning your own request is allowed — withdrawing
+    # something you raised is not a conflict of interest.
+    if decision == Decision.APPROVED and actor and actor == req.submitted_by:
+        raise RequisitionError(
+            f"{req.ref} was raised by you. A requisition cannot be approved by "
+            "the person who submitted it."
+        )
+
     overrides = list(overrides or [])
 
     # ─── apply overrides (authority-checked) ────────────────────────────────
@@ -1213,6 +1228,13 @@ def mark_paid(
     if req.status != ReqStatus.APPROVED:
         raise RequisitionError(
             f"{req.ref} must be fully approved before payment (status: {req.status.value})."
+        )
+    # The person who raised it may not be the person who releases the money.
+    # Approvals in between do not cure this: the submitter choosing WHEN and
+    # WITH WHICH reference a payment goes out is still one person on both ends.
+    if actor and actor == req.submitted_by:
+        raise RequisitionError(
+            f"{req.ref} was raised by you. Payment must be released by someone else."
         )
 
     _audit(req, "paid", actor=actor, department=department,
