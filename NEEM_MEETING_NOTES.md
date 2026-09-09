@@ -1,7 +1,74 @@
 # NEEM — what to know walking in
 
+**INTERNAL. Do not send this file to NEEM.** It carries your costs, your
+pricing position and your negotiating line. The document you send them is
+`NEEM_WELCOME.md`.
+
 Today. The system is live. This is the list of things to say before they find
 them, and the things to ask for.
+
+---
+
+## Ten minutes before
+
+1. **Open the app and click something.** The instance sleeps after fifteen idle
+   minutes; a forty-second white screen is the worst possible opening.
+2. Sign in, land on the dashboard, **leave it open**.
+3. Have `NEEM_WELCOME.md` ready to send — the link, how accounts work, what is
+   off and why, and what you need from them. Send it at the end, not the start;
+   handed over early, people read instead of watching.
+
+---
+
+## How the meeting runs
+
+Roughly an hour. The order matters: **the finding first, the software second.**
+A demo invites them to judge a product. A finding invites them to think about
+their own organisation, and that is a different conversation.
+
+**1. The threshold conflict — first, before anything is opened.** (5 min)
+
+> "Reading your procurement policy against your finance deck, I found something
+> I could not resolve. The signed policy requires three quotes from ₦200,001.
+> The deck your staff are trained on says a direct memo is fine to ₦499,999.
+> Which one actually governs?"
+
+Then stop talking. Whatever they answer, the meeting has changed: you are
+someone who read their documents properly, not someone with a demo.
+
+**2. Raise a real requisition.** (10 min) Ask for a payment they made last
+week and enter it live. Their categories, their departments, their route. The
+moment that lands is the policy checks appearing **before** anyone approves.
+
+**3. The document pack changes with the payment type.** (5 min) Switch the
+category from equipment to advance and let them see the required documents
+change — purchase order and GRN, versus an advance request form. Nineteen
+packs, from their own deck. This is the one that makes it feel like *their*
+system rather than software they must adapt to.
+
+**4. Approve it, then show the audit trail.** (10 min) The chain, the named
+approver, the fact that nothing can be edited afterwards. If they ask what
+happens when policy must be broken — show the override: written reason, named
+authority, permanent record.
+
+**5. Create one account while they watch.** (5 min) One person, real name. Let
+them see the one-time password appear once and the forced change. Do **not**
+create all twenty in the meeting — the control explains itself better when
+watched than described.
+
+**6. Reconciliation, briefly.** (5 min) Line-by-line against their
+balance-based method. The line to have ready is at the bottom of this file.
+
+**7. What is off, and why.** (5 min) Payroll, WHT rates, TIN. Lead with the
+reasoning, not the gap: a guessed tax rate is worse than an empty one.
+
+**8. The six questions.** (10 min) Below. Get answers or get owners.
+
+**9. Send the welcome doc, agree the next date.** (5 min)
+
+**If something breaks:** say what you are seeing, move on, fix it after. Do not
+debug in front of them — a supplier who calmly parks a problem reads as
+competent; one who fights it live reads as fragile.
 
 ---
 
