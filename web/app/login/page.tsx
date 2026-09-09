@@ -24,6 +24,9 @@ export default function LoginPage() {
   // tell an attacker which accounts exist and which of them approve payments.
   const [mfaCode, setMfaCode] = useState("");
   const [needsCode, setNeedsCode] = useState(false);
+  // Whether this instance has been set up. Starts null (unknown) so the
+  // "set up a workspace" link never flashes before we know it is wrong.
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!ready || !user) return;
@@ -38,6 +41,7 @@ export default function LoginPage() {
     (async () => {
       try {
         const s = await getAuthStatus();
+        setNeedsSetup(s.needs_setup);
         if (s.needs_setup) router.replace("/setup");
       } catch {
         /* offline/unreachable API — leave the form up */
@@ -163,9 +167,23 @@ export default function LoginPage() {
 
         <p className="mt-4 text-center text-[11px] text-gray-400">
           Signed in per user · your department decides what you see
-          <br />
-          Setting up a new workspace?{" "}
-          <Link href="/setup" className="text-brand-600">Start here</Link>
+          {/* Only on a brand-new instance. On a client's live system twenty
+              people see this screen, and an invitation to "set up a workspace"
+              reads as "create your own account" — which they cannot do, and
+              should not try. Their administrator issues accounts. */}
+          {needsSetup === true && (
+            <>
+              <br />
+              Setting up a new workspace?{" "}
+              <Link href="/setup" className="text-brand-600">Start here</Link>
+            </>
+          )}
+          {needsSetup === false && (
+            <>
+              <br />
+              No account yet? Your organisation&apos;s administrator creates it.
+            </>
+          )}
         </p>
       </div>
     </div>
