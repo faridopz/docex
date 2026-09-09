@@ -172,6 +172,23 @@ async def verify_bank_batch(
     a stable URL for the auditor to revisit. Pass persist=false to skip
     save (useful for one-off dry runs).
     """
+    # Say WHY before doing any work.
+    #
+    # Without the key, the first Paystack call raises deep inside the engine
+    # and surfaces as a generic 500 — "something went wrong on our side", with
+    # a reference number. Accurate, useless, and during a client demo it reads
+    # as a broken product rather than an unset variable. A named, actionable
+    # 503 costs three lines and turns a mystery into a task.
+    import bank_verify as _bv
+    if not _bv.PAYSTACK_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Bank account verification is not configured on this "
+                   "instance. It needs a Paystack key (PAYSTACK_SECRET_KEY) "
+                   "to resolve an account number to its registered name. "
+                   "Everything else in DOCex works without it.",
+        )
+
     if not schedule.filename or not schedule.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(
             status_code=422,

@@ -102,7 +102,17 @@ const NAV_GROUPS: NavGroup[] = [
       // its output is financial: approved hours decide what each grant is
       // charged for a salary.
       { section: "timesheets", label: "Timesheets", href: "/timesheets", icon: Timer, match: ["/timesheets"], flag: "timesheets" },
-      { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"] },
+      // Participant payment vouchers — the per-diem / event-payment workflow.
+      // Flagged with attendance_payments because it is the SAME workflow as the
+      // Attendance & Payment screen below: you build a voucher from event
+      // participants and their rate cards.
+      //
+      // It was unflagged, which meant NEEM saw a "New voucher" link for a
+      // product they never bought. Worse, it half-worked: the page loads and
+      // the rate-card dropdown is empty, because rate cards are configured per
+      // organisation and NEEM has none. A dead end in the nav during a client
+      // demo reads as a broken system, not an unused feature.
+      { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"], flag: "attendance_payments" },
       // The pre-requisitions intake screens. "Submit requisition" here and
       // "Requisitions" above were two different systems wearing the same word,
       // which is confusing in a nav and worse in a demo — /requisitions is the
