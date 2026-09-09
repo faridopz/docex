@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { Building2, Loader2, Plus, Trash2, UserPlus, Users } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
+import { inviteUser, type InviteResult } from "@/lib/userApi";
 import {
   createDepartment,
   deleteDepartment,
   listDepartments,
   listUsers,
-  registerUser,
   setStateOwner,
   type DepartmentDef,
 } from "@/lib/erpApi";
@@ -45,6 +45,9 @@ export default function DepartmentSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The one-time password, shown once. Held in state rather than a
+  // toast: it must stay on screen until it has been passed on.
+  const [issued, setIssued] = useState<InviteResult | null>(null);
 
   const [newDept, setNewDept] = useState("");
   const [newUser, setNewUser] = useState({
@@ -248,24 +251,68 @@ export default function DepartmentSettingsPage() {
                 )}
               </ul>
 
-              <div className="grid grid-cols-1 gap-2 border-t border-gray-100 px-5 py-3 sm:grid-cols-5">
+              {/* No password field, and autoComplete off on every input.
+                  Two reasons, both learned the hard way:
+
+                  1. This form used to let an administrator CHOOSE someone
+                     else's permanent password — a second way in that skipped
+                     the forced-change control the invite flow enforces. A
+                     control with a second door is not a control.
+                  2. Chrome saw name/email/password and helpfully autofilled
+                     the signed-in administrator's OWN credentials, so "Add
+                     team member" tried to re-create the admin account and
+                     failed. With no password field there is nothing to grab.
+
+                  It now issues a one-time password, exactly like
+                  People & access. One funnel, one behaviour. */}
+              {issued && (
+                <div className="mx-5 mb-1 mt-3 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                  <p className="text-sm font-semibold text-blue-900">
+                    One-time password for {issued.user.email}
+                  </p>
+                  <p className="mt-1 text-xs text-blue-800">
+                    Shown once. Nothing stores it in readable form — if you lose it,
+                    reset them from People &amp; access.
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <code className="rounded-lg border border-blue-200 bg-white px-3 py-2 font-mono text-base tracking-wide text-blue-900">
+                      {issued.temporary_password}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(issued.temporary_password)}
+                      className="rounded-lg border border-blue-300 px-3 py-2 text-xs font-semibold text-blue-800 transition hover:bg-blue-100"
+                    >
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIssued(null)}
+                      className="rounded-lg px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
+                    >
+                      Done
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[11px] text-blue-700">
+                    They must set their own password on first sign-in. Until then the
+                    system stays closed to them.
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-2 border-t border-gray-100 px-5 py-3 sm:grid-cols-4">
                 <input
                   value={newUser.name}
                   onChange={(e) => setNewUser({ ...newUser, name: e.target.value })}
-                  placeholder="Name"
+                  placeholder="Full name"
+                  autoComplete="off"
                   className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-400"
                 />
                 <input
                   value={newUser.email}
                   onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                  placeholder="Email"
-                  className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-400"
-                />
-                <input
-                  type="password"
-                  value={newUser.password}
-                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                  placeholder="Password"
+                  placeholder="name@neemfoundation.org"
+                  autoComplete="off"
                   className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-400"
                 />
                 <select
@@ -293,21 +340,20 @@ export default function DepartmentSettingsPage() {
                   type="button"
                   disabled={
                     busy || !newUser.name.trim() || !newUser.email.trim() ||
-                    !newUser.password || !newUser.department
+                    !newUser.department
                   }
                   onClick={() =>
                     act(async () => {
-                      await registerUser(
-                        {
-                          email: newUser.email.trim(),
-                          name: newUser.name.trim(),
-                          password: newUser.password,
-                          department: newUser.department,
-                          role: newUser.role,
-                        },
-                        getToken() ?? undefined,
-                      );
-                      setNewUser({ name: "", email: "", password: "", department: "", role: "reviewer" });
+                      const res = await inviteUser({
+                        email: newUser.email.trim(),
+                        name: newUser.name.trim(),
+                        department: newUser.department,
+                        role: newUser.role,
+                      });
+                      setIssued(res);
+                      // Keep department and role: the next three people are
+                      // usually on the same team.
+                      setNewUser({ ...newUser, name: "", email: "", password: "" });
                     })
                   }
                   className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
