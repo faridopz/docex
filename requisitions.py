@@ -491,9 +491,17 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
         missing = [d for d in required if d.strip().lower() not in have]
         specific = (req.category or "").strip().lower() in {
             k.strip().lower() for k in wf.documents_by_category}
+        # A FAIL, not a warning. It was a warning, which meant a requisition
+        # with no memo, no invoice, nothing attached could be approved with no
+        # override and no written reason — the nineteen document packs in
+        # NEEM's profile were advisory. Their Finance/Audit step exists to
+        # "check the pack and return it until satisfied"; a warning is clicked
+        # past, a FAIL with an override reason is recorded. That reason
+        # ("invoice to follow, vendor confirmed by phone") is exactly the
+        # audit line the override mechanism was built to capture.
         checks.append(PolicyCheck(
             code="DOCS_COMPLETE", name="Supporting documents attached",
-            result=CheckResult.WARNING if missing else CheckResult.PASS,
+            result=CheckResult.FAIL if missing else CheckResult.PASS,
             policy_value=", ".join(required),
             actual_value=", ".join(req.documents) or "(none)",
             message=(
