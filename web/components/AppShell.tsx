@@ -33,6 +33,7 @@ import {
   type ClientConfig,
   type ModuleKey,
 } from "@/lib/orgConfig";
+import { getOnboardingStatus } from "@/lib/onboardingApi";
 import { NotificationBell } from "@/components/erp/NotificationBell";
 
 /**
@@ -183,6 +184,30 @@ export function AppShell({
       cancelled = true;
     };
   }, []);
+
+  // Nudge an admin toward the setup wizard if nobody has configured
+  // departments/approval chain yet — a courtesy banner, not a redirect trap
+  // (research on setup wizards: don't force users through optional
+  // configuration). Dismissible for this browser tab only; it comes back
+  // next session until setup is actually run, since the underlying gap is
+  // still there.
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  useEffect(() => {
+    if (!user || user.role !== "admin") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getOnboardingStatus();
+        if (!cancelled) setNeedsOnboarding(!status.configured);
+      } catch {
+        /* if the check fails, say nothing rather than nag incorrectly */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const enabledModules = clientConfig.modules;
   const groups = NAV_GROUPS
@@ -376,6 +401,26 @@ export function AppShell({
           </nav>
         </header>
 
+        {needsOnboarding && !bannerDismissed && !pathname.startsWith("/onboarding") && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-brand-100 bg-brand-50 px-4 py-2.5 text-sm md:px-8">
+            <span className="text-brand-800">
+              <strong className="font-semibold">Finish setting up your organisation</strong>{" "}
+              — departments and your approval chain aren't configured yet.
+            </span>
+            <span className="flex items-center gap-3">
+              <Link href="/onboarding" className="font-semibold text-brand-700 hover:text-brand-900">
+                Set up now
+              </Link>
+              <button
+                type="button"
+                onClick={() => setBannerDismissed(true)}
+                className="text-xs text-brand-600 hover:text-brand-800"
+              >
+                Later
+              </button>
+            </span>
+          </div>
+        )}
         <main className="flex-1">{children}</main>
       </div>
     </div>

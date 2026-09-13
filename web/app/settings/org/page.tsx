@@ -10,6 +10,7 @@ import {
   Loader2,
   Plus,
   Shield,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -509,6 +510,12 @@ export default function OrgSettingsPage() {
                     — add a department there first if it's missing below.
                   </p>
                 </div>
+                <Link
+                  href="/onboarding"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+                >
+                  <Sparkles className="h-3.5 w-3.5" /> Re-run setup wizard
+                </Link>
               </div>
 
               {!workflow ? null : (
