@@ -32,6 +32,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+import departments
 import store
 
 # ─── collections ────────────────────────────────────────────────────────────
@@ -351,8 +352,52 @@ def unroutable_steps(org_id: str, wf: RequisitionWorkflow) -> list[str]:
     ]
 
 
+def validate_workflow(org_id: str, wf: RequisitionWorkflow) -> list[str]:
+    """Check a workflow is internally consistent BEFORE it's saved.
+
+    The failure mode these checks exist for is a requisition stuck at a step
+    nobody can ever act on — invisible until a real payment hits it, and by
+    then it's a client asking why their voucher has gone silent. These are
+    the same checks org_config.validate_profile applies at onboarding
+    (config → CLI path); this is the same rules on the config → live-editing
+    path (org settings screen → PUT /requisitions/workflow), which had none.
+    """
+    errors: list[str] = []
+    known = set(departments.keys(org_id))
+    seen_keys: set[str] = set()
+    for step in wf.steps:
+        key = (step.key or "").strip()
+        if not key:
+            errors.append("A workflow step is missing its key.")
+            continue
+        if key in seen_keys:
+            errors.append(f"Duplicate workflow step key '{key}'.")
+        seen_keys.add(key)
+        dept = (step.department or "").strip()
+        if not dept:
+            errors.append(f"Step '{key}' has no department.")
+        elif dept not in known:
+            errors.append(
+                f"Step '{key}' routes to '{dept}', which is not one of this "
+                f"org's departments ({', '.join(sorted(known)) or 'none defined'})."
+            )
+        if step.can_override and step.override_limit is not None and \
+                _money(step.override_limit) < _money(step.min_amount):
+            errors.append(
+                f"Step '{key}': override_limit ({step.override_limit}) is below "
+                f"min_amount ({step.min_amount}) — it could never override anything "
+                "it actually sees."
+            )
+    if wf.max_amount is not None and wf.max_amount <= 0:
+        errors.append("max_amount must be positive if set.")
+    return errors
+
+
 def set_workflow(org_id: str, wf: RequisitionWorkflow) -> RequisitionWorkflow:
     org = store.require_org(org_id)
+    errors = validate_workflow(org, wf)
+    if errors:
+        raise RequisitionError("Invalid workflow: " + "; ".join(errors))
     wf.org_id = org
     wf.updated_at = _now_iso()
     store.get_store().put(org, _WORKFLOW, _WORKFLOW_ID, wf.model_dump())

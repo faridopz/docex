@@ -394,6 +394,20 @@ def set_features(org_id: str, **flags: bool) -> dict:
     return payload
 
 
+def set_modules(org_id: str, modules: list[str]) -> dict:
+    """Turn product areas on/off for a live org — the counterpart to
+    set_features(). Unknown module names are dropped rather than stored, and
+    an empty result falls back to every module (an org with zero would see a
+    blank app, same reasoning as the enabled_modules guard elsewhere)."""
+    org = store.require_org(org_id)
+    raw = store.get_store().get(org, _CONFIG, _FEATURES_ID) or {}
+    cleaned = [m for m in modules if m in _ALL_MODULES]
+    payload = {"modules": cleaned or list(_ALL_MODULES),
+               "features": dict(raw.get("features") or {})}
+    store.get_store().put(org, _CONFIG, _FEATURES_ID, payload)
+    return payload
+
+
 def client_config(org_id: str) -> dict:
     """What the frontend needs to decide what this client can see.
 

@@ -237,6 +237,17 @@ wf_ed_first.steps = [
     rq.WorkflowStep(key="ed", label="Executive Director", department="ed",
                     can_override=True, override_limit=200_000),
 ]
+# A step must route to a department that actually exists — set_workflow now
+# enforces this (see requisitions.validate_workflow), the same guard that
+# stops the exact bug default_workflow()'s docstring describes: an earlier
+# version routed to "ed" with no such department, so anything above the
+# threshold sat in the queue forever with no one able to act on it. A real
+# org would create this department before configuring the workflow; so does
+# this test.
+try:
+    departments.add("Executive Director", key="ed", is_final_authority=True, org_id=ORG)
+except departments.DepartmentError:
+    pass  # already created by an earlier run against a reused store
 rq.set_workflow(ORG, wf_ed_first)
 
 r5 = rq.create_requisition(

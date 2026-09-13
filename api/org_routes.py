@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -33,15 +34,33 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import org_config  # noqa: E402
 
-from .context import Ctx, request_context  # noqa: E402
+from .context import Ctx, request_context, require_role  # noqa: E402
 
 router = APIRouter(prefix="/org", tags=["org"])
+
+# The complete, real set of module/feature names this instance understands —
+# not every flag any org has ever set, but every one a route actually gates
+# on. Kept here (rather than derived by scanning the codebase at runtime) so
+# the settings screen has one place to look, and a new flag is a one-line
+# addition, not a guess.
+KNOWN_MODULES = list(org_config._ALL_MODULES)
+KNOWN_FEATURES = [
+    "attendance_payments", "withholding_tax", "bank_reconciliation",
+    "vendor_register", "timesheets", "payroll", "advance_retirement",
+    "accounting_export",
+]
 
 
 class ClientConfig(BaseModel):
     """What the frontend needs to decide what this client can see."""
     modules: list[str] = Field(default_factory=list)
     features: dict[str, bool] = Field(default_factory=dict)
+
+
+class ClientConfigIn(BaseModel):
+    """Admin write: which modules and features this org has switched on."""
+    modules: Optional[list[str]] = None
+    features: Optional[dict[str, bool]] = None
 
 
 @router.get("/config", response_model=ClientConfig)
@@ -52,5 +71,27 @@ async def get_client_config(ctx: Ctx = Depends(request_context)) -> ClientConfig
     the same behaviour as before this endpoint existed, so nothing changes
     for an instance that hasn't been configured.
     """
+    cfg = org_config.client_config(ctx.org_id)
+    return ClientConfig(modules=cfg["modules"], features=cfg["features"])
+
+
+@router.put("/config", response_model=ClientConfig)
+async def set_client_config(
+    body: ClientConfigIn, ctx: Ctx = Depends(request_context)
+) -> ClientConfig:
+    """Admin-only: turn modules/features on or off for THIS org, live.
+
+    Until this existed, the org settings screen's module toggles wrote to a
+    completely different, disconnected config (the legacy org_profile) that
+    nothing here reads — so flipping a switch in settings visibly did
+    nothing to the actual navigation. This is the endpoint that makes the
+    switch real: it writes the same org_config record GET /org/config (and
+    every route's feature gate) reads.
+    """
+    require_role(ctx, "admin")
+    if body.modules is not None:
+        org_config.set_modules(ctx.org_id, body.modules)
+    if body.features is not None:
+        org_config.set_features(ctx.org_id, **body.features)
     cfg = org_config.client_config(ctx.org_id)
     return ClientConfig(modules=cfg["modules"], features=cfg["features"])
