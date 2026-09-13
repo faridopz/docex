@@ -186,6 +186,28 @@ def test_rerunning_setup_is_safe(admin: dict) -> None:
           len(departments.load(ORG).departments) == 2)
 
 
+def test_detection_is_org_isolated() -> None:
+    """The onboarding routes always act on the single instance org
+    (default_org()), so this can't be exercised over HTTP — but the two
+    detection helpers the wizard depends on (has_registry_configured,
+    has_workflow_configured) take an explicit org_id and must never leak
+    one org's "already configured" state into another's. Same guarantee
+    test_departments.py/test_requisitions.py already hold their own
+    primitives to; this checks the two NEW functions specifically."""
+    print("\nDetection helpers are isolated per org (checked directly, not over HTTP)")
+    other = "onboarding-isolation-check"
+    check("a second, untouched org reports no registry",
+          departments.has_registry_configured(other) is False)
+    check("a second, untouched org reports no workflow",
+          rq.has_workflow_configured(other) is False)
+    check("the org under test (already set up above) is unaffected",
+          departments.has_registry_configured(ORG) is True)
+
+    departments.add("Solo Dept", key="solo", org_id=other)
+    check("the other org now reports configured", departments.has_registry_configured(other) is True)
+    check("ORG's own registry did not change", len(departments.load(ORG).departments) == 2)
+
+
 def test_empty_departments_rejected(admin: dict) -> None:
     print("\nSetup refuses an empty department list outright")
     r = client.post("/onboarding/setup", headers=admin, json={
@@ -220,6 +242,7 @@ def main() -> int:
     test_bad_custom_workflow_reports_partial(admin)
     test_successful_setup_with_a_preset(admin)
     test_rerunning_setup_is_safe(admin)
+    test_detection_is_org_isolated()
     test_empty_departments_rejected(admin)
     test_duplicate_department_keys_rejected(admin)
 
