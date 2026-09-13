@@ -78,6 +78,9 @@ export interface RequisitionWorkflow {
   forbidden_vendors: string[];
   approved_vendors: string[];
   required_documents: string[];
+  /** Per-category document checklist. A category with no entry here falls
+   * back to required_documents (the org-wide list). Keyed by category name. */
+  documents_by_category: Record<string, string[]>;
   duplicate_window_days: number;
   updated_at: string | null;
 }

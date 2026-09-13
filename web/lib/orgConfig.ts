@@ -42,6 +42,35 @@ export async function getClientConfig(): Promise<ClientConfig> {
   };
 }
 
+/** Admin-only: turn modules/features on or off for this org, live. Either
+ * key can be omitted to leave that half unchanged. */
+export async function setClientConfig(
+  body: { modules?: ModuleKey[]; features?: Record<string, boolean> },
+): Promise<ClientConfig> {
+  return apiFetch("/org/config", { method: "PUT", body: JSON.stringify(body) });
+}
+
+/** Every module/feature name a route in this instance actually gates on —
+ * kept in sync with api/org_routes.py's KNOWN_MODULES / KNOWN_FEATURES so
+ * the settings screen never invents a toggle for a flag nothing reads, or
+ * misses one that exists. */
+export const ALL_MODULES: { key: ModuleKey; label: string; desc: string }[] = [
+  { key: "compliance", label: "Compliance & Finance", desc: "Requisitions, policy checks, approvals, pipeline, bank verification, attendance." },
+  { key: "screening", label: "Screening", desc: "Ask questions across a stack of documents with cited answers." },
+  { key: "knowledge", label: "Knowledge", desc: "Ask your document library a question and get a cited answer." },
+];
+
+export const ALL_FEATURES: { key: string; label: string; desc: string }[] = [
+  { key: "attendance_payments", label: "Attendance payments", desc: "Per-diem/rate-card vouchers for event participants." },
+  { key: "withholding_tax", label: "Withholding tax", desc: "Deduct and track statutory tax withheld from vendor payments." },
+  { key: "bank_reconciliation", label: "Bank reconciliation", desc: "Match approved payments against the bank statement, both directions." },
+  { key: "vendor_register", label: "Vendor register", desc: "Approved-vendor list with bank-account verification." },
+  { key: "timesheets", label: "Timesheets", desc: "Daily effort reporting allocated to grants, for payroll cost-sharing." },
+  { key: "payroll", label: "Payroll", desc: "Gross-to-net payroll runs allocated to donors and project codes." },
+  { key: "advance_retirement", label: "Advance retirement", desc: "Track and escalate unretired travel/cash advances." },
+  { key: "accounting_export", label: "Accounting export", desc: "Export the coded payment register and cleaned bank statement." },
+];
+
 /** True only when the flag is explicitly on. Unknown flag ⇒ off. */
 export function hasFeature(cfg: ClientConfig, name: string): boolean {
   return cfg.features[name] === true;
