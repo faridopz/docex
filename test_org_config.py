@@ -326,6 +326,51 @@ def test_document_packs_reach_the_engine() -> None:
     # ₦40,000 reimbursement is how people learn to click past the warning.
 
 
+def test_advance_policy_reaches_the_engine() -> None:
+    """advance_policy in a profile becomes a live, enforced policy.
+
+    NEEM's profile carries a fully-documented three-stage escalation ladder
+    (Finance Processes deck, slide 10) for unretired advances. apply_profile
+    supported departments, workflow, grants, features and the admin — but
+    never read this key at all, so advance_retirement could be switched on
+    in the nav while AdvancePolicy.enabled stayed False underneath: no
+    ageing, no block, no escalation, and nothing would ever say so. Same
+    failure shape as the document-packs bug above: the field existed on both
+    sides and the bridge between them dropped it.
+    """
+    print("\nadvance_policy survives apply() and reaches advances.py")
+    import advances
+
+    org = "advtest"
+    oc.apply_profile({
+        "org_id": org,
+        "name": "Advance Policy Test",
+        "departments": [{"key": "finance", "name": "Finance"}],
+        "state_owners": {"approval": "finance"},
+        "advance_policy": {
+            "enabled": True,
+            "retirement_days": 7,
+            "working_days": 5,
+            "use_working_days": True,
+            "collective_default_count": 2,
+            "recover_at_month_end": True,
+        },
+    })
+    pol = advances.get_policy(org)
+    check("policy was applied, not left at the disabled default", pol.enabled is True)
+    check("retirement window came from the profile, not a guess",
+          pol.working_days == 5 and pol.use_working_days is True)
+    check("the collective-default count came from the profile",
+          pol.collective_default_count == 2)
+
+    # And the NEEM profile actually shipped in this repo does the same.
+    oc.apply_profile(oc.load_profile(NEEM))
+    neem_pol = advances.get_policy("neem")
+    check("the real NEEM profile's ladder reaches advances.py",
+          neem_pol.enabled is True and neem_pol.retirement_days == 7
+          and neem_pol.working_days == 5)
+
+
 def main() -> int:
     print("=" * 64)
     print("Client profiles — one engine, one config per organisation")
@@ -342,6 +387,7 @@ def main() -> int:
     test_feature_flags()
     test_no_workflow_field_is_silently_dropped()
     test_document_packs_reach_the_engine()
+    test_advance_policy_reaches_the_engine()
     print("\n" + "=" * 64)
     print(f"{_passed} passed, {_failed} failed")
     print("=" * 64)

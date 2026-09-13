@@ -326,6 +326,22 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             )
             res.grants_added += 1
 
+    # 3b. Advance/retirement policy — the window and NEEM's three-stage
+    # ladder (staff blocked -> project blocked -> recovered from salary).
+    # This was profile data nobody actually applied: the JSON carried it, the
+    # engine (advances.py) supported it, and the bridge between the two
+    # simply never called it — the same failure shape as the document-packs
+    # bug above. With advance_retirement switched on but no policy applied,
+    # AdvancePolicy.enabled defaults to False, so the feature would appear in
+    # the nav and do nothing: no ageing, no block, no escalation.
+    adv_policy = profile.get("advance_policy")
+    if adv_policy:
+        import advances
+        try:
+            advances.set_policy(org_id, advances.AdvancePolicy.model_validate(adv_policy))
+        except Exception as exc:  # noqa: BLE001 — a bad policy must not abort the rest of apply
+            res.warnings.append(f"advance_policy was not applied: {exc}")
+
     # 4. First admin (create-only; never resets a password from a profile).
     admin = profile.get("admin")
     if admin:
