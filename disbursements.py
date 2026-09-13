@@ -103,6 +103,15 @@ class Disbursement(BaseModel):
     amount: float = 0.0
     currency: str = "NGN"
 
+    # Project / grant code — what accounting_export.AccountMap.classes keys on
+    # to assign a QuickBooks Class/Customer. Without this, every requisition
+    # payment exported to QuickBooks lands with no Class at all, silently
+    # breaking per-grant/per-donor reporting even when the map is configured
+    # correctly. Empty for sources that don't track one yet (payroll,
+    # vouchers) — that's a real gap, not this field lying about it.
+    project_code: str = ""
+    grant_code: Optional[str] = None
+
     paid_at: str = ""                 # ISO date or datetime
     paid_by: str = ""
     bank_reference: str = ""
@@ -164,6 +173,8 @@ def record(
     memo: str = "",
     account_id: str = "",
     account_code: str = "",
+    project_code: str = "",
+    grant_code: Optional[str] = None,
 ) -> Disbursement:
     """Record one payment.
 
@@ -197,6 +208,8 @@ def record(
         memo=memo,
         account_id=account_id,
         account_code=account_code,
+        project_code=project_code,
+        grant_code=grant_code,
         created_at=_now_iso(),
     )
     store.get_store().put(org, _DISBURSEMENTS, d.id, d.model_dump())
@@ -298,6 +311,8 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
             paid_by=txn.paid_by,
             bank_reference=txn.bank_reference,
             memo=txn.category or "",
+            project_code=txn.project_code or "",
+            grant_code=txn.grant_code,
             created_at=txn.paid_at,
         ))
     return out

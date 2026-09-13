@@ -126,6 +126,8 @@ def test_requisition_payments_are_derived_not_copied() -> None:
         paid_by = "finance@org"
         bank_reference = "FT26001"
         category = "supplies"
+        project_code = "GF-2026-TB"
+        grant_code = None
 
     import requisitions as rq
     original = rq.list_transactions
@@ -137,6 +139,8 @@ def test_requisition_payments_are_derived_not_copied() -> None:
         check("as a requisition payment", d.source_kind == disb.SourceKind.REQUISITION)
         check("carrying the bank reference", d.bank_reference == "FT26001")
         check("and the payee", d.payee_name == "Acme Ltd")
+        check("and its project code, for the QuickBooks Class column",
+              d.project_code == "GF-2026-TB")
         check("with a stable id across calls",
               d.id == disb.list_disbursements(ORG, period=PERIOD)[0].id)
         check("nothing was written to storage",
@@ -275,6 +279,8 @@ def test_payments_from_every_path_reconcile_together() -> None:
         paid_by = "finance@org"
         bank_reference = "FTREQ1"
         category = "supplies"
+        project_code = ""
+        grant_code = None
 
     disb.record_batch(ORG, source_kind="payroll", source_id="run-aug",
                       source_ref="PR3", paid_at=f"{PERIOD}-28T09:00:00+00:00",

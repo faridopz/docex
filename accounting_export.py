@@ -241,7 +241,14 @@ def payment_register_csv(org_id: str, period: str,
     for d in payments:
         category = (d.memo or "").strip().lower()
         account = amap.accounts.get(category, amap.default_account)
-        klass = amap.classes.get(d.source_ref, "")
+        # Classes are keyed by PROJECT/GRANT code (e.g. "B4"), not the
+        # requisition reference — using d.source_ref here was a real bug that
+        # left the QuickBooks Class column blank on every requisition payment
+        # regardless of how the map was configured, silently breaking
+        # per-grant/per-donor reporting. Grant code wins when both are set:
+        # it is the more specific donor-facing bucket.
+        class_key = getattr(d, "grant_code", None) or getattr(d, "project_code", "") or ""
+        klass = amap.classes.get(class_key, "") if class_key else ""
         rows.append([
             _qbo_date(d.paid_at, amap.date_format),
             _clean_text(d.payee_name),

@@ -131,14 +131,21 @@ def test_date_format_follows_their_books() -> None:
 
 def seed_payments() -> None:
     clear()
+    # Classes key on the PROJECT/GRANT code, not the requisition reference —
+    # AccountMap's own docstring says so ("Project / grant code -> QuickBooks
+    # Class"), and this used to be silently wrong: the export code looked the
+    # class up by source_ref, so a requisition's Class column was blank
+    # regardless of how the map was configured. Fixed in accounting_export.py;
+    # this seeds project_code the way _from_requisitions() now does, so a
+    # regression here means the bug is back.
     disb.record(ORG, source_kind="requisition", source_id="r1",
                 source_ref="REQ-0007", payee_name="Acme Ltd", amount=250_000,
                 paid_at=f"{PERIOD}-04T10:00:00+00:00", bank_reference="FT26001",
-                memo="supplies")
+                memo="supplies", project_code="GF-2026-TB")
     disb.record(ORG, source_kind="payroll", source_id="p1", source_ref="PR3",
                 payee_name="Amina Bello", amount=320_000,
                 paid_at=f"{PERIOD}-28T10:00:00+00:00", bank_reference="FTPAY1",
-                memo="salary")
+                memo="salary", grant_code="Core")
 
 
 def test_the_register_carries_the_approval_coding() -> None:
@@ -146,7 +153,7 @@ def test_the_register_carries_the_approval_coding() -> None:
     seed_payments()
     ax.set_map(ORG, ax.AccountMap(
         accounts={"supplies": "Office Supplies", "salary": "Salaries & Wages"},
-        classes={"REQ-0007": "GF-2026-TB", "PR3": "Core"},
+        classes={"GF-2026-TB": "GF-2026-TB", "Core": "Core"},
         bank_account="GTBank Current 3012345678"))
 
     rows = rows_of(ax.payment_register_csv(ORG, PERIOD))
@@ -159,18 +166,72 @@ def test_the_register_carries_the_approval_coding() -> None:
     acme = rows[1]
     check("oldest first", acme[1] == "Acme Ltd")
     check("mapped to the right account", acme[3] == "Office Supplies")
-    check("and the right class", acme[4] == "GF-2026-TB")
+    check("and the right class, keyed by project code", acme[4] == "GF-2026-TB")
     check("bank account named", acme[5] == "GTBank Current 3012345678")
     check("amount is clean", acme[2] == "250000.00")
 
     payroll = rows[2]
     check("payroll appears too — not just requisitions", payroll[1] == "Amina Bello")
     check("coded to salaries", payroll[3] == "Salaries & Wages")
+    check("class keyed by grant code when project code is absent", payroll[4] == "Core")
     check("and marked as payroll in origin", payroll[8] == "payroll")
 
     # The column that answers "who approved this?" months later.
     check("the DOCex reference travels into QuickBooks",
           {r[7] for r in rows[1:]} == {"REQ-0007", "PR3"})
+
+
+def test_class_blank_when_no_project_or_grant_code() -> None:
+    print("\nNo project/grant code on the payment -> Class stays blank, not garbage")
+    clear()
+    disb.record(ORG, source_kind="direct", source_id="x1", payee_name="Landlord",
+                amount=100_000, paid_at=f"{PERIOD}-10T10:00:00+00:00",
+                bank_reference="FTRENT", memo="rent")
+    ax.set_map(ORG, ax.AccountMap(accounts={"rent": "Rent Expense"},
+                                  classes={"GF-2026-TB": "Should not match"},
+                                  bank_account="GTBank Current 3012345678"))
+    rows = rows_of(ax.payment_register_csv(ORG, PERIOD))
+    check("class column is empty, not a stray match", rows[1][4] == "")
+
+
+def test_requisition_payment_carries_its_project_code_into_the_export() -> None:
+    """End to end: a real requisition, approved and paid through the actual
+    engine (not disb.record called directly), must reach the export with its
+    project code intact. This is the path _from_requisitions() builds on the
+    fly from TransactionRecord -- the one every real client payment takes."""
+    print("\nA real requisition payment reaches the export with its project code")
+    import departments as dept_mod
+    import requisitions as rq
+
+    org = "qbo-e2e"
+    dept_mod.replace_all([
+        dept_mod.DepartmentDef(key="finance", name="Finance", order=10),
+    ], {}, org_id=org)
+    wf = rq.default_workflow(org, size="small")
+    wf.allowed_categories = ["dsa"]
+    rq.set_workflow(org, wf)
+
+    r = rq.create_requisition(
+        org, vendor_name="Field Officer", vendor_account="0001112223",
+        amount=45_000, category="dsa", project_code="B4",
+        description="Field trip DSA", department="finance",
+        submitted_by="clerk@example.org")
+    rq.decide(org, r.id, decision=rq.Decision.APPROVED, actor="fin@example.org",
+              department="finance", notes="ok")
+    paid = rq.mark_paid(org, r.id, actor="fin@example.org", bank_reference="BANKREF1")
+
+    period = (paid.paid_at or "")[:7]
+    ax.set_map(org, ax.AccountMap(
+        accounts={"dsa": "Program Expenses:DSA"},
+        classes={"B4": "US Embassy - TSC"},
+        bank_account="GTBank Operating"))
+
+    rows = rows_of(ax.payment_register_csv(org, period))
+    check("exactly one payment", len(rows) == 2)
+    check("class resolved from the requisition's own project code",
+          rows[1][4] == "US Embassy - TSC", str(rows[1]))
+    check("the requisition's own reference travels into QuickBooks",
+          rows[1][7] == r.ref, str(rows[1]))
 
 
 def test_unmapped_categories_are_surfaced_before_export() -> None:
@@ -232,6 +293,8 @@ def main() -> int:
         test_an_empty_export_says_so,
         test_date_format_follows_their_books,
         test_the_register_carries_the_approval_coding,
+        test_class_blank_when_no_project_or_grant_code,
+        test_requisition_payment_carries_its_project_code_into_the_export,
         test_unmapped_categories_are_surfaced_before_export,
         test_an_unmapped_payment_still_exports_somewhere_visible,
         test_the_summary_warns_about_column_mapping,
