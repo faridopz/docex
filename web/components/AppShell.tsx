@@ -328,6 +328,15 @@ export function AppShell({
               Withholding tax
             </Link>
           )}
+          {clientConfig.features["accounting_export"] === true && (
+            <Link
+              href="/settings/accounting"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+            >
+              <Banknote className="h-4 w-4 shrink-0 text-gray-400" />
+              QuickBooks handoff
+            </Link>
+          )}
           <Link
             href="/settings/security"
             className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
