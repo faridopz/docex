@@ -119,8 +119,12 @@ def test_declined_requisition_releases_its_receipts() -> None:
     print("\nA declined requisition does not keep holding its receipts")
     r = _receipt(ORG, 31000)
     first = _raise(ORG, amount=31000.0, receipt_ids=[r.id])
+    # The default (medium) workflow's first step is Compliance Review, and the
+    # department-ownership check means only Compliance can act on it — not
+    # Finance, even to decline. (This test predates that check; it used to
+    # decline as "finance" when nothing enforced who actually owned the step.)
     rq.decide(ORG, first.id, decision=rq.Decision.DECLINED,
-              actor="approver@x.org", department="finance", notes="Wrong vendor")
+              actor="approver@x.org", department="compliance", notes="Wrong vendor")
 
     retry = _raise(ORG, amount=31000.0, receipt_ids=[r.id])
     c = _find(retry, "RECEIPTS_VALID")

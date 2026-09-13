@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 import sys
 import uuid
 from pathlib import Path
@@ -33,6 +34,9 @@ from fastapi.responses import StreamingResponse
 
 # Same sys.path hack the rest of api/ uses to import root-level modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import store  # noqa: E402 — org-scoped, durable persistence
+from .context import default_org  # noqa: E402
 
 from bank_verify import parse_schedule, verify_batch  # noqa: E402
 from models import (  # noqa: E402
@@ -46,50 +50,50 @@ from .schemas import (  # noqa: E402
 router = APIRouter(prefix="/verify", tags=["bank-verify"])
 
 
-# ─── Batch persistence (file-based) ─────────────────────────────────────────
+# ─── Batch persistence — org-scoped, durable (store.get_store()) ───────────
 #
-# One JSON file per batch under {project_root}/verifications/. Same shape
-# as the rulebooks/checks pattern. Single source of truth: BankVerifyBatchResult.
+# Used to be one JSON file per batch under the container's LOCAL DISK
+# ({project_root}/verifications/) — wiped on every redeploy and never scoped
+# by organisation. Moved onto the same store.get_store() abstraction every
+# other engine in this codebase uses. See store.py's module docstring.
 
-_VERIFY_DIR = Path(__file__).parent.parent / "verifications"
-
-
-def _ensure_verify_dir() -> None:
-    _VERIFY_DIR.mkdir(parents=True, exist_ok=True)
+_VERIFY_COLLECTION = "bank_verify_batches"
 
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _batch_path(batch_id: str) -> Path:
+def _validate_batch_id(batch_id: str) -> str:
     # Defensive: server-generated UUIDs, but if a forged id reaches us we
-    # don't want it traversing outside the verifications directory.
+    # don't want it colliding with another record.
     if "/" in batch_id or ".." in batch_id or not batch_id.strip():
         raise HTTPException(status_code=400, detail="Invalid batch id.")
-    return _VERIFY_DIR / f"{batch_id}.json"
+    return batch_id
 
 
 def _save_batch(batch: BankVerifyBatchResult) -> BankVerifyBatchResult:
-    """Persist a batch to disk. Sets batch_id + created_at if missing."""
-    _ensure_verify_dir()
+    """Persist a batch. Sets batch_id + created_at if missing."""
     if not batch.batch_id:
         batch.batch_id = uuid.uuid4().hex
     if not batch.created_at:
         batch.created_at = _now_iso()
-    _batch_path(batch.batch_id).write_text(batch.model_dump_json(indent=2))
+    store.get_store().put(
+        default_org(), _VERIFY_COLLECTION, _validate_batch_id(batch.batch_id),
+        json.loads(batch.model_dump_json()),
+    )
     return batch
 
 
 def _load_batch(batch_id: str) -> BankVerifyBatchResult:
-    path = _batch_path(batch_id)
-    if not path.exists():
+    raw = store.get_store().get(default_org(), _VERIFY_COLLECTION, _validate_batch_id(batch_id))
+    if raw is None:
         raise HTTPException(
             status_code=404,
             detail=f"Verification batch '{batch_id}' not found.",
         )
     try:
-        return BankVerifyBatchResult.model_validate_json(path.read_text())
+        return BankVerifyBatchResult.model_validate(raw)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -98,22 +102,19 @@ def _load_batch(batch_id: str) -> BankVerifyBatchResult:
 
 
 def _list_batches() -> list[BankVerifyBatchResult]:
-    """List every persisted batch, newest first. Skips corrupted files
-    rather than failing the whole list — one bad file shouldn't hide the
+    """List every persisted batch, newest first. Skips corrupted records
+    rather than failing the whole list — one bad record shouldn't hide the
     rest of a team's audit history."""
-    _ensure_verify_dir()
-    paths = sorted(
-        _VERIFY_DIR.glob("*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
     batches: list[BankVerifyBatchResult] = []
-    for path in paths:
+    for raw in store.get_store().list(default_org(), _VERIFY_COLLECTION):
         try:
-            batches.append(BankVerifyBatchResult.model_validate_json(path.read_text()))
+            batches.append(BankVerifyBatchResult.model_validate(raw))
         except Exception as exc:
-            print(f"Warning: skipping corrupted batch {path.name}: {exc}")
+            print(f"Warning: skipping corrupted batch {raw.get('batch_id')}: {exc}")
             continue
+    # The store doesn't track file mtimes — sort by the record's own
+    # created_at instead (newest first).
+    batches.sort(key=lambda b: b.created_at or "", reverse=True)
     return batches
 
 
@@ -392,11 +393,10 @@ def export_batch_xlsx(batch_id: str) -> StreamingResponse:
 def delete_batch(batch_id: str) -> dict[str, str]:
     """Delete one saved verification batch. Idempotent — deleting a
     non-existent batch returns 404."""
-    path = _batch_path(batch_id)
-    if not path.exists():
+    deleted = store.get_store().delete(default_org(), _VERIFY_COLLECTION, _validate_batch_id(batch_id))
+    if not deleted:
         raise HTTPException(
             status_code=404,
             detail=f"Verification batch '{batch_id}' not found.",
         )
-    path.unlink()
     return {"status": "deleted", "batch_id": batch_id}

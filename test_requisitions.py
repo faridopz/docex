@@ -365,7 +365,11 @@ _equip = rq.Requisition(id="pack1", org_id=ORG, vendor_name="Laptop Vendor",
                         amount=900_000, category="equipment", project_code="B24",
                         documents=["memo", "invoice"])
 _c = next(c for c in rq.run_policy_checks(ORG, _equip) if c.code == "DOCS_COMPLETE")
-check("equipment missing its GRN is flagged", _c.result, rq.CheckResult.WARNING)
+# A missing required document is a FAIL, not a WARNING — an approver must not
+# be able to clear a payment with zero attached documents and no override.
+# (This test asserted WARNING until that was fixed; it must assert the real,
+# binding behaviour, not the bug that made document packs advisory-only.)
+check("equipment missing its GRN blocks the payment", _c.result, rq.CheckResult.FAIL)
 check("and the message names the payment type",
       "equipment payment" in _c.message, True)
 
@@ -438,4 +442,13 @@ paid_by_other = rq.mark_paid(SOD, own2.id, actor="tunde@eva.org",
                              bank_reference="GTB/001")
 check("someone else can", paid_by_other.paid_by, "tunde@eva.org")
 
+# The script tracked failures in _fail throughout but, until this fix, always
+# printed a clean success message and exited 0 regardless — exactly the
+# "every signal was green" failure mode the .gitignore incident (see
+# test_routes_are_committed.py) was about. A test file that cannot itself
+# report failure is the one that lets a real regression through silently.
+import sys as _sys
+if _fail:
+    print(f"\n{_fail} requisition check(s) FAILED.")
+    _sys.exit(1)
 print("All requisition checks passed.")

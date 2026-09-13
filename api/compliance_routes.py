@@ -43,6 +43,9 @@ from fastapi import (
 # Same sys.path hack the rest of api/ uses to import root-level modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import store  # noqa: E402 — org-scoped, durable persistence (see module docstring below)
+from .context import default_org  # noqa: E402
+
 from compliance import (  # noqa: E402
     check_payment_batch,
     check_payment_safe,
@@ -149,35 +152,78 @@ def _read_files(uploads: list[UploadFile]) -> list[tuple[str, str]]:
     return out
 
 
-# ─── Rulebook persistence (file-based) ──────────────────────────────────────
+# ─── Persistence — org-scoped, durable (store.get_store()) ─────────────────
 #
-# One JSON file per rulebook under {project_root}/rulebooks/. Stores the full
-# PolicyRulebook including created_at and updated_at timestamps. Swaps to
-# Supabase in Phase 2 — same model shape, different store.
+# Used to be one JSON file per record under the container's LOCAL DISK
+# ({project_root}/rulebooks/, /checks/, /rulebook_jobs/, org_profile.json) —
+# wiped on every redeploy (Render's filesystem is ephemeral) and never scoped
+# by organisation, unlike auth.py/departments.py/requisitions.py. Every other
+# engine in this codebase already moved onto store.get_store(); this was the
+# last one still writing raw files. See store.py's module docstring for why.
+#
+# _StoreRecord is a minimal Path-like shim (.write_text/.read_text/.exists/
+# .unlink) so the ~10 call sites below that were written against pathlib
+# keep working unchanged — only the four persistence subsystems (rulebooks,
+# checks, jobs, org profile) needed to change, not every route handler.
+#
+# NOTE on org_profile: this is the LEGACY, disconnected config the real
+# requisition engine does not read (see org_config.py's own "config"/"profile"
+# record, which is a different, unrelated shape). Kept on a distinct
+# collection name here on purpose so this migration cannot collide with — or
+# overwrite — the real engine's applied client profile. Retiring this legacy
+# system entirely is tracked separately.
 
-_RULEBOOK_DIR = Path(__file__).parent.parent / "rulebooks"
-_CHECK_DIR = Path(__file__).parent.parent / "checks"
-_JOB_DIR = Path(__file__).parent.parent / "rulebook_jobs"
-_ORG_PROFILE_PATH = Path(__file__).parent.parent / "org_profile.json"
+_RULEBOOKS_COLLECTION = "rulebooks"
+_CHECKS_COLLECTION = "checks"
+_JOBS_COLLECTION = "rulebook_jobs"
+_LEGACY_ORG_PROFILE_COLLECTION = "legacy_compliance_config"
+_LEGACY_ORG_PROFILE_ID = "profile"
+
+
+class _StoreRecord:
+    """Path-like shim over one (org, collection, record_id) in the store."""
+
+    def __init__(self, collection: str, record_id: str):
+        self._collection = collection
+        self._record_id = record_id
+
+    def write_text(self, text: str) -> None:
+        store.get_store().put(default_org(), self._collection, self._record_id, json.loads(text))
+
+    def read_text(self) -> str:
+        raw = store.get_store().get(default_org(), self._collection, self._record_id)
+        if raw is None:
+            raise FileNotFoundError(self._record_id)
+        return json.dumps(raw)
+
+    def exists(self) -> bool:
+        return store.get_store().get(default_org(), self._collection, self._record_id) is not None
+
+    def unlink(self) -> None:
+        store.get_store().delete(default_org(), self._collection, self._record_id)
 
 
 def _load_org_profile() -> OrgProfile:
-    """The org's config (singleton). Returns sensible defaults if unset."""
+    """The org's LEGACY config (singleton). Returns sensible defaults if unset."""
     try:
-        if _ORG_PROFILE_PATH.exists():
-            return OrgProfile.model_validate_json(_ORG_PROFILE_PATH.read_text())
+        raw = store.get_store().get(default_org(), _LEGACY_ORG_PROFILE_COLLECTION, _LEGACY_ORG_PROFILE_ID)
+        if raw:
+            return OrgProfile.model_validate(raw)
     except Exception:  # noqa: BLE001 — never let a bad profile break the app
         pass
     return OrgProfile()
 
 
 def _save_org_profile(profile: OrgProfile) -> OrgProfile:
-    _ORG_PROFILE_PATH.write_text(profile.model_dump_json(indent=2))
+    store.get_store().put(
+        default_org(), _LEGACY_ORG_PROFILE_COLLECTION, _LEGACY_ORG_PROFILE_ID,
+        json.loads(profile.model_dump_json()),
+    )
     return profile
 
 
 def _ensure_rulebook_dir() -> None:
-    _RULEBOOK_DIR.mkdir(parents=True, exist_ok=True)
+    pass  # store.put creates its own storage on write — nothing to pre-create
 
 
 def _now_iso() -> str:
@@ -186,13 +232,13 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def _rulebook_path(rulebook_id: str) -> Path:
+def _rulebook_path(rulebook_id: str) -> _StoreRecord:
     # Defensive: rulebook IDs are server-generated kebab-case-uuids, but if
-    # a forged ID ever reaches us we don't want it traversing outside the
-    # rulebooks directory.
+    # a forged ID ever reaches us we don't want it colliding with another
+    # record.
     if "/" in rulebook_id or ".." in rulebook_id or not rulebook_id.strip():
         raise HTTPException(status_code=400, detail="Invalid rulebook id.")
-    return _RULEBOOK_DIR / f"{rulebook_id}.json"
+    return _StoreRecord(_RULEBOOKS_COLLECTION, rulebook_id)
 
 
 def _save_rulebook(rulebook: PolicyRulebook) -> PolicyRulebook:
@@ -223,15 +269,14 @@ def _load_rulebook(rulebook_id: str) -> PolicyRulebook:
 
 
 def _list_rulebooks() -> list[PolicyRulebook]:
-    """List every persisted rulebook. Skips corrupted files rather than
+    """List every persisted rulebook. Skips corrupted records rather than
     failing the whole list — the officer can still see all valid rulebooks."""
-    _ensure_rulebook_dir()
     rulebooks: list[PolicyRulebook] = []
-    for path in sorted(_RULEBOOK_DIR.glob("*.json")):
+    for raw in store.get_store().list(default_org(), _RULEBOOKS_COLLECTION):
         try:
-            rulebooks.append(PolicyRulebook.model_validate_json(path.read_text()))
+            rulebooks.append(PolicyRulebook.model_validate(raw))
         except Exception as exc:
-            print(f"Warning: skipping corrupted rulebook {path.name}: {exc}")
+            print(f"Warning: skipping corrupted rulebook {raw.get('id')}: {exc}")
             continue
     return rulebooks
 
@@ -256,13 +301,13 @@ def _to_summary(rb: PolicyRulebook) -> RulebookSummary:
 # later doesn't retroactively change the audit trail.
 
 def _ensure_check_dir() -> None:
-    _CHECK_DIR.mkdir(parents=True, exist_ok=True)
+    pass  # store.put creates its own storage on write — nothing to pre-create
 
 
-def _check_path(check_id: str) -> Path:
+def _check_path(check_id: str) -> _StoreRecord:
     if "/" in check_id or ".." in check_id or not check_id.strip():
         raise HTTPException(status_code=400, detail="Invalid check id.")
-    return _CHECK_DIR / f"{check_id}.json"
+    return _StoreRecord(_CHECKS_COLLECTION, check_id)
 
 
 def _save_check(
@@ -344,20 +389,18 @@ def _try_load_check(check_id: str) -> Optional[ComplianceCheckResult]:
 
 
 def _list_checks() -> list[ComplianceCheckResult]:
-    """List every persisted check, newest first. Skips corrupted files."""
-    _ensure_check_dir()
-    paths = sorted(
-        _CHECK_DIR.glob("*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    """List every persisted check, newest first. Skips corrupted records."""
     checks: list[ComplianceCheckResult] = []
-    for path in paths:
+    for raw in store.get_store().list(default_org(), _CHECKS_COLLECTION):
         try:
-            checks.append(ComplianceCheckResult.model_validate_json(path.read_text()))
+            checks.append(ComplianceCheckResult.model_validate(raw))
         except Exception as exc:
-            print(f"Warning: skipping corrupted check {path.name}: {exc}")
+            print(f"Warning: skipping corrupted check {raw.get('payment_id')}: {exc}")
             continue
+    # The store doesn't track file mtimes — sort by the record's own
+    # created_at instead, which is more correct anyway (mtime is misleading
+    # after any restore/import).
+    checks.sort(key=lambda c: c.created_at or "", reverse=True)
     return checks
 
 
@@ -530,13 +573,13 @@ def _policy_preview(documents: list[tuple[str, str]]) -> PolicyPreview:
 
 
 def _ensure_job_dir() -> None:
-    _JOB_DIR.mkdir(parents=True, exist_ok=True)
+    pass  # store.put creates its own storage on write — nothing to pre-create
 
 
-def _job_path(job_id: str) -> Path:
+def _job_path(job_id: str) -> _StoreRecord:
     if "/" in job_id or ".." in job_id or not job_id.strip():
         raise HTTPException(status_code=400, detail="Invalid job id.")
-    return _JOB_DIR / f"{job_id}.json"
+    return _StoreRecord(_JOBS_COLLECTION, job_id)
 
 
 def _save_job(job: PolicyJob) -> PolicyJob:
@@ -956,6 +999,11 @@ async def delete_rulebook_endpoint(rulebook_id: str) -> dict:
         )
     path.unlink()
     return {"deleted": rulebook_id}
+
+
+# NOTE: delete_check_endpoint (below, at /checks/{check_id}) uses the same
+# _check_path(...).exists()/.unlink() pattern — see the _StoreRecord shim
+# in the persistence section above; it's store-backed the same way.
 
 
 # ─── Starter rulebooks (deterministic-only, for form/hybrid payment types) ──
