@@ -219,6 +219,7 @@ from .vendor_routes import router as vendor_router  # noqa: E402
 from .accounting_routes import router as accounting_router  # noqa: E402
 from .treasury_routes import router as treasury_router  # noqa: E402
 from .advance_routes import router as advance_router  # noqa: E402
+from .onboarding_routes import router as onboarding_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -523,6 +524,13 @@ app.include_router(treasury_router)
 # down a three-stage escalation ladder and this enforces it. Gated on
 # `advance_retirement`. See api/advance_routes.py.
 app.include_router(advance_router)
+
+# In-app onboarding — an admin configures departments + approval chain
+# themselves instead of a developer hand-editing a JSON profile. Detection
+# uses has_registry_configured/has_workflow_configured (a real saved record,
+# not the unpersisted default_* fallback), so this correctly stays quiet for
+# an org that already configured itself. See api/onboarding_routes.py.
+app.include_router(onboarding_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

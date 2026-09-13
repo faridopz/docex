@@ -404,6 +404,16 @@ def set_workflow(org_id: str, wf: RequisitionWorkflow) -> RequisitionWorkflow:
     return wf
 
 
+def has_workflow_configured(org_id: str) -> bool:
+    """True once an admin has actually saved a workflow — as opposed to
+    get_workflow()'s unpersisted default_workflow() fallback, which exists so
+    the engine never 500s on a brand-new org but does NOT mean anyone has
+    configured anything. This is the signal the onboarding wizard uses to
+    decide whether to show itself: a store record for real, not a guess."""
+    org = store.require_org(org_id)
+    return store.get_store().get(org, _WORKFLOW, _WORKFLOW_ID) is not None
+
+
 def get_workflow(org_id: str) -> RequisitionWorkflow:
     org = store.require_org(org_id)
     raw = store.get_store().get(org, _WORKFLOW, _WORKFLOW_ID)

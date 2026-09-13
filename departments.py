@@ -112,6 +112,14 @@ def migrate_legacy_registry(org_id: Optional[str] = None) -> bool:
     return True
 
 
+def has_registry_configured(org_id: Optional[str] = None) -> bool:
+    """True once an admin has actually saved a department registry — as
+    opposed to load()'s unpersisted default_registry() fallback. Used by the
+    onboarding wizard to tell 'brand new, nobody has touched this yet' apart
+    from 'deliberately kept the four defaults'."""
+    return store.get_store().get(_org(org_id), _CONFIG, _REGISTRY_ID) is not None
+
+
 def load(org_id: Optional[str] = None) -> DepartmentRegistry:
     """Load the registry, falling back to defaults if absent or unreadable."""
     raw = store.get_store().get(_org(org_id), _CONFIG, _REGISTRY_ID)
