@@ -82,9 +82,17 @@ export default function OnboardingPage() {
   const [categoriesText, setCategoriesText] = useState("");
   const [docsText, setDocsText] = useState("");
 
-  // Only an admin can run this — same gate the backend enforces.
+  // This page returns before ever rendering <AppShell>, so AppShell's own
+  // "signed out -> /login" redirect never gets a chance to run for a visitor
+  // who lands here without a session (a stale tab, a bookmark, a session that
+  // expired). Without this, they'd sit on the loading spinner forever instead
+  // of being bounced to sign in. Same reasoning for a signed-in non-admin —
+  // they're routed to the dashboard rather than shown a page they can't act on.
   useEffect(() => {
-    if (ready && user && user.role !== "admin") {
+    if (!ready) return;
+    if (!user) {
+      router.replace("/login");
+    } else if (user.role !== "admin") {
       router.replace("/dashboard");
     }
   }, [ready, user, router]);
