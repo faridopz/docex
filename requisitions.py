@@ -26,6 +26,7 @@ import datetime as dt
 import hashlib
 import hmac
 import os
+import threading
 import uuid
 from enum import Enum
 from typing import Literal, Optional
@@ -235,21 +236,39 @@ def _sign(payload: str) -> str:
     return hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
 
 
+# Two people submitting a requisition, or two finance officers paying one,
+# in the same instant is not an edge case for a multi-user finance tool — it
+# is Tuesday. Without a lock, _next_ref/_next_txn_ref is a plain
+# read-then-write across two separate store calls: both requests can read the
+# same counter value before either writes it back, and both walk away with
+# REQ-0006 while the counter only advances by one. The fix mirrors the one
+# transactions.py already uses for the same failure shape (see its
+# _ref_lock/_next_number): a process-level lock, which covers every thread in
+# today's single-instance deployment (render.yaml runs one web service). If
+# DOCex ever runs more than one instance, this needs a real database sequence
+# — written down here so that failure shows up as a design note, not as two
+# payments sharing a reference number that an auditor finds later.
+_req_ref_lock = threading.Lock()
+_txn_ref_lock = threading.Lock()
+
+
 def _next_ref(org_id: str) -> str:
     """Monotonic per-org requisition reference: REQ-0001, REQ-0002, ..."""
-    st = store.get_store()
-    raw = st.get(org_id, _COUNTER, "requisition") or {"value": 0}
-    nxt = int(raw.get("value", 0)) + 1
-    st.put(org_id, _COUNTER, "requisition", {"value": nxt})
-    return f"REQ-{nxt:04d}"
+    with _req_ref_lock:
+        st = store.get_store()
+        raw = st.get(org_id, _COUNTER, "requisition") or {"value": 0}
+        nxt = int(raw.get("value", 0)) + 1
+        st.put(org_id, _COUNTER, "requisition", {"value": nxt})
+        return f"REQ-{nxt:04d}"
 
 
 def _next_txn_ref(org_id: str) -> str:
-    st = store.get_store()
-    raw = st.get(org_id, _COUNTER, "transaction") or {"value": 0}
-    nxt = int(raw.get("value", 0)) + 1
-    st.put(org_id, _COUNTER, "transaction", {"value": nxt})
-    return f"TRANS-{nxt:04d}"
+    with _txn_ref_lock:
+        st = store.get_store()
+        raw = st.get(org_id, _COUNTER, "transaction") or {"value": 0}
+        nxt = int(raw.get("value", 0)) + 1
+        st.put(org_id, _COUNTER, "transaction", {"value": nxt})
+        return f"TRANS-{nxt:04d}"
 
 
 def _audit(

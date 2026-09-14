@@ -453,6 +453,53 @@ paid_by_other = rq.mark_paid(SOD, own2.id, actor="tunde@eva.org",
                              bank_reference="GTB/001")
 check("someone else can", paid_by_other.paid_by, "tunde@eva.org")
 
+
+# ─── multi-user: two people submitting in the same instant ─────────────────
+# Not an edge case for a finance tool several people use at once — it's
+# Tuesday. _next_ref used to be an unprotected read-then-write across two
+# separate store calls: two threads could both read counter=N and both write
+# N+1, walking away with the SAME reference. Fired for real with 20 threads
+# racing on an unpatched build; asserts it cannot happen now.
+import threading as _threading
+
+CONC = "concurrency-test"
+departments.save(departments.default_registry(), CONC)
+_cwf = rq.default_workflow(CONC, size="small")
+_cwf.allowed_categories = ["supplies"]
+rq.set_workflow(CONC, _cwf)
+
+_created: list[rq.Requisition] = []
+_errors: list[Exception] = []
+_creation_lock = _threading.Lock()
+
+def _create_one(i: int) -> None:
+    try:
+        r = rq.create_requisition(
+            CONC, submitted_by=f"user{i}@eva.org", department="finance",
+            vendor_name=f"Vendor {i}", amount=1_000 + i, category="supplies",
+            project_code="P-1", description="concurrent submit",
+        )
+        with _creation_lock:
+            _created.append(r)
+    except Exception as exc:                        # noqa: BLE001
+        with _creation_lock:
+            _errors.append(exc)
+
+_threads = [_threading.Thread(target=_create_one, args=(i,)) for i in range(20)]
+for t in _threads:
+    t.start()
+for t in _threads:
+    t.join()
+
+check("all twenty submissions succeeded", len(_errors), 0)
+check("all twenty got a reference", len(_created), 20)
+_refs = [r.ref for r in _created]
+check("every reference is unique — no two people got the same one",
+      len(set(_refs)), 20)
+check("the sequence has no gaps despite the race",
+      sorted(int(r.split("-")[1]) for r in _refs),
+      list(range(1, 21)))
+
 # The script tracked failures in _fail throughout but, until this fix, always
 # printed a clean success message and exited 0 regardless — exactly the
 # "every signal was green" failure mode the .gitignore incident (see
