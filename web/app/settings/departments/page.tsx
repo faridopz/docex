@@ -23,7 +23,13 @@ import type { AuthUser, Role } from "@/types/erp";
  * Two jobs: define this organisation's departments (every org's org-chart
  * differs), and put people in them. Also routes each workflow stage to the
  * department that owns it, so approvals land in the right queue.
- * Admin-only; other roles see a clear message rather than a broken page.
+ *
+ * Read-open, write-gated: any signed-in user can see the department list and
+ * who owns each stage — that's exactly the "who do I chase" information the
+ * rest of the app assumes everyone can see. Only the team-member list stays
+ * admin-only (it's account data — email, role — the same boundary People &
+ * access already draws), and only admins get the controls that change
+ * anything: add/delete a department, reassign a stage, invite someone.
  */
 
 const ROUTABLE_STATES = [
@@ -98,20 +104,6 @@ export default function DepartmentSettingsPage() {
     }
   }
 
-  if (ready && user && !isAdmin) {
-    return (
-      <AppShell>
-        <div className="mx-auto max-w-2xl px-6 py-16 text-center">
-          <Building2 className="mx-auto h-8 w-8 text-gray-300" />
-          <h1 className="mt-3 text-lg font-semibold text-gray-900">Admin only</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Departments and team members are managed by an administrator.
-          </p>
-        </div>
-      </AppShell>
-    );
-  }
-
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-8">
@@ -157,39 +149,43 @@ export default function DepartmentSettingsPage() {
                       </span>
                       <span className="block font-mono text-[11px] text-gray-400">{d.key}</span>
                     </span>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => act(() => deleteDepartment(d.key))}
-                      className="text-gray-300 transition hover:text-red-500 disabled:opacity-40"
-                      title="Delete department"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => act(() => deleteDepartment(d.key))}
+                        className="text-gray-300 transition hover:text-red-500 disabled:opacity-40"
+                        title="Delete department"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
-              <div className="flex items-center gap-2 border-t border-gray-100 px-5 py-3">
-                <input
-                  value={newDept}
-                  onChange={(e) => setNewDept(e.target.value)}
-                  placeholder="New department, e.g. Executive Director"
-                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
-                />
-                <button
-                  type="button"
-                  disabled={busy || !newDept.trim()}
-                  onClick={() =>
-                    act(async () => {
-                      await createDepartment({ name: newDept.trim() });
-                      setNewDept("");
-                    })
-                  }
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
-                >
-                  <Plus className="h-4 w-4" /> Add
-                </button>
-              </div>
+              {isAdmin && (
+                <div className="flex items-center gap-2 border-t border-gray-100 px-5 py-3">
+                  <input
+                    value={newDept}
+                    onChange={(e) => setNewDept(e.target.value)}
+                    placeholder="New department, e.g. Executive Director"
+                    className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || !newDept.trim()}
+                    onClick={() =>
+                      act(async () => {
+                        await createDepartment({ name: newDept.trim() });
+                        setNewDept("");
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    <Plus className="h-4 w-4" /> Add
+                  </button>
+                </div>
+              )}
             </section>
 
             {/* Workflow routing */}
@@ -208,9 +204,9 @@ export default function DepartmentSettingsPage() {
                     </span>
                     <select
                       value={owners[s] ?? ""}
-                      disabled={busy}
+                      disabled={busy || !isAdmin}
                       onChange={(e) => act(() => setStateOwner(s, e.target.value || null))}
-                      className="rounded-lg border border-gray-300 px-2.5 py-1.5 text-sm outline-none transition focus:border-brand-400"
+                      className="rounded-lg border border-gray-300 px-2.5 py-1.5 text-sm outline-none transition focus:border-brand-400 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500"
                     >
                       <option value="">— unassigned —</option>
                       {depts.map((d) => (
@@ -229,6 +225,12 @@ export default function DepartmentSettingsPage() {
                   <Users className="h-4 w-4 text-gray-400" /> Team members
                 </h2>
               </div>
+              {!isAdmin ? (
+                <p className="px-5 py-6 text-center text-xs text-gray-400">
+                  Managed by an administrator — ask one to add or update team members.
+                </p>
+              ) : (
+                <>
               <ul className="divide-y divide-gray-50">
                 {users.map((u) => (
                   <li key={u.id} className="flex items-center gap-3 px-5 py-3 text-sm">
@@ -366,6 +368,8 @@ export default function DepartmentSettingsPage() {
                   the org.
                 </p>
               </div>
+              </>
+              )}
             </section>
           </div>
         )}

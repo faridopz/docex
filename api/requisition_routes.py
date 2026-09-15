@@ -104,6 +104,19 @@ def _approval_out(a: rq.Approval) -> dict:
     }
 
 
+def _payee_out(p: rq.Payee) -> dict:
+    return {
+        "name": p.name,
+        "account_number": p.account_number,
+        "bank_name": p.bank_name,
+        "amount": p.amount,
+        "purpose": p.purpose,
+        "tin": p.tin,
+        "phone_or_email": p.phone_or_email,
+        "payee_type": p.payee_type,
+    }
+
+
 def _audit_out(e: rq.AuditEntry) -> dict:
     return {
         "seq": e.seq, "at": e.at, "actor": e.actor,
@@ -139,6 +152,7 @@ def _detail_out(r: rq.Requisition) -> dict:
         "description": r.description,
         "receipt_ids": r.receipt_ids,
         "documents": r.documents,
+        "payees": [_payee_out(p) for p in r.payees],
         "transaction_id": r.transaction_id,
         "checks": [_check_out(c) for c in r.checks],
         "approvals": [_approval_out(a) for a in r.approvals],
@@ -162,6 +176,7 @@ def _txn_out(t: rq.TransactionRecord) -> dict:
         "bank_reference": t.bank_reference,
         "paid_by": t.paid_by,
         "paid_at": t.paid_at,
+        "payees": [_payee_out(p) for p in t.payees],
         "exceptions_count": t.exceptions_count,
         "locked": t.locked,
         "checks": [_check_out(c) for c in t.checks],

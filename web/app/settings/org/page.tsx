@@ -26,7 +26,7 @@ import {
   ALL_FEATURES,
   type ClientConfig,
 } from "@/lib/orgConfig";
-import type { RequisitionWorkflow, WorkflowStep } from "@/types/requisition";
+import type { CCRule, RequisitionWorkflow, WorkflowStep } from "@/types/requisition";
 import type { OrgProfile, PaymentType } from "@/types";
 
 /**
@@ -263,6 +263,34 @@ export default function OrgSettingsPage() {
     setWfSaved(false);
   }
 
+  function patchCcRule(i: number, p: Partial<CCRule>) {
+    setWf((w) => {
+      if (!w) return w;
+      const cc_rules = [...w.cc_rules];
+      cc_rules[i] = { ...cc_rules[i], ...p };
+      return { ...w, cc_rules };
+    });
+    setWfSaved(false);
+  }
+  function removeCcRule(i: number) {
+    setWf((w) => (w ? { ...w, cc_rules: w.cc_rules.filter((_, idx) => idx !== i) } : w));
+    setWfSaved(false);
+  }
+  function addCcRule() {
+    setWf((w) =>
+      w
+        ? {
+            ...w,
+            cc_rules: [
+              ...w.cc_rules,
+              { min_amount: 0, department: departments[0]?.key ?? "", label: "" },
+            ],
+          }
+        : w,
+    );
+    setWfSaved(false);
+  }
+
   function addCategoryPack() {
     const cat = newCategory.trim();
     if (!cat) return;
@@ -316,6 +344,12 @@ export default function OrgSettingsPage() {
         steps: workflow.steps.map((s) => ({ ...s, key: s.key.trim() || s.label.trim().toLowerCase().replace(/\s+/g, "-") })),
         allowed_categories: workflow.allowed_categories.map((c) => c.trim()).filter(Boolean),
         required_documents: workflow.required_documents.map((d) => d.trim()).filter(Boolean),
+        forbidden_vendors: workflow.forbidden_vendors.map((v) => v.trim()).filter(Boolean),
+        approved_vendors: workflow.approved_vendors.map((v) => v.trim()).filter(Boolean),
+        max_payees: Math.max(1, Number(workflow.max_payees) || 100),
+        // A CC rule with no department is not a rule — nothing to route to —
+        // so it's dropped rather than saved as dead configuration.
+        cc_rules: workflow.cc_rules.filter((r) => r.department.trim()),
       };
       const savedWf = await setWorkflow(cleaned);
       setWf(savedWf);
@@ -658,6 +692,104 @@ export default function OrgSettingsPage() {
                         The fallback list — a category below with its own pack uses that instead.
                       </span>
                     </label>
+                    <label className="space-y-1 text-sm sm:col-span-2">
+                      <span className="font-medium text-gray-900">Blocked vendors</span>
+                      <input
+                        type="text"
+                        value={workflow.forbidden_vendors.join(", ")}
+                        placeholder="Never pay these, comma-separated"
+                        onChange={(e) => patchWf({ forbidden_vendors: e.target.value.split(",") })}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="space-y-1 text-sm sm:col-span-2">
+                      <span className="font-medium text-gray-900">Approved vendors</span>
+                      <input
+                        type="text"
+                        value={workflow.approved_vendors.join(", ")}
+                        placeholder="Leave blank to allow any vendor not blocked above"
+                        onChange={(e) => patchWf({ approved_vendors: e.target.value.split(",") })}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                      />
+                      <span className="block text-xs text-gray-500">
+                        A vendor off this list is a warning, not a block —
+                        plenty of legitimate one-off payees never get added.
+                      </span>
+                    </label>
+                    <label className="space-y-1 text-sm">
+                      <span className="font-medium text-gray-900">Duplicate-payment window</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={workflow.duplicate_window_days}
+                          onChange={(e) => patchWf({ duplicate_window_days: Number(e.target.value) || 0 })}
+                          className="w-24 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        />
+                        <span className="text-xs text-gray-500">days</span>
+                      </div>
+                    </label>
+                    <label className="space-y-1 text-sm">
+                      <span className="font-medium text-gray-900">Payees in one requisition</span>
+                      <input
+                        type="number"
+                        value={workflow.max_payees}
+                        onChange={(e) => patchWf({ max_payees: Number(e.target.value) || 1 })}
+                        className="w-24 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                      />
+                      <span className="block text-xs text-gray-500">
+                        For a stipend list or beneficiary payout raised as one batch.
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* CC rules: higher-ups copied once an amount crosses a
+                      threshold — informed, never given approval authority. */}
+                  <div className="mt-6 border-t border-gray-100 pt-5">
+                    <h4 className="text-sm font-semibold text-gray-900">Copy higher-ups above a threshold</h4>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      A department is notified once a requisition is raised at
+                      or above the amount — never asked to act on it. Being
+                      copied never grants approval authority.
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {workflow.cc_rules.map((rule, i) => (
+                        <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
+                          <span className="text-xs text-gray-500">At or above</span>
+                          <input
+                            type="number"
+                            value={rule.min_amount}
+                            onChange={(e) => patchCcRule(i, { min_amount: Number(e.target.value) || 0 })}
+                            className="w-28 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                          />
+                          <span className="text-xs text-gray-500">{workflow.currency}, copy</span>
+                          <select
+                            value={rule.department}
+                            onChange={(e) => patchCcRule(i, { department: e.target.value })}
+                            className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                          >
+                            <option value="">Select department…</option>
+                            {departments.map((d) => (
+                              <option key={d.key} value={d.key}>{d.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={rule.label}
+                            onChange={(e) => patchCcRule(i, { label: e.target.value })}
+                            placeholder="Label — e.g. Executive Director"
+                            className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                          />
+                          <button type="button" onClick={() => removeCcRule(i)}
+                            className="shrink-0 rounded-md p-1.5 text-gray-300 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Remove CC rule">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button type="button" onClick={addCcRule}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:border-brand-300 hover:text-brand-700">
+                      <Plus className="h-4 w-4" /> Add CC rule
+                    </button>
                   </div>
 
                   {/* Per-category document packs */}

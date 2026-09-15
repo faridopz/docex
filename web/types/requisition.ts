@@ -69,6 +69,16 @@ export interface WorkflowStep {
   override_limit: number | null;
 }
 
+/** A department copied on a requisition once its amount crosses a threshold
+ * — informed, never asked to act. Separate from WorkflowStep on purpose:
+ * decide() only ever checks a step's department, so a CC rule can never
+ * grant approval authority. */
+export interface CCRule {
+  min_amount: number;
+  department: string;
+  label: string;
+}
+
 export interface RequisitionWorkflow {
   org_id: string;
   steps: WorkflowStep[];
@@ -82,7 +92,23 @@ export interface RequisitionWorkflow {
    * back to required_documents (the org-wide list). Keyed by category name. */
   documents_by_category: Record<string, string[]>;
   duplicate_window_days: number;
+  /** Ceiling on payees in one multi-payee requisition (a workshop stipend
+   * list, a beneficiary payout run). */
+  max_payees: number;
+  cc_rules: CCRule[];
   updated_at: string | null;
+}
+
+/** One line of a multi-payee requisition. */
+export interface Payee {
+  name: string;
+  account_number: string;
+  bank_name: string;
+  amount: number;
+  purpose: string;
+  tin: string;
+  phone_or_email: string;
+  payee_type: "staff" | "vendor" | "beneficiary";
 }
 
 /** List-row shape — enough to triage a queue without opening anything. */
@@ -110,6 +136,9 @@ export interface Requisition extends RequisitionSummary {
   description: string;
   receipt_ids: string[];
   documents: string[];
+  /** Populated for a multi-payee batch; empty for an ordinary single-vendor
+   * requisition. When non-empty, `amount` above is the sum of these. */
+  payees: Payee[];
   transaction_id: string | null;
   checks: PolicyCheck[];
   approvals: Approval[];
@@ -133,6 +162,7 @@ export interface TransactionRecord {
   bank_reference: string;
   paid_by: string;
   paid_at: string;
+  payees: Payee[];
   exceptions_count: number;
   locked: boolean;
   checks: PolicyCheck[];

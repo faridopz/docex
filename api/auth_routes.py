@@ -469,12 +469,13 @@ def dashboard(
     user: User = Depends(current_user),
     department: Optional[Department] = Query(default=None),
 ) -> DashboardSummary:
-    # Non-admins can only see their own department's dashboard.
-    dept: Department = user.department
-    if department is not None and department != user.department:
-        if user.role != "admin":
-            raise HTTPException(status_code=403, detail="You can only view your own department.")
-        dept = department
+    # Anyone signed in may view any department's dashboard — this is a
+    # read-only aggregate (counts, pending value, recent items), and every
+    # write action it links to (approve, pay, edit) stays role-gated at the
+    # endpoint that actually does it. Restricting the VIEW here bought no
+    # real protection, only confusion: a program officer asking "what's
+    # stuck in finance right now" got a 403 instead of an answer.
+    dept: Department = department if department is not None else user.department
 
     owned = tx.list_all(department=dept)
     counts: dict[str, int] = {}

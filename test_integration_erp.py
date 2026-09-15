@@ -121,9 +121,12 @@ check("finance has 1 pending item", d["pending_on_me"] == 1)
 check("finance pending value = 80k", abs(d["total_value_pending"] - 80000) < 0.01)
 check("finance has unread notifications", d["unread_notifications"] >= 1)
 
-# Non-admin cannot peek at another department's dashboard.
+# Any signed-in user can view another department's dashboard — read-only
+# aggregate counts, not an action. Write actions (approve, pay) still gate
+# on role at the endpoint that actually does them, tested elsewhere.
 r = client.get("/dashboard", headers=fh, params={"department": "compliance"})
-check("cross-department dashboard blocked for non-admin (403)", r.status_code == 403)
+check("cross-department dashboard is visible to any signed-in user",
+      r.status_code == 200 and r.json()["department"] == "compliance")
 
 print()
 if _fail:
