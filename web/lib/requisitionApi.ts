@@ -183,6 +183,15 @@ export async function releaseRequisitionHold(id: string, notes = ""): Promise<Re
   });
 }
 
+/** Add a message to the requisition's discussion thread. Available at any
+ * status, to anyone who can see the requisition — not role-gated. */
+export async function addRequisitionComment(id: string, text: string): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/comments`, {
+    method: "POST",
+    body: form({ text }),
+  });
+}
+
 // ─── payment ────────────────────────────────────────────────────────────────
 
 export async function payRequisition(

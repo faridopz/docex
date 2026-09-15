@@ -120,6 +120,22 @@ class Approval(BaseModel):
     signature: str = ""                  # HMAC over the decision payload
 
 
+class Comment(BaseModel):
+    """One message on a requisition's discussion thread — separate from
+    Approval.notes (the one-shot remark attached to a single decision).
+    NEEM's ask was that anyone able to see a request can also discuss it,
+    at any point in its life, not only the person currently deciding it —
+    so comments carry no step and are not restricted to IN_REVIEW the way
+    decide() is. Append-only, like everything else in this model: no edit,
+    no delete, so the thread is exactly what an auditor would have seen at
+    the time."""
+    id: str
+    author: str = ""                     # email
+    department: str = ""
+    text: str = ""
+    at: str = ""                         # ISO timestamp
+
+
 class AuditEntry(BaseModel):
     """Append-only audit line. The answer to 'why did this happen?'."""
     seq: int                             # 1, 2, 3 ... monotonic per requisition
@@ -230,6 +246,7 @@ class Requisition(BaseModel):
     checks: list[PolicyCheck] = Field(default_factory=list)
     approvals: list[Approval] = Field(default_factory=list)
     audit_log: list[AuditEntry] = Field(default_factory=list)
+    comments: list[Comment] = Field(default_factory=list)
 
     # Set only while status == ON_HOLD; cleared the moment the hold is
     # released. The full history of every hold/release survives in
@@ -1558,6 +1575,35 @@ def release_hold(
     _audit(req, "hold_released",
            actor=actor, department=department or (step.department if step else ""),
            detail=f"{where} (was held: {prior_reason})" + (f" — {notes.strip()}" if notes.strip() else ""))
+    return _save(org, req)
+
+
+def add_comment(org_id: str, req_id: str, *, actor: str, department: str = "", text: str = "") -> Requisition:
+    """Add one message to a requisition's discussion thread.
+
+    Deliberately unrestricted by status or step: NEEM's ask was that anyone
+    who can see a request can discuss it, which per the org-wide visibility
+    principle is now everyone signed in — not just whoever currently holds
+    it. A paid or declined requisition can still be commented on (an
+    auditor asking a question later is a completely ordinary case). Not
+    role-gated for the same reason viewing a requisition isn't: a comment
+    moves no money and grants no authority, so there is nothing here for a
+    role to protect.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if not text.strip():
+        raise RequisitionError("A comment needs some text.")
+
+    req.comments.append(Comment(
+        id=uuid.uuid4().hex, author=actor, department=department,
+        text=text.strip(), at=_now_iso(),
+    ))
+    _audit(req, "commented", actor=actor, department=department,
+           detail=text.strip()[:200])
+    req.updated_at = _now_iso()
     return _save(org, req)
 
 

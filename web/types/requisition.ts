@@ -50,6 +50,16 @@ export interface Approval {
   signature: string;
 }
 
+/** One message on a requisition's discussion thread — separate from a
+ * decision's one-shot notes. Append-only, like everything else here. */
+export interface Comment {
+  id: string;
+  author: string;
+  department: string;
+  text: string;
+  at: string;
+}
+
 /** One line of the hash-chained, append-only audit log. */
 export interface AuditEntry {
   seq: number;
@@ -151,6 +161,7 @@ export interface Requisition extends RequisitionSummary {
   transaction_id: string | null;
   checks: PolicyCheck[];
   approvals: Approval[];
+  comments: Comment[];
   audit_log: AuditEntry[];
   /** False means the audit log was tampered with — show it loudly. */
   audit_chain_valid: boolean;

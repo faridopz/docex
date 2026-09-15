@@ -9,9 +9,11 @@ import {
   Check,
   Loader2,
   Lock,
+  MessageSquare,
   PauseCircle,
   PlayCircle,
   RotateCcw,
+  Send,
   ShieldAlert,
   ShieldCheck,
   X,
@@ -19,6 +21,7 @@ import {
 import { AppShell } from "@/components/AppShell";
 import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
 import {
+  addRequisitionComment,
   decideRequisition,
   getRequisition,
   newIdempotencyKey,
@@ -58,6 +61,9 @@ export default function RequisitionDetailPage() {
   const [holdReason, setHoldReason] = useState("");
   const [releaseNotes, setReleaseNotes] = useState("");
   const [holdEnabled, setHoldEnabled] = useState(false);
+  const [commentText, setCommentText] = useState("");
+  const [commentBusy, setCommentBusy] = useState(false);
+  const [commentError, setCommentError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | Decision | "pay" | "resubmit" | "hold" | "release">("");
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -195,6 +201,20 @@ export default function RequisitionDetailPage() {
       setActionError(e instanceof Error ? e.message : "Could not release the hold.");
     } finally {
       setBusy("");
+    }
+  }
+
+  async function postComment() {
+    if (!req || !commentText.trim()) return;
+    setCommentBusy(true);
+    setCommentError(null);
+    try {
+      setReq(await addRequisitionComment(req.id, commentText.trim()));
+      setCommentText("");
+    } catch (e) {
+      setCommentError(e instanceof Error ? e.message : "Could not post that comment.");
+    } finally {
+      setCommentBusy(false);
     }
   }
 
@@ -523,6 +543,49 @@ export default function RequisitionDetailPage() {
                   ))}
                 </ol>
               )}
+            </Card>
+
+            <Card title="Comments" subtitle="Anyone who can see this requisition can comment on it">
+              {req.comments.length === 0 ? (
+                <p className="text-sm text-gray-500">No comments yet.</p>
+              ) : (
+                <ol className="space-y-3">
+                  {req.comments.map((c) => (
+                    <li key={c.id} className="border-l-2 border-gray-200 pl-3">
+                      <div className="flex items-center gap-1.5 text-xs text-gray-600">
+                        <MessageSquare className="h-3 w-3 text-gray-400" />
+                        <span className="font-medium text-gray-900">{c.author}</span>
+                        {c.department ? <span>· {humanise(c.department)}</span> : null}
+                        <span className="text-gray-400">· {dateTime(c.at)}</span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-sm text-gray-800">{c.text}</p>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              <div className="mt-4 border-t border-gray-100 pt-3">
+                <textarea
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  rows={2}
+                  placeholder="Add a comment…"
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                />
+                <button
+                  type="button"
+                  onClick={postComment}
+                  disabled={commentBusy || !commentText.trim()}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {commentBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Send className="h-3.5 w-3.5" />
+                  )}
+                  Comment
+                </button>
+                {commentError ? <p className="mt-2 text-xs text-red-700">{commentError}</p> : null}
+              </div>
             </Card>
 
             <Card

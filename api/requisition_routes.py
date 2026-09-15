@@ -169,6 +169,11 @@ def _payee_out(p: rq.Payee) -> dict:
     }
 
 
+def _comment_out(c: rq.Comment) -> dict:
+    return {"id": c.id, "author": c.author, "department": c.department,
+            "text": c.text, "at": c.at}
+
+
 def _audit_out(e: rq.AuditEntry) -> dict:
     return {
         "seq": e.seq, "at": e.at, "actor": e.actor,
@@ -211,6 +216,7 @@ def _detail_out(r: rq.Requisition) -> dict:
         "transaction_id": r.transaction_id,
         "checks": [_check_out(c) for c in r.checks],
         "approvals": [_approval_out(a) for a in r.approvals],
+        "comments": [_comment_out(c) for c in r.comments],
         "audit_log": [_audit_out(e) for e in r.audit_log],
         "audit_chain_valid": rq.verify_audit_chain(r),
     }
@@ -593,6 +599,45 @@ async def release_hold_endpoint(
     # arrival at a step gets, not a special case.
     _notify_current_step(ctx, req, rq.get_workflow(ctx.org_id))
     return _detail_out(req)
+
+
+# ─── comments ────────────────────────────────────────────────────────────
+
+
+@router.post("/requisitions/{req_id}/comments")
+async def add_comment_endpoint(
+    req_id: str,
+    text: Annotated[str, Form(description="The comment")],
+    ctx: Ctx = Depends(request_context),
+):
+    """Add a message to the requisition's discussion thread. Not role-gated
+    and not restricted by status — see requisitions.add_comment()."""
+    try:
+        req = rq.add_comment(ctx.org_id, req_id, actor=ctx.user_id,
+                              department=ctx.department, text=text)
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Tell whoever is closest to needing to see it: the submitter's own
+    # department, and, if it's still moving, whoever it's currently with —
+    # skipping the commenter's own department either way, and skipping a
+    # duplicate if both happen to be the same department.
+    current_dept = _step_department(ctx, req) if req.current_step else ""
+    notify_depts = {req.department, current_dept} - {"", ctx.department}
+    for dept in notify_depts:
+        _notify(ctx, req, kind="mention", department=dept,
+                title=f"{req.ref}: new comment",
+                body=text.strip()[:200])
+
+    return _detail_out(req)
+
+
+def _step_department(ctx: Ctx, req: rq.Requisition) -> str:
+    if not req.current_step:
+        return ""
+    wf = rq.get_workflow(ctx.org_id)
+    step = next((s for s in wf.steps if s.key == req.current_step), None)
+    return step.department if step else ""
 
 
 @router.post("/requisitions/{req_id}/resubmit")
