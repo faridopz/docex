@@ -11,6 +11,7 @@ export type ReqStatus =
   | "draft"
   | "submitted"
   | "in_review"
+  | "on_hold"
   | "approved"
   | "paid"
   | "declined"
@@ -139,6 +140,11 @@ export interface Requisition extends RequisitionSummary {
   /** Populated for a multi-payee batch; empty for an ordinary single-vendor
    * requisition. When non-empty, `amount` above is the sum of these. */
   payees: Payee[];
+  /** Set only while status is "on_hold"; null the rest of the time. The
+   * hold/release history itself lives in audit_log regardless. */
+  hold_reason: string | null;
+  held_by: string | null;
+  held_at: string | null;
   transaction_id: string | null;
   checks: PolicyCheck[];
   approvals: Approval[];

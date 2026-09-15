@@ -71,7 +71,20 @@ export function NotificationBell({ department }: { department: Department }) {
         /* ignore */
       }
     }
-    router.push(`/transactions/${encodeURIComponent(n.txn_ref)}`);
+    // Two different flows share this feed and use two different reference
+    // formats: requisitions are always "REQ-0001" (requisitions.py's
+    // _next_ref), the legacy voucher/transaction flow uses its own scheme
+    // (e.g. "V7", "C24"). Routing every notification to /transactions/{ref}
+    // silently 404'd for every requisition notification — assigned,
+    // returned, cc, paid, held, all of them — since that page only ever
+    // knew how to look up the legacy flow. /requisitions/{id} now also
+    // accepts the human ref directly (see requisitions.get_requisition),
+    // so this is the one branch needed to send each kind to a page that
+    // actually resolves it.
+    const path = n.txn_ref.toUpperCase().startsWith("REQ-")
+      ? `/requisitions/${encodeURIComponent(n.txn_ref)}`
+      : `/transactions/${encodeURIComponent(n.txn_ref)}`;
+    router.push(path);
   }
 
   async function clearAll() {

@@ -9,6 +9,8 @@ import {
   Check,
   Loader2,
   Lock,
+  PauseCircle,
+  PlayCircle,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
@@ -21,8 +23,11 @@ import {
   getRequisition,
   newIdempotencyKey,
   payRequisition,
+  placeRequisitionOnHold,
+  releaseRequisitionHold,
   resubmitRequisition,
 } from "@/lib/requisitionApi";
+import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
 import type { Decision, Requisition } from "@/types/requisition";
 
@@ -50,10 +55,28 @@ export default function RequisitionDetailPage() {
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideAuthority, setOverrideAuthority] = useState("");
   const [bankReference, setBankReference] = useState("");
-  const [busy, setBusy] = useState<"" | Decision | "pay" | "resubmit">("");
+  const [holdReason, setHoldReason] = useState("");
+  const [releaseNotes, setReleaseNotes] = useState("");
+  const [holdEnabled, setHoldEnabled] = useState(false);
+  const [busy, setBusy] = useState<"" | Decision | "pay" | "resubmit" | "hold" | "release">("");
   const [actionError, setActionError] = useState<string | null>(null);
 
   const payKey = useRef<string>(newIdempotencyKey());
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await getClientConfig();
+        if (!cancelled) setHoldEnabled(hasFeature(cfg, "requisition_hold"));
+      } catch {
+        /* stays hidden — matches what the server would refuse anyway */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -85,6 +108,8 @@ export default function RequisitionDetailPage() {
     req != null && ["submitted", "in_review"].includes(req.status);
   const canPay = req?.status === "approved";
   const canResubmit = req?.status === "returned";
+  const isHeld = req?.status === "on_hold";
+  const canHold = req?.status === "in_review" && holdEnabled;
 
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
@@ -140,6 +165,34 @@ export default function RequisitionDetailPage() {
       setNotes("");
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Could not resubmit.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function placeHold() {
+    if (!req || !holdReason.trim()) return;
+    setBusy("hold");
+    setActionError(null);
+    try {
+      setReq(await placeRequisitionOnHold(req.id, holdReason.trim()));
+      setHoldReason("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not put this on hold.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function releaseHold() {
+    if (!req) return;
+    setBusy("release");
+    setActionError(null);
+    try {
+      setReq(await releaseRequisitionHold(req.id, releaseNotes.trim()));
+      setReleaseNotes("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not release the hold.");
     } finally {
       setBusy("");
     }
@@ -217,6 +270,50 @@ export default function RequisitionDetailPage() {
           </div>
         ) : null}
 
+        {isHeld ? (
+          <div className="flex gap-3 rounded-lg border border-slate-300 bg-slate-50 p-4">
+            <PauseCircle className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-slate-900">
+                On hold{req.current_step ? ` — still with ${humanise(req.current_step)}` : ""}
+              </p>
+              <p className="mt-0.5 text-sm text-slate-700">&ldquo;{req.hold_reason}&rdquo;</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {req.held_by ? `${req.held_by} · ` : ""}
+                {req.held_at ? relativeTime(req.held_at) : ""}
+              </p>
+              <div className="mt-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-700">
+                    Notes on resuming (optional)
+                  </span>
+                  <textarea
+                    value={releaseNotes}
+                    onChange={(e) => setReleaseNotes(e.target.value)}
+                    rows={2}
+                    placeholder="What changed, if anything."
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={releaseHold}
+                  disabled={busy !== ""}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-900 disabled:opacity-50"
+                >
+                  {busy === "release" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PlayCircle className="h-4 w-4" />
+                  )}
+                  Release hold
+                </button>
+                {actionError ? <p className="mt-2 text-sm text-red-700">{actionError}</p> : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
           <div className="space-y-6">
             <Card title="Request">
@@ -279,6 +376,40 @@ export default function RequisitionDetailPage() {
                 onDecide={decide}
                 error={actionError}
               />
+            ) : null}
+
+            {canHold ? (
+              <Card
+                title="Not ready to decide?"
+                subtitle="Pauses this at the current step — not a decision, and nothing is lost."
+              >
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Why is this on hold?
+                    <span className="ml-0.5 text-red-500">*</span>
+                  </span>
+                  <textarea
+                    value={holdReason}
+                    onChange={(e) => setHoldReason(e.target.value)}
+                    rows={2}
+                    placeholder="What you're waiting on before you can act."
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={placeHold}
+                  disabled={busy !== "" || !holdReason.trim()}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === "hold" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PauseCircle className="h-4 w-4" />
+                  )}
+                  Put on hold
+                </button>
+              </Card>
             ) : null}
 
             {canPay ? (

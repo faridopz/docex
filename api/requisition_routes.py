@@ -195,6 +195,9 @@ def _detail_out(r: rq.Requisition) -> dict:
         "receipt_ids": r.receipt_ids,
         "documents": r.documents,
         "payees": [_payee_out(p) for p in r.payees],
+        "hold_reason": r.hold_reason,
+        "held_by": r.held_by,
+        "held_at": r.held_at,
         "transaction_id": r.transaction_id,
         "checks": [_check_out(c) for c in r.checks],
         "approvals": [_approval_out(a) for a in r.approvals],
@@ -517,6 +520,53 @@ async def decide_endpoint(
                 title=f"{req.ref}: {req.status.value}",
                 body=notes or f"{decision} at the {dec.value} step.")
 
+    return _detail_out(req)
+
+
+# ─── hold / release ─────────────────────────────────────────────────────────
+
+
+@router.post("/requisitions/{req_id}/hold")
+async def place_on_hold_endpoint(
+    req_id: str,
+    reason: Annotated[str, Form(description="Required — why this is paused")],
+    ctx: Ctx = Depends(request_context),
+):
+    """Pause a requisition at its current step. Does not decide it — the same
+    approver (or anyone else in that department) picks it back up later with
+    /release-hold. Requires org.requisition_hold and a written reason."""
+    require_role(ctx, "reviewer", "approver", "admin")
+    try:
+        req = rq.place_on_hold(
+            ctx.org_id, req_id, actor=ctx.user_id, department=ctx.department, reason=reason,
+        )
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _notify(ctx, req, kind="held", department=req.department,
+            title=f"{req.ref}: on hold",
+            body=req.hold_reason or "")
+    return _detail_out(req)
+
+
+@router.post("/requisitions/{req_id}/release-hold")
+async def release_hold_endpoint(
+    req_id: str,
+    notes: Annotated[str, Form(description="Optional — what changed")] = "",
+    ctx: Ctx = Depends(request_context),
+):
+    """Resume a held requisition at the same step it was paused on."""
+    require_role(ctx, "reviewer", "approver", "admin")
+    try:
+        req = rq.release_hold(
+            ctx.org_id, req_id, actor=ctx.user_id, department=ctx.department, notes=notes,
+        )
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Back in front of an approver — same "your turn" notification any other
+    # arrival at a step gets, not a special case.
+    _notify_current_step(ctx, req, rq.get_workflow(ctx.org_id))
     return _detail_out(req)
 
 

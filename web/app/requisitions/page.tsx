@@ -23,6 +23,7 @@ type Tab = "mine" | "all";
 const STATUS_FILTERS: { value: ReqStatus | ""; label: string }[] = [
   { value: "", label: "Any status" },
   { value: "in_review", label: "In review" },
+  { value: "on_hold", label: "On hold" },
   { value: "approved", label: "Approved" },
   { value: "returned", label: "Returned" },
   { value: "paid", label: "Paid" },

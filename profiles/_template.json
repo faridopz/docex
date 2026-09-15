@@ -108,6 +108,7 @@
     "accounting_export": false,
     "withholding_tax": false,
     "advance_retirement": false,
-    "multi_payee_requisitions": false
+    "multi_payee_requisitions": false,
+    "requisition_hold": false
   }
 }

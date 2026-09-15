@@ -1359,6 +1359,7 @@ NotificationKind = Literal[
     "paid",            # an item you're watching was paid
     "mention",         # generic info
     "cc",              # copied on this — informed, not asked to act
+    "held",            # something you touched is now paused, with a reason
 ]
 
 

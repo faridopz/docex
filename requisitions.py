@@ -53,6 +53,7 @@ class ReqStatus(str, Enum):
     DRAFT = "draft"
     SUBMITTED = "submitted"
     IN_REVIEW = "in_review"          # sitting with some approval step
+    ON_HOLD = "on_hold"              # paused at its current step, not decided
     APPROVED = "approved"            # cleared every step, awaiting payment
     PAID = "paid"                    # terminal — transaction record frozen
     DECLINED = "declined"            # terminal — rejected by an approver
@@ -222,6 +223,15 @@ class Requisition(BaseModel):
     checks: list[PolicyCheck] = Field(default_factory=list)
     approvals: list[Approval] = Field(default_factory=list)
     audit_log: list[AuditEntry] = Field(default_factory=list)
+
+    # Set only while status == ON_HOLD; cleared the moment the hold is
+    # released. The full history of every hold/release survives in
+    # audit_log regardless — these three describe the CURRENT pause, not a
+    # log of past ones, matching how the rest of this model treats live
+    # state (e.g. current_step) versus history.
+    hold_reason: Optional[str] = None
+    held_by: Optional[str] = None
+    held_at: Optional[str] = None
 
     # Outcome
     transaction_id: Optional[str] = None
@@ -1433,6 +1443,115 @@ def decide(
     return _save(org, req)
 
 
+def place_on_hold(
+    org_id: str, req_id: str, *, actor: str, department: str = "", reason: str = "",
+) -> Requisition:
+    """
+    Pause a requisition at its CURRENT step without deciding it.
+
+    Distinct from decide()'s RETURNED on purpose: a return sends the
+    requisition back to the submitter and leaves the approval chain — it is a
+    verdict ("this needs fixing before I'll look at it again"). A hold is not
+    a verdict. It stays exactly where it is, with the same approver, waiting
+    on something outside the requisition itself (a call to make, a document
+    coming by courier, a second signature offline). Modelling it as its own
+    status rather than a decision keeps `decide()`'s three outcomes
+    (approve/decline/return) the closed set the audit summary already
+    assumes, and keeps `current_step` untouched so release_hold() resumes
+    exactly where the requisition paused — never re-entering the chain at
+    the wrong step.
+
+    Requires a written reason: NEEM's own process (and the general principle
+    that nothing in this engine blocks silently) means "why" is not optional
+    for a hold any more than it is for a policy override.
+
+    Gated on the `requisition_hold` flag for the same reason multi-payee
+    batches are gated — an org that has never turned this on should not have
+    its approvers discover a hold button, and should not have to explain a
+    status their reviewers have never been trained on.
+    """
+    org = store.require_org(org_id)
+    try:
+        import org_config
+        hold_on = org_config.feature_enabled(org, "requisition_hold")
+    except ImportError:  # pragma: no cover
+        hold_on = False
+    if not hold_on:
+        raise RequisitionError(
+            "This organisation has not enabled putting requisitions on hold "
+            "('requisition_hold' feature flag)."
+        )
+
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if req.status != ReqStatus.IN_REVIEW:
+        raise RequisitionError(
+            f"{req.ref} is not awaiting review (status: {req.status.value}); only a "
+            "requisition currently with an approver can be put on hold."
+        )
+    if not reason.strip():
+        raise RequisitionError("Putting a requisition on hold requires a written reason.")
+
+    wf = get_workflow(org)
+    step = _step(wf, req.current_step or "")
+    if step is None:
+        raise RequisitionError(f"{req.ref} has no active approval step.")
+    # Same department boundary as decide(): only whoever the requisition is
+    # actually sitting with may pause it. See the long comment in decide()
+    # for why this is not admin-bypassable.
+    if department and step.department and department != step.department:
+        raise RequisitionError(
+            f"{req.ref} is with {step.department} ({step.label or step.key}); "
+            f"you are in {department}. Only {step.department} can act at this step."
+        )
+
+    req.status = ReqStatus.ON_HOLD
+    req.hold_reason = reason.strip()
+    req.held_by = actor
+    req.held_at = _now_iso()
+    _audit(req, "held", actor=actor, department=department or step.department,
+           detail=f"{step.label or step.key}: on hold — {req.hold_reason}")
+    return _save(org, req)
+
+
+def release_hold(
+    org_id: str, req_id: str, *, actor: str, department: str = "", notes: str = "",
+) -> Requisition:
+    """Resume a held requisition at the SAME step it was paused on.
+
+    Whoever holds a requisition is who releases it — same department
+    boundary as place_on_hold() and decide(). This does not re-run policy
+    checks: nothing about the requisition's own facts changed while it sat
+    idle, only time passed, so there is nothing new for the checks to find.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if req.status != ReqStatus.ON_HOLD:
+        raise RequisitionError(f"{req.ref} is not on hold (status: {req.status.value}).")
+
+    wf = get_workflow(org)
+    step = _step(wf, req.current_step or "")
+    if step is not None and department and step.department and department != step.department:
+        raise RequisitionError(
+            f"{req.ref} is with {step.department} ({step.label or step.key}); "
+            f"you are in {department}. Only {step.department} can act at this step."
+        )
+
+    prior_reason = req.hold_reason or "(no reason recorded)"
+    req.status = ReqStatus.IN_REVIEW
+    req.hold_reason = None
+    req.held_by = None
+    req.held_at = None
+    where = f"Resumed at {step.label or step.key}" if step is not None else "Resumed"
+    _audit(req, "hold_released",
+           actor=actor, department=department or (step.department if step else ""),
+           detail=f"{where} (was held: {prior_reason})" + (f" — {notes.strip()}" if notes.strip() else ""))
+    return _save(org, req)
+
+
 def resubmit(org_id: str, req_id: str, *, actor: str, notes: str = "") -> Requisition:
     """Submitter fixed a RETURNED requisition — re-run checks and re-route."""
     org = store.require_org(org_id)
@@ -1518,9 +1637,30 @@ def _save(org_id: str, req: Requisition) -> Requisition:
 
 
 def get_requisition(org_id: str, req_id: str) -> Optional[Requisition]:
+    """Look up by internal id (the normal case — every link inside the app
+    already carries it) or by the human-readable ref ("REQ-0001") — the
+    shape a notification, an email, or someone pasting a reference actually
+    has. The direct id lookup is tried first and is the only cost on the
+    common path; a ref only falls through to a scan of the org's
+    requisitions, same cost list_requisitions() already pays elsewhere.
+
+    Without this, every requisition notification silently linked nowhere —
+    Notification.txn_ref stores the ref, never the id, and there was no way
+    to resolve one back to the other.
+    """
     org = store.require_org(org_id)
     raw = store.get_store().get(org, _REQUISITIONS, req_id)
-    return Requisition.model_validate(raw) if raw else None
+    if raw:
+        return Requisition.model_validate(raw)
+    if req_id.strip().upper().startswith("REQ-"):
+        target = req_id.strip().upper()
+        for other in store.get_store().list(org, _REQUISITIONS):
+            if str(other.get("ref", "")).upper() == target:
+                try:
+                    return Requisition.model_validate(other)
+                except Exception:
+                    return None
+    return None
 
 
 def list_requisitions(

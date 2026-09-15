@@ -167,6 +167,22 @@ export async function resubmitRequisition(id: string, notes = ""): Promise<Requi
   });
 }
 
+/** Pause a requisition at its current step. `reason` is required by the
+ * server — this is not a decision, so it doesn't move off the step. */
+export async function placeRequisitionOnHold(id: string, reason: string): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/hold`, {
+    method: "POST",
+    body: form({ reason }),
+  });
+}
+
+export async function releaseRequisitionHold(id: string, notes = ""): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/release-hold`, {
+    method: "POST",
+    body: form({ notes }),
+  });
+}
+
 // ─── payment ────────────────────────────────────────────────────────────────
 
 export async function payRequisition(
