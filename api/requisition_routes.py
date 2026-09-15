@@ -904,13 +904,15 @@ async def run_compliance_check_endpoint(
     verdict, or vice versa; the two are shown side by side, not merged.
 
     Requires org.requisition_compliance_check AND a rulebook configured on
-    the workflow (Settings → Workflow). Role-gated like decide(): running
-    this costs a real Claude API call, so — unlike attaching a file or
-    posting a comment, which are free — it is not open to every signed-in
-    user.
+    the workflow (Settings → Workflow). NOT role-gated — any signed-in user
+    who can already see the requisition can run this, the same visibility
+    rule as attaching a file or posting a comment: it moves no money and
+    grants no authority, a submitter checking their own request before an
+    approver ever opens it is exactly the point. The API cost this incurs
+    is controlled at the org level, by the feature flag itself — an org
+    that finds this too expensive to run freely turns the flag off, rather
+    than this route picking which roles are trusted to spend money.
     """
-    require_role(ctx, "reviewer", "approver", "admin")
-
     try:
         import org_config
         if not org_config.feature_enabled(ctx.org_id, "requisition_compliance_check"):

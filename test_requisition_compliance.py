@@ -7,9 +7,11 @@ compliance check needs real document text to evaluate, and requisitions
 previously only carried ticked document LABELS, not files. Now that
 attachments exist, this wires an org's saved compliance rulebook
 (compliance.py / api/compliance_routes.py's "rulebooks" store collection)
-to the requisition engine: an approver can run a requisition's real
-attachments against the rulebook and see AI-assisted verdicts alongside
-(never merged into) the engine's own deterministic PolicyCheck list.
+to the requisition engine: any signed-in user who can see a requisition
+can run its real attachments against the rulebook and see AI-assisted
+verdicts alongside (never merged into) the engine's own deterministic
+PolicyCheck list — including the submitter themselves, before an
+approver ever opens it.
 
 The Anthropic client is mocked (same technique as test_compliance_perf.py)
 so this suite runs with no API key and no network call. Covers: the flag
@@ -17,8 +19,16 @@ gates the whole capability; no rulebook configured on the workflow refuses
 with a clear message; a configured-but-deleted rulebook 404s; no
 attachments refuses; a valid run round-trips the verdict, summary, and
 per-rule findings onto the requisition and into the audit log; a plain
-submitter/viewer cannot trigger the (paid) check but a reviewer can; the
-requisition's own deterministic checks are untouched by any of this.
+viewer can trigger the check same as anyone else (no role gate — see
+WO-21's follow-up note below); the requisition's own deterministic checks
+are untouched by any of this.
+
+NOT role-gated (changed from the original WO-21 cut, at Farid's explicit
+request): running this was initially restricted to reviewer/approver/admin
+because it costs a real Claude API call, but that's a poor proxy for who
+should be allowed to spend it — a submitter wants to check their own
+request before it even reaches an approver. Cost control now lives at the
+org level, via the requisition_compliance_check flag itself.
 
 Run: python test_requisition_compliance.py
 """
@@ -205,22 +215,19 @@ check("attachment uploaded", r.status_code == 200)
 
 install_fake(fake_response(lean("flagged", "rule-vendor-quote", "flag", "Only 1 of 3 quotes attached")))
 
-# ─── a plain viewer cannot trigger a paid check ─────────────────────────────
+# ─── a plain viewer — no elevated role — can trigger the check ─────────────
+# Not role-gated: visibility of the requisition is the only bar, the same
+# rule as attaching a file or posting a comment.
 
 r = client.post(f"/requisitions/{req_id}/compliance-check", headers=vh)
-check("a viewer cannot run the (paid) check", r.status_code == 403)
-
-# ─── a reviewer can ─────────────────────────────────────────────────────────
-
-r = client.post(f"/requisitions/{req_id}/compliance-check", headers=ph)
-check("check runs successfully", r.status_code == 200)
+check("a plain viewer can run the check — no role gate", r.status_code == 200)
 body = r.json()
 comp = body["compliance"]
 check("compliance summary present", comp is not None)
 check("rulebook id recorded", comp["rulebook_id"] == "rb-test-001")
 check("rulebook name recorded", comp["rulebook_name"] == "NEEM Procurement Policy")
 check("overall verdict flagged", comp["overall_verdict"] == "flagged")
-check("checked_by recorded", comp["checked_by"] == "program@neem.org")
+check("checked_by recorded as the viewer who ran it", comp["checked_by"] == "viewer@neem.org")
 check("checked_at recorded", bool(comp["checked_at"]))
 check("document_count reflects the one attachment", comp["document_count"] == 1)
 check("one finding", len(comp["results"]) == 1)
@@ -239,13 +246,15 @@ check("deterministic PolicyCheck list unchanged by the compliance run",
 check("audit log has a compliance_checked entry",
       any(e["event"] == "compliance_checked" for e in body["audit_log"]))
 
-# ─── re-running replaces the snapshot, doesn't accumulate ──────────────────
+# ─── a different user (the submitter) can also re-run it — replaces the
+# snapshot, doesn't accumulate ──────────────────────────────────────────────
 
 install_fake(fake_response(lean("approved", "rule-vendor-quote", "pass", "All 3 quotes now attached")))
 r = client.post(f"/requisitions/{req_id}/compliance-check", headers=ph)
-check("second run succeeds", r.status_code == 200)
+check("second run, by a different user, succeeds", r.status_code == 200)
 body2 = r.json()
 check("verdict updated to approved", body2["compliance"]["overall_verdict"] == "approved")
+check("checked_by updated to whoever ran it this time", body2["compliance"]["checked_by"] == "program@neem.org")
 check("still exactly one finding (replaced, not appended)", len(body2["compliance"]["results"]) == 1)
 check("two compliance_checked audit entries now (history preserved)",
       sum(1 for e in body2["audit_log"] if e["event"] == "compliance_checked") == 2)
