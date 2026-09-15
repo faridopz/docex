@@ -14,6 +14,7 @@ import { apiFetch } from "@/lib/session";
 import type {
   AuditSummary,
   Decision,
+  Payee,
   Requisition,
   RequisitionSummary,
   RequisitionWorkflow,
@@ -54,6 +55,10 @@ export interface NewRequisition {
   receipt_ids?: string[];
   /** Document labels attached, e.g. "invoice", "purchase_order". */
   documents?: string[];
+  /** A batch of payees (a stipend list, a beneficiary payout run) instead of
+   * one vendor. When present, `amount` is ignored — the server always
+   * recomputes it as the sum of these rows, so the two can never disagree. */
+  payees?: Payee[];
   currency?: string;
 }
 
@@ -74,6 +79,7 @@ export async function createRequisition(
       description: body.description ?? "",
       receipt_ids: (body.receipt_ids ?? []).join(","),
       documents: (body.documents ?? []).join(","),
+      payees: JSON.stringify(body.payees ?? []),
       currency: body.currency ?? "NGN",
     }),
   });

@@ -1193,8 +1193,28 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
             changed.append(key)
 
     # Editing the payee list changes what's owed — the total must always be
-    # their sum, never a stale figure left over from before the edit.
+    # their sum, never a stale figure left over from before the edit. This is
+    # also the ONLY other place (besides create_requisition) a draft's payee
+    # list can be set, so the same flag + cap enforcement applies here — a
+    # draft created single-vendor and edited into a batch afterwards must not
+    # be able to skip the check just because it took the update_draft path.
     if "payees" in changed and req.payees:
+        try:
+            import org_config
+            multi_payee_on = org_config.feature_enabled(org, "multi_payee_requisitions")
+        except ImportError:  # pragma: no cover
+            multi_payee_on = False
+        if not multi_payee_on:
+            raise RequisitionError(
+                "This organisation has not enabled multi-payee requisitions "
+                "('multi_payee_requisitions' feature flag)."
+            )
+        cap = get_workflow(org).max_payees or 100
+        if len(req.payees) > cap:
+            raise RequisitionError(
+                f"This draft names {len(req.payees)} payees, above this "
+                f"organisation's limit of {cap} in one batch."
+            )
         new_total = _money(sum(p.amount for p in req.payees))
         if req.amount != new_total:
             req.amount = new_total

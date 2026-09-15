@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2, Send } from "lucide-react";
+import { ArrowRight, Loader2, Plus, Send, Trash2, Users } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { PolicyCheckList } from "@/components/erp/PolicyChecks";
 import {
@@ -10,8 +10,53 @@ import {
   getWorkflow,
   newIdempotencyKey,
 } from "@/lib/requisitionApi";
+import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { humanise, money } from "@/lib/requisitionFormat";
-import type { Requisition, RequisitionWorkflow } from "@/types/requisition";
+import type { Payee, Requisition, RequisitionWorkflow } from "@/types/requisition";
+
+/** One payee row as the form edits it — amount stays a raw string (so a
+ * comma-typed "20,000" isn't fought while typing) and is only parsed at the
+ * boundary, same treatment as the single-vendor amount field below. */
+type PayeeRow = Omit<Payee, "amount"> & { amount: string };
+
+const EMPTY_ROW: PayeeRow = {
+  name: "", account_number: "", bank_name: "", amount: "",
+  purpose: "", tin: "", phone_or_email: "", payee_type: "beneficiary",
+};
+
+const PAYEE_TYPES: Payee["payee_type"][] = ["beneficiary", "staff", "vendor"];
+
+/** Strip thousands separators the way the single-amount field already does,
+ * so pasted or typed "1,500,000" parses instead of silently failing. */
+function parseMoney(raw: string): number {
+  const cleaned = raw.replace(/,/g, "").trim();
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Parse rows pasted from a spreadsheet (tab-separated) or a comma-separated
+ * list — the two shapes someone copying a payee list will actually have.
+ * Column order matches the row editor: name, account, bank, amount, purpose,
+ * phone/email, TIN, type. Missing trailing columns are fine; a line with
+ * nothing in it is dropped rather than becoming a blank row. */
+function parseBulkPayees(text: string): PayeeRow[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const cells = (line.includes("\t") ? line.split("\t") : line.split(",")).map((c) =>
+        c.trim(),
+      );
+      const [name = "", account_number = "", bank_name = "", amount = "", purpose = "",
+        phone_or_email = "", tin = "", typeRaw = ""] = cells;
+      const payee_type = (PAYEE_TYPES as string[]).includes(typeRaw.toLowerCase())
+        ? (typeRaw.toLowerCase() as Payee["payee_type"])
+        : "beneficiary";
+      return { name, account_number, bank_name, amount, purpose, phone_or_email, tin, payee_type };
+    })
+    .filter((row) => row.name !== "" || row.amount !== "");
+}
 
 /**
  * Raise a payment requisition.
@@ -22,12 +67,21 @@ import type { Requisition, RequisitionWorkflow } from "@/types/requisition";
  * org's actual ceiling, categories and required documents are read from the
  * configured workflow and shown as guidance before anything is typed.
  *
+ * Batch mode (multiple payees in one requisition — a stipend list, a
+ * beneficiary payout run) only appears when the org has switched on
+ * `multi_payee_requisitions`; the backend refuses a payee list from an org
+ * that hasn't, so hiding the toggle for everyone else isn't just tidiness,
+ * it matches what would actually be accepted.
+ *
  * The idempotency key is minted once per attempt and held in a ref: if the
  * connection drops and the user presses submit again, the server replays the
  * first requisition rather than raising a duplicate.
  */
 export default function NewRequisitionPage() {
   const [workflow, setWorkflow] = useState<RequisitionWorkflow | null>(null);
+  const [multiPayeeEnabled, setMultiPayeeEnabled] = useState(false);
+
+  const [mode, setMode] = useState<"single" | "batch">("single");
 
   const [vendorName, setVendorName] = useState("");
   const [amount, setAmount] = useState("");
@@ -37,6 +91,9 @@ export default function NewRequisitionPage() {
   const [vendorAccount, setVendorAccount] = useState("");
   const [description, setDescription] = useState("");
   const [documents, setDocuments] = useState<string[]>([]);
+
+  const [payeeRows, setPayeeRows] = useState<PayeeRow[]>([{ ...EMPTY_ROW }]);
+  const [bulkPaste, setBulkPaste] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +112,13 @@ export default function NewRequisitionPage() {
       } catch {
         /* Guidance is a nicety; the form still works without it. */
       }
+      try {
+        const cfg = await getClientConfig();
+        if (!cancelled) setMultiPayeeEnabled(hasFeature(cfg, "multi_payee_requisitions"));
+      } catch {
+        /* Fails closed — the toggle just stays hidden, matching what the
+           server would refuse anyway. */
+      }
     })();
     return () => {
       cancelled = true;
@@ -71,12 +135,32 @@ export default function NewRequisitionPage() {
   const parsedAmount = Number(cleanedAmount);
   const amountValid = cleanedAmount !== "" && Number.isFinite(parsedAmount) && parsedAmount > 0;
 
+  // ─── batch (multi-payee) math ─────────────────────────────────────────────
+
+  /** A row counts once it has a name and a positive amount — matches exactly
+   *  what the backend's PAYEES_VALID check requires, so nothing that would
+   *  pass client-side fails at submit for a reason the submitter never saw
+   *  coming. */
+  const validPayeeRows = useMemo(
+    () => payeeRows.filter((r) => r.name.trim() !== "" && parseMoney(r.amount) > 0),
+    [payeeRows],
+  );
+  const payeeTotal = useMemo(
+    () => validPayeeRows.reduce((sum, r) => sum + parseMoney(r.amount), 0),
+    [validPayeeRows],
+  );
+  const maxPayees = workflow?.max_payees ?? 100;
+  const overPayeeCap = validPayeeRows.length > maxPayees;
+
+  const effectiveAmount = mode === "batch" ? payeeTotal : parsedAmount;
+  const effectiveAmountValid = mode === "batch" ? validPayeeRows.length > 0 && !overPayeeCap : amountValid;
+
   /** Warn about the ceiling before submitting — the server enforces it, but
    *  there is no reason to make someone submit to find out. */
   const overCeiling = useMemo(() => {
-    if (!workflow?.max_amount || !amountValid) return false;
-    return parsedAmount > workflow.max_amount;
-  }, [workflow?.max_amount, parsedAmount, amountValid]);
+    if (!workflow?.max_amount || !effectiveAmountValid) return false;
+    return effectiveAmount > workflow.max_amount;
+  }, [workflow?.max_amount, effectiveAmount, effectiveAmountValid]);
 
   /** Which approvers this amount will actually pass through.
    *
@@ -88,16 +172,40 @@ export default function NewRequisitionPage() {
    *  this costs nothing extra.
    */
   const approvalRoute = useMemo(() => {
-    if (!workflow?.steps?.length || !amountValid) return [];
+    if (!workflow?.steps?.length || !effectiveAmountValid) return [];
     return workflow.steps
-      .filter((s) => parsedAmount >= (s.min_amount ?? 0))
+      .filter((s) => effectiveAmount >= (s.min_amount ?? 0))
       .map((s) => s.label || s.key);
-  }, [workflow?.steps, parsedAmount, amountValid]);
+  }, [workflow?.steps, effectiveAmount, effectiveAmountValid]);
 
-  const canSubmit = vendorName.trim() !== "" && amountValid && !submitting;
+  const canSubmit = vendorName.trim() !== "" && effectiveAmountValid && !submitting;
 
   function toggleDocument(doc: string) {
     setDocuments((prev) => (prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc]));
+  }
+
+  function patchPayeeRow(i: number, patch: Partial<PayeeRow>) {
+    setPayeeRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  }
+
+  function removePayeeRow(i: number) {
+    setPayeeRows((prev) => (prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)));
+  }
+
+  function addPayeeRow() {
+    setPayeeRows((prev) => [...prev, { ...EMPTY_ROW }]);
+  }
+
+  function addFromPaste() {
+    const parsed = parseBulkPayees(bulkPaste);
+    if (!parsed.length) return;
+    setPayeeRows((prev) => {
+      // The form starts with one blank row so it's never empty on screen —
+      // pasting real rows should replace that placeholder, not sit next to it.
+      const base = prev.length === 1 && prev[0].name === "" && prev[0].amount === "" ? [] : prev;
+      return [...base, ...parsed];
+    });
+    setBulkPaste("");
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -110,13 +218,17 @@ export default function NewRequisitionPage() {
       const req = await createRequisition(
         {
           vendor_name: vendorName.trim(),
-          amount: parsedAmount,
+          amount: effectiveAmount,
           category: category.trim(),
           project_code: projectCode.trim(),
           grant_code: grantCode.trim() || undefined,
-          vendor_account: vendorAccount.trim(),
+          vendor_account: mode === "batch" ? "" : vendorAccount.trim(),
           description: description.trim(),
           documents,
+          payees:
+            mode === "batch"
+              ? validPayeeRows.map((r) => ({ ...r, amount: parseMoney(r.amount) }))
+              : undefined,
           currency,
         },
         idemKey.current,
@@ -142,6 +254,8 @@ export default function NewRequisitionPage() {
     setVendorAccount("");
     setDescription("");
     setDocuments([]);
+    setPayeeRows([{ ...EMPTY_ROW }]);
+    setBulkPaste("");
   }
 
   // ─── result view ──────────────────────────────────────────────────────────
@@ -157,10 +271,30 @@ export default function NewRequisitionPage() {
             <p className="text-sm text-gray-500">Requisition raised</p>
             <h1 className="mt-0.5 text-2xl font-bold tracking-tight text-gray-900">{result.ref}</h1>
             <p className="mt-1 text-sm text-gray-600">
-              {money(result.amount, result.currency)} to {result.vendor_name}
+              {money(result.amount, result.currency)}{" "}
+              {result.payees.length
+                ? `across ${result.payees.length} ${result.payees.length === 1 ? "payee" : "payees"} — "${result.vendor_name}"`
+                : `to ${result.vendor_name}`}
               {result.current_step ? ` — now with ${humanise(result.current_step)}` : ""}
             </p>
           </div>
+
+          {result.payees.length > 0 ? (
+            <section className="rounded-lg border border-gray-200 bg-white">
+              <div className="border-b border-gray-100 px-4 py-2.5">
+                <h2 className="text-sm font-semibold text-gray-900">Payees</h2>
+              </div>
+              <ul className="max-h-64 divide-y divide-gray-50 overflow-y-auto">
+                {result.payees.map((p, i) => (
+                  <li key={i} className="flex items-center gap-3 px-4 py-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-gray-900">{p.name}</span>
+                    <span className="text-xs text-gray-400">{humanise(p.payee_type)}</span>
+                    <span className="font-medium text-gray-700">{money(p.amount, result.currency)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
           {blocking.length > 0 ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-4">
@@ -237,36 +371,81 @@ export default function NewRequisitionPage() {
 
         {workflow ? <PolicySummary workflow={workflow} /> : null}
 
+        {multiPayeeEnabled ? (
+          <div className="mt-4 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+            <button
+              type="button"
+              onClick={() => setMode("single")}
+              className={
+                mode === "single"
+                  ? "rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 shadow-sm"
+                  : "rounded-md px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700"
+              }
+            >
+              One payee
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("batch")}
+              className={
+                mode === "batch"
+                  ? "inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-gray-900 shadow-sm"
+                  : "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700"
+              }
+            >
+              <Users className="h-3.5 w-3.5" /> Many payees
+            </button>
+          </div>
+        ) : null}
+
         <form onSubmit={handleSubmit} className="mt-6 space-y-5">
           <div className="grid gap-5 sm:grid-cols-2">
-            <Field label="Who is being paid" required>
+            <Field
+              label={mode === "batch" ? "What is this batch called" : "Who is being paid"}
+              hint={mode === "batch" ? "e.g. \"August 2026 workshop stipends\" — the title for this whole payout run." : undefined}
+              required
+            >
               <input
                 value={vendorName}
                 onChange={(e) => setVendorName(e.target.value)}
-                placeholder="Vendor or payee name"
+                placeholder={mode === "batch" ? "Batch title" : "Vendor or payee name"}
                 className={inputClass}
                 required
               />
             </Field>
 
-            <Field label={`Amount (${currency})`} required>
-              <input
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                inputMode="decimal"
-                placeholder="0.00"
-                className={inputClass}
-                required
-              />
-              {amount.trim() !== "" && !amountValid ? (
-                <p className="mt-1 text-xs text-red-600">Enter an amount greater than zero.</p>
-              ) : overCeiling && workflow?.max_amount ? (
-                <p className="mt-1 text-xs text-amber-700">
-                  Above the {money(workflow.max_amount, currency)} ceiling — this will need an
-                  override from someone who holds that authority.
-                </p>
-              ) : null}
-            </Field>
+            {mode === "single" ? (
+              <Field label={`Amount (${currency})`} required>
+                <input
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  className={inputClass}
+                  required
+                />
+                {amount.trim() !== "" && !amountValid ? (
+                  <p className="mt-1 text-xs text-red-600">Enter an amount greater than zero.</p>
+                ) : overCeiling && workflow?.max_amount ? (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Above the {money(workflow.max_amount, currency)} ceiling — this will need an
+                    override from someone who holds that authority.
+                  </p>
+                ) : null}
+              </Field>
+            ) : (
+              <Field label={`Total (${currency})`} hint="Computed from the payee rows below.">
+                <div className={`${inputClass} flex items-center bg-gray-50 font-semibold text-gray-900`}>
+                  {money(payeeTotal, currency)}
+                </div>
+                {overCeiling && workflow?.max_amount ? (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Above the {money(workflow.max_amount, currency)} ceiling — this will need an
+                    override from someone who holds that authority.
+                  </p>
+                ) : null}
+              </Field>
+            )}
 
             <Field label="Category">
               {workflow?.allowed_categories.length ? (
@@ -310,15 +489,33 @@ export default function NewRequisitionPage() {
               />
             </Field>
 
-            <Field label="Vendor bank account">
-              <input
-                value={vendorAccount}
-                onChange={(e) => setVendorAccount(e.target.value)}
-                placeholder="Optional"
-                className={inputClass}
-              />
-            </Field>
+            {mode === "single" ? (
+              <Field label="Vendor bank account">
+                <input
+                  value={vendorAccount}
+                  onChange={(e) => setVendorAccount(e.target.value)}
+                  placeholder="Optional"
+                  className={inputClass}
+                />
+              </Field>
+            ) : null}
           </div>
+
+          {mode === "batch" ? (
+            <PayeeEditor
+              rows={payeeRows}
+              currency={currency}
+              maxPayees={maxPayees}
+              validCount={validPayeeRows.length}
+              overCap={overPayeeCap}
+              bulkPaste={bulkPaste}
+              onBulkPasteChange={setBulkPaste}
+              onAddFromPaste={addFromPaste}
+              onPatchRow={patchPayeeRow}
+              onRemoveRow={removePayeeRow}
+              onAddRow={addPayeeRow}
+            />
+          ) : null}
 
           <Field label="What this is for">
             <textarea
@@ -465,6 +662,209 @@ function PolicySummary({ workflow }: { workflow: RequisitionWorkflow }) {
     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Your spend policy</p>
       <p className="mt-1 text-sm text-gray-700">{bits.join(" · ")}</p>
+    </div>
+  );
+}
+
+const payeeInputClass =
+  "w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-900 shadow-sm transition placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500";
+
+/**
+ * The payee table for a batch requisition — a stipend list or beneficiary
+ * payout run. Two ways in: type rows one at a time, or paste a list copied
+ * from a spreadsheet (tab-separated columns, one payee per line) so raising
+ * a 100-payee requisition isn't 100 rounds of manual typing.
+ *
+ * A row only counts toward the total/payee-count once it has a name and a
+ * positive amount — this mirrors the backend's PAYEES_VALID check exactly,
+ * so a half-filled trailing row doesn't silently inflate what's about to be
+ * submitted.
+ */
+function PayeeEditor({
+  rows,
+  currency,
+  maxPayees,
+  validCount,
+  overCap,
+  bulkPaste,
+  onBulkPasteChange,
+  onAddFromPaste,
+  onPatchRow,
+  onRemoveRow,
+  onAddRow,
+}: {
+  rows: PayeeRow[];
+  currency: string;
+  maxPayees: number;
+  validCount: number;
+  overCap: boolean;
+  bulkPaste: string;
+  onBulkPasteChange: (v: string) => void;
+  onAddFromPaste: () => void;
+  onPatchRow: (i: number, patch: Partial<PayeeRow>) => void;
+  onRemoveRow: (i: number) => void;
+  onAddRow: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-gray-700">
+          Payees
+          <span className="ml-0.5 text-red-500">*</span>
+        </span>
+        <span className={overCap ? "text-xs font-semibold text-red-600" : "text-xs text-gray-500"}>
+          {validCount} / {maxPayees} payees
+        </span>
+      </div>
+
+      {overCap ? (
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          This organisation limits a single requisition to {maxPayees} payees. Remove some rows or
+          split this into more than one requisition.
+        </p>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="w-full min-w-[900px] text-left text-xs">
+          <thead className="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+            <tr>
+              <th className="px-2 py-2 font-medium">#</th>
+              <th className="px-2 py-2 font-medium">Name *</th>
+              <th className="px-2 py-2 font-medium">Account no.</th>
+              <th className="px-2 py-2 font-medium">Bank</th>
+              <th className="px-2 py-2 font-medium">Type</th>
+              <th className="px-2 py-2 font-medium">Amount ({currency}) *</th>
+              <th className="px-2 py-2 font-medium">Purpose</th>
+              <th className="px-2 py-2 font-medium">Phone / email</th>
+              <th className="px-2 py-2 font-medium">TIN</th>
+              <th className="px-2 py-2" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map((row, i) => {
+              const rowValid = row.name.trim() !== "" && parseMoney(row.amount) > 0;
+              return (
+                <tr key={i} className={rowValid ? undefined : "bg-amber-50/40"}>
+                  <td className="px-2 py-1.5 text-gray-400">{i + 1}</td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.name}
+                      onChange={(e) => onPatchRow(i, { name: e.target.value })}
+                      placeholder="Full name"
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.account_number}
+                      onChange={(e) => onPatchRow(i, { account_number: e.target.value })}
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.bank_name}
+                      onChange={(e) => onPatchRow(i, { bank_name: e.target.value })}
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <select
+                      value={row.payee_type}
+                      onChange={(e) =>
+                        onPatchRow(i, { payee_type: e.target.value as Payee["payee_type"] })
+                      }
+                      className={payeeInputClass}
+                    >
+                      {PAYEE_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {humanise(t)}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.amount}
+                      onChange={(e) => onPatchRow(i, { amount: e.target.value })}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.purpose}
+                      onChange={(e) => onPatchRow(i, { purpose: e.target.value })}
+                      placeholder="If it differs from above"
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.phone_or_email}
+                      onChange={(e) => onPatchRow(i, { phone_or_email: e.target.value })}
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={row.tin}
+                      onChange={(e) => onPatchRow(i, { tin: e.target.value })}
+                      className={payeeInputClass}
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onRemoveRow(i)}
+                      disabled={rows.length <= 1}
+                      className="text-gray-300 transition hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-30"
+                      title="Remove row"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <button
+        type="button"
+        onClick={onAddRow}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+      >
+        <Plus className="h-3.5 w-3.5" /> Add payee
+      </button>
+
+      <details className="rounded-lg border border-gray-200 bg-gray-50/60 p-3">
+        <summary className="cursor-pointer text-xs font-medium text-gray-600">
+          Paste a list instead (from Excel or a CSV)
+        </summary>
+        <p className="mt-2 text-xs text-gray-500">
+          One payee per line, columns in this order: name, account number, bank, amount, purpose,
+          phone or email, TIN, type (staff / vendor / beneficiary). Copy straight out of a
+          spreadsheet — tab-separated rows paste in as-is.
+        </p>
+        <textarea
+          value={bulkPaste}
+          onChange={(e) => onBulkPasteChange(e.target.value)}
+          rows={4}
+          placeholder={"Aisha Bello\t0123456789\tGTBank\t20000\tStipend\n..."}
+          className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+        />
+        <button
+          type="button"
+          onClick={onAddFromPaste}
+          disabled={!bulkPaste.trim()}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Add pasted rows
+        </button>
+      </details>
     </div>
   );
 }

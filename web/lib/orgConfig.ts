@@ -69,6 +69,7 @@ export const ALL_FEATURES: { key: string; label: string; desc: string }[] = [
   { key: "payroll", label: "Payroll", desc: "Gross-to-net payroll runs allocated to donors and project codes." },
   { key: "advance_retirement", label: "Advance retirement", desc: "Track and escalate unretired travel/cash advances." },
   { key: "accounting_export", label: "Accounting export", desc: "Export the coded payment register and cleaned bank statement." },
+  { key: "multi_payee_requisitions", label: "Multi-payee requisitions", desc: "Raise one requisition that pays many people at once — a workshop stipend list or a beneficiary payout run." },
 ];
 
 /** True only when the flag is explicitly on. Unknown flag ⇒ off. */

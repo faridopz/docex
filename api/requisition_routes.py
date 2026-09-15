@@ -25,6 +25,7 @@ FastAPI would match them as an id.
 """
 from __future__ import annotations
 
+import json
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, Depends, Form, Header, HTTPException, Query
@@ -34,6 +35,47 @@ import requisitions as rq
 from .context import Ctx, request_context, require_role
 
 router = APIRouter(tags=["requisitions"])
+
+# Every field the frontend is allowed to set on a payee row. Built with
+# **only these keys (never the raw parsed dict) so a client cannot smuggle
+# an unexpected key into the Payee model — e.g. a future field added to the
+# model for internal bookkeeping that should never be settable from a form.
+_PAYEE_FIELDS = (
+    "name", "account_number", "bank_name", "amount", "purpose",
+    "tin", "phone_or_email", "payee_type",
+)
+
+
+def _parse_payees(raw: str) -> list[rq.Payee]:
+    """Decode the JSON array of payee rows the frontend posts for a
+    multi-payee requisition. Empty/blank input means "not a batch" — the
+    single-vendor fields apply instead — so it returns [] rather than
+    raising, exactly like the comma-split helpers used for documents/receipts
+    elsewhere in this file.
+
+    A malformed payload (bad JSON, not a list, a row that is not an object)
+    is a 400: this is data a human typed or a script generated, not something
+    that should ever reach the policy engine silently reinterpreted as
+    "no payees".
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"payees is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail="payees must be a JSON array.")
+    out: list[rq.Payee] = []
+    for i, row in enumerate(parsed):
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail=f"payees[{i}] must be an object.")
+        try:
+            out.append(rq.Payee(**{k: row[k] for k in _PAYEE_FIELDS if k in row}))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"payees[{i}] is invalid: {exc}") from exc
+    return out
 
 
 def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
@@ -199,6 +241,9 @@ async def create_requisition_endpoint(
     description: Annotated[str, Form(description="What this is for")] = "",
     receipt_ids: Annotated[str, Form(description="Comma-separated field receipt IDs")] = "",
     documents: Annotated[str, Form(description="Comma-separated document labels")] = "",
+    payees: Annotated[str, Form(
+        description="JSON array of payee rows for a multi-payee batch. Omit "
+                    "or send '[]' for an ordinary single-vendor requisition.")] = "",
     currency: Annotated[str, Form()] = "NGN",
     submit: Annotated[bool, Form(
         description="False saves a draft instead of submitting for approval")] = True,
@@ -218,6 +263,7 @@ async def create_requisition_endpoint(
     Send an `Idempotency-Key` header and a retry after a dropped connection
     replays the original requisition instead of raising a duplicate.
     """
+    payee_rows = _parse_payees(payees)
     try:
         with idempotency.guard(ctx.org_id, "requisition.create", idempotency_key) as slot:
             if slot.replayed:
@@ -237,6 +283,7 @@ async def create_requisition_endpoint(
                     description=description,
                     receipt_ids=[s.strip() for s in receipt_ids.split(",") if s.strip()],
                     documents=[s.strip() for s in documents.split(",") if s.strip()],
+                    payees=payee_rows or None,
                     currency=currency,
                     submit=submit,
                 )
@@ -363,6 +410,9 @@ async def update_draft_endpoint(
     description: Annotated[Optional[str], Form()] = None,
     receipt_ids: Annotated[Optional[str], Form()] = None,
     documents: Annotated[Optional[str], Form()] = None,
+    payees: Annotated[Optional[str], Form(
+        description="JSON array of payee rows. Send '[]' to convert a batch "
+                    "draft back into a single-vendor one.")] = None,
     currency: Annotated[Optional[str], Form()] = None,
     ctx: Ctx = Depends(request_context),
 ):
@@ -383,6 +433,8 @@ async def update_draft_endpoint(
     for key, raw in (("receipt_ids", receipt_ids), ("documents", documents)):
         if raw is not None:
             fields[key] = [s.strip() for s in raw.split(",") if s.strip()]
+    if payees is not None:
+        fields["payees"] = _parse_payees(payees)
     try:
         req = rq.update_draft(ctx.org_id, req_id, actor=ctx.user_id, **fields)
     except rq.RequisitionError as exc:
