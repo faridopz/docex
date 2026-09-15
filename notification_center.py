@@ -62,11 +62,20 @@ def create(
     body: str = "",
     actor: Optional[str] = None,
     org_id: Optional[str] = None,
+    to_user: Optional[str] = None,
 ) -> Notification:
+    """`to_user`, when given, additionally addresses this to one specific
+    person by email — a named-individual CC, not just a department
+    broadcast. `to_department` is still required (a department-shaped
+    string) even for a named CC, so the record has somewhere sane to sort
+    under; delivery to the named person is by `to_user` matching their own
+    email, in list_for()/unread_count()/mark_all_read() below, independent
+    of which department they're actually in."""
     notif = Notification(
         id=uuid.uuid4().hex,
         txn_ref=txn_ref,
         to_department=to_department,
+        to_user=to_user,
         kind=kind,
         title=title,
         body=body,
@@ -89,23 +98,40 @@ def _iter_all(org_id: Optional[str] = None) -> list[Notification]:
     return out
 
 
+def _addressed_to(n: Notification, department: Department, viewer_email: Optional[str]) -> bool:
+    """A notification reaches someone if it was broadcast to their
+    department, OR it names them personally — regardless of which
+    department that personal CC happened to be filed under. The second half
+    is what makes a named-individual CC (an ED copied on a requisition, not
+    just "Management") actually deliverable: the recipient sees it even if
+    to_department is something else, or even if they have no department at
+    all yet."""
+    if n.to_department == department:
+        return True
+    return bool(viewer_email) and n.to_user == viewer_email
+
+
 def list_for(
     department: Department,
     unread_only: bool = False,
     limit: int = 100,
     org_id: Optional[str] = None,
+    viewer_email: Optional[str] = None,
 ) -> list[Notification]:
-    """Newest-first inbox for one department."""
-    items = [n for n in _iter_all(org_id) if n.to_department == department]
+    """Newest-first inbox for one department, plus anything addressed to
+    `viewer_email` personally (see _addressed_to)."""
+    items = [n for n in _iter_all(org_id) if _addressed_to(n, department, viewer_email)]
     if unread_only:
         items = [n for n in items if not n.read]
     items.sort(key=lambda n: n.created_at or "", reverse=True)
     return items[: max(0, limit)]
 
 
-def unread_count(department: Department, org_id: Optional[str] = None) -> int:
+def unread_count(
+    department: Department, org_id: Optional[str] = None, viewer_email: Optional[str] = None,
+) -> int:
     return sum(1 for n in _iter_all(org_id)
-               if n.to_department == department and not n.read)
+               if _addressed_to(n, department, viewer_email) and not n.read)
 
 
 def mark_read(notif_id: str, org_id: Optional[str] = None) -> Notification:
@@ -120,12 +146,15 @@ def mark_read(notif_id: str, org_id: Optional[str] = None) -> Notification:
     return notif
 
 
-def mark_all_read(department: Department, org_id: Optional[str] = None) -> int:
-    """Mark every unread notification for a department read. Returns how many."""
+def mark_all_read(
+    department: Department, org_id: Optional[str] = None, viewer_email: Optional[str] = None,
+) -> int:
+    """Mark every unread notification for a department — and, if given, for
+    `viewer_email` personally — read. Returns how many."""
     org = _org(org_id)
     n = 0
     for notif in _iter_all(org):
-        if notif.to_department == department and not notif.read:
+        if _addressed_to(notif, department, viewer_email) and not notif.read:
             notif.read = True
             store.get_store().put(org, _NOTIFICATIONS, notif.id, notif.model_dump())
             n += 1

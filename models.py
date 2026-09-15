@@ -1367,6 +1367,14 @@ class Notification(BaseModel):
     id: str
     txn_ref: str                              # which transaction it's about
     to_department: Department                 # who should see it
+    # A specific person, in addition to (or instead of) the department — a
+    # named individual CC'd on a requisition ("copy the ED personally", not
+    # just "copy Management"). None for every ordinary department-broadcast
+    # notification; set only for a named-recipient CC. Matched against the
+    # signed-in caller's own email, never exposed as something to query by,
+    # so one person's personally-addressed items can't be read by naming
+    # someone else's address in a request.
+    to_user: Optional[str] = None
     kind: NotificationKind
     title: str                                # short headline
     body: str = ""                            # one-line detail

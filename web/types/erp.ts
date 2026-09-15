@@ -80,12 +80,17 @@ export type NotificationKind =
   | "returned"
   | "approved"
   | "paid"
-  | "mention";
+  | "mention"
+  | "cc"
+  | "held";
 
 export interface AppNotification {
   id: string;
   txn_ref: string;
   to_department: Department;
+  /** Set only for a notification addressed to one specific person (a named
+   * CC), independent of `to_department` — see notification_center.py. */
+  to_user?: string | null;
   kind: NotificationKind;
   title: string;
   body: string;

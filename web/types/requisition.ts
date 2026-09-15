@@ -78,6 +78,9 @@ export interface CCRule {
   min_amount: number;
   department: string;
   label: string;
+  /** Named individuals (by email) copied in addition to `department`, which
+   * may be left blank for a rule that only names people. */
+  emails: string[];
 }
 
 export interface RequisitionWorkflow {

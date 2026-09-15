@@ -283,7 +283,7 @@ export default function OrgSettingsPage() {
             ...w,
             cc_rules: [
               ...w.cc_rules,
-              { min_amount: 0, department: departments[0]?.key ?? "", label: "" },
+              { min_amount: 0, department: departments[0]?.key ?? "", label: "", emails: [] },
             ],
           }
         : w,
@@ -347,9 +347,17 @@ export default function OrgSettingsPage() {
         forbidden_vendors: workflow.forbidden_vendors.map((v) => v.trim()).filter(Boolean),
         approved_vendors: workflow.approved_vendors.map((v) => v.trim()).filter(Boolean),
         max_payees: Math.max(1, Number(workflow.max_payees) || 100),
-        // A CC rule with no department is not a rule — nothing to route to —
-        // so it's dropped rather than saved as dead configuration.
-        cc_rules: workflow.cc_rules.filter((r) => r.department.trim()),
+        cc_rules: workflow.cc_rules
+          .map((r) => ({
+            ...r,
+            department: r.department.trim(),
+            emails: Array.from(
+              new Set(r.emails.map((e) => e.trim().toLowerCase()).filter(Boolean)),
+            ),
+          }))
+          // A rule with neither a department nor any named emails routes to
+          // nobody — dropped rather than saved as dead configuration.
+          .filter((r) => r.department || r.emails.length > 0),
       };
       const savedWf = await setWorkflow(cleaned);
       setWf(savedWf);
@@ -747,42 +755,54 @@ export default function OrgSettingsPage() {
                   <div className="mt-6 border-t border-gray-100 pt-5">
                     <h4 className="text-sm font-semibold text-gray-900">Copy higher-ups above a threshold</h4>
                     <p className="mt-0.5 text-xs text-gray-500">
-                      A department is notified once a requisition is raised at
-                      or above the amount — never asked to act on it. Being
-                      copied never grants approval authority.
+                      A department, or specific people by name, are notified once
+                      a requisition is raised at or above the amount — never asked
+                      to act on it. Being copied never grants approval authority.
                     </p>
                     <div className="mt-3 space-y-2">
                       {workflow.cc_rules.map((rule, i) => (
-                        <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
-                          <span className="text-xs text-gray-500">At or above</span>
-                          <input
-                            type="number"
-                            value={rule.min_amount}
-                            onChange={(e) => patchCcRule(i, { min_amount: Number(e.target.value) || 0 })}
-                            className="w-28 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
-                          />
-                          <span className="text-xs text-gray-500">{workflow.currency}, copy</span>
-                          <select
-                            value={rule.department}
-                            onChange={(e) => patchCcRule(i, { department: e.target.value })}
-                            className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
-                          >
-                            <option value="">Select department…</option>
-                            {departments.map((d) => (
-                              <option key={d.key} value={d.key}>{d.name}</option>
-                            ))}
-                          </select>
-                          <input
-                            type="text"
-                            value={rule.label}
-                            onChange={(e) => patchCcRule(i, { label: e.target.value })}
-                            placeholder="Label — e.g. Executive Director"
-                            className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
-                          />
-                          <button type="button" onClick={() => removeCcRule(i)}
-                            className="shrink-0 rounded-md p-1.5 text-gray-300 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Remove CC rule">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                        <div key={i} className="space-y-2 rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-gray-500">At or above</span>
+                            <input
+                              type="number"
+                              value={rule.min_amount}
+                              onChange={(e) => patchCcRule(i, { min_amount: Number(e.target.value) || 0 })}
+                              className="w-28 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                            />
+                            <span className="text-xs text-gray-500">{workflow.currency}, copy</span>
+                            <select
+                              value={rule.department}
+                              onChange={(e) => patchCcRule(i, { department: e.target.value })}
+                              className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                            >
+                              <option value="">No department (name people only) →</option>
+                              {departments.map((d) => (
+                                <option key={d.key} value={d.key}>{d.name}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={rule.label}
+                              onChange={(e) => patchCcRule(i, { label: e.target.value })}
+                              placeholder="Label — e.g. Executive Director"
+                              className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                            />
+                            <button type="button" onClick={() => removeCcRule(i)}
+                              className="shrink-0 rounded-md p-1.5 text-gray-300 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Remove CC rule">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2 pl-1">
+                            <span className="shrink-0 text-xs text-gray-500">Also copy these people, by name:</span>
+                            <input
+                              type="text"
+                              value={rule.emails.join(", ")}
+                              onChange={(e) => patchCcRule(i, { emails: e.target.value.split(",") })}
+                              placeholder="ed@neemfoundation.org, aed@neemfoundation.org"
+                              className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm"
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>

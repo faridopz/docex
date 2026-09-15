@@ -196,19 +196,32 @@ def note_transaction(ref: str, body: NoteRequest) -> Transaction:
 
 @router.get("/notifications", response_model=dict)
 def list_notifications(
-    department: Department = Query(...),
+    department: Optional[Department] = Query(
+        default=None, description="Defaults to the signed-in user's own department."),
     unread_only: bool = Query(default=False),
+    user: User = Depends(current_user),
 ) -> dict:
-    items: list[Notification] = nc.list_for(department, unread_only=unread_only)
+    """The caller's inbox: their department's broadcasts, plus anything a
+    requisition CC rule addressed to them personally (see
+    notification_center._addressed_to) — even if that landed under a
+    different department, or the caller has no department at all.
+
+    `viewer_email` comes from the signed-in user's own token, never from a
+    query parameter: a personally-addressed notification must not be
+    readable by anyone who can simply supply someone else's email.
+    """
+    dept = department or user.department
+    items: list[Notification] = nc.list_for(
+        dept, unread_only=unread_only, viewer_email=user.email)
     return {
-        "department": department,
-        "unread": nc.unread_count(department),
+        "department": dept,
+        "unread": nc.unread_count(dept, viewer_email=user.email),
         "notifications": [n.model_dump() for n in items],
     }
 
 
 @router.post("/notifications/{notif_id}/read", response_model=Notification)
-def read_notification(notif_id: str) -> Notification:
+def read_notification(notif_id: str, user: User = Depends(current_user)) -> Notification:
     try:
         return nc.mark_read(notif_id)
     except ValueError as exc:
@@ -216,5 +229,9 @@ def read_notification(notif_id: str) -> Notification:
 
 
 @router.post("/notifications/read-all", response_model=dict)
-def read_all_notifications(department: Department = Query(...)) -> dict:
-    return {"marked_read": nc.mark_all_read(department)}
+def read_all_notifications(
+    department: Optional[Department] = Query(default=None),
+    user: User = Depends(current_user),
+) -> dict:
+    dept = department or user.department
+    return {"marked_read": nc.mark_all_read(dept, viewer_email=user.email)}

@@ -79,7 +79,7 @@ def _parse_payees(raw: str) -> list[rq.Payee]:
 
 
 def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
-            title: str, body: str = "") -> None:
+            title: str, body: str = "", to_user: Optional[str] = None) -> None:
     """Best-effort. The requisition or payment this fires after has already
     succeeded and been saved — a notification failing must never look like
     the underlying operation failed, so this swallows its own errors rather
@@ -89,11 +89,21 @@ def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
     the legacy transaction flow: notifications are emitted from the route
     layer, right after the engine call that changed something, never from
     inside the engine itself.
+
+    `to_user`, when given, additionally addresses this to one specific
+    person (a named CC), independent of `department` — see
+    notification_center.create().
     """
     try:
         import notification_center as nc
+        # Department is allowed to be "" here — a pure named-person CC rule
+        # (emails but no department) has nowhere sane to broadcast, and "" is
+        # already this codebase's existing empty/none sentinel for a
+        # department (see Ctx.department). It only means "not also broadcast
+        # to a department queue" — to_user still delivers it to the named
+        # person regardless.
         nc.create(req.ref, department, kind, title, body=body,
-                  actor=ctx.user_id, org_id=ctx.org_id)
+                  actor=ctx.user_id, org_id=ctx.org_id, to_user=to_user)
     except Exception:
         pass
 
@@ -306,11 +316,26 @@ async def create_requisition_endpoint(
             # to the copy list once, when a pack is forwarded; it does not
             # re-notify them at every intermediate review.
             for rule in rq.cc_recipients(wf, req.amount):
-                _notify(ctx, req, kind="cc", department=rule.department,
-                        title=f"{req.ref}: copied on a new requisition",
-                        body=(f"{req.vendor_name} — {req.amount:,.2f} {req.currency}. "
-                              f"{rule.label or rule.department} is copied because this "
-                              f"is at or above {rule.min_amount:,.0f}."))
+                cc_body = (f"{req.vendor_name} — {req.amount:,.2f} {req.currency}. "
+                           f"{rule.label or rule.department or 'You'} "
+                           f"{'is' if not rule.emails or rule.department else 'are'} copied "
+                           f"because this is at or above {rule.min_amount:,.0f}.")
+                # A department gets ONE broadcast notification — everyone in
+                # it shares that department's feed, so firing one per person
+                # would just duplicate it for anyone who happens to log in.
+                if rule.department:
+                    _notify(ctx, req, kind="cc", department=rule.department,
+                            title=f"{req.ref}: copied on a new requisition", body=cc_body)
+                # Each named individual gets their OWN notification, addressed
+                # to them personally (to_user) — they see it regardless of
+                # which department they're in, or whether they're in one at
+                # all. Deliberately not deduplicated against the department
+                # loop above: NEEM's own ask was "the AED, by name", which
+                # this makes true even for someone outside the CC'd department.
+                for email in rule.emails:
+                    _notify(ctx, req, kind="cc", department=rule.department,
+                            title=f"{req.ref}: copied on a new requisition", body=cc_body,
+                            to_user=email.strip().lower())
 
             return slot.store(_detail_out(req))
     except idempotency.IdempotencyConflict as exc:

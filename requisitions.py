@@ -143,18 +143,25 @@ class WorkflowStep(BaseModel):
 
 
 class CCRule(BaseModel):
-    """A department copied on a requisition once its amount crosses a
-    threshold — informed, never asked to act.
+    """Someone copied on a requisition once its amount crosses a threshold —
+    informed, never asked to act. Copies a whole department, specific named
+    individuals (by email), or both; at least one of `department`/`emails`
+    should be set or the rule notifies nobody.
 
     Deliberately separate from WorkflowStep: `decide()` only ever checks a
-    step's department, so being CC'd can never let someone approve or
-    override a requisition they were only copied on. NEEM's own workflow
-    document draws exactly this line — the AED and Director of Operations
-    are added to the copy list well before either is required to sign off.
+    step's department, so being CC'd — by department OR by name — can never
+    let someone approve or override a requisition they were only copied on.
+    NEEM's own workflow document draws exactly this line — the AED and
+    Director of Operations are added to the copy list well before either is
+    required to sign off. NEEM asked specifically for named individuals, not
+    just a department, once account-holders exist to name.
     """
     min_amount: float = 0.0
     department: str = ""
     label: str = ""                      # "Executive Director", shown in the notification
+    # Named individuals, by email, copied in ADDITION to `department` (which
+    # may be left blank for a rule that only names people, no department).
+    emails: list[str] = Field(default_factory=list)
 
 
 class RequisitionWorkflow(BaseModel):
@@ -529,12 +536,14 @@ def cc_recipients(wf: RequisitionWorkflow, amount: float) -> list[CCRule]:
     Every matching rule fires — unlike approval steps, being CC'd is
     additive rather than a ladder, so crossing both a 2,000,000 and a
     5,000,000 threshold copies both departments, not just the higher one.
-    Pure and side-effect-free: the caller (the route layer, matching where
-    every other notification is emitted — see notify_transition's callers)
-    decides how to act on the result.
+    A rule with neither a department nor any named emails notifies nobody,
+    so it's excluded rather than returned as a no-op the caller has to
+    notice on its own. Pure and side-effect-free: the caller (the route
+    layer, matching where every other notification is emitted — see
+    notify_transition's callers) decides how to act on the result.
     """
     return [r for r in wf.cc_rules
-            if r.department and _money(amount) >= _money(r.min_amount)]
+            if (r.department or r.emails) and _money(amount) >= _money(r.min_amount)]
 
 
 # ─── policy checks (deterministic — code owns every number) ─────────────────
