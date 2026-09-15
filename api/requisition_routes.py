@@ -26,10 +26,13 @@ FastAPI would match them as an id.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Body, Depends, Form, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi.responses import RedirectResponse, Response
 
+import attachments
 import idempotency
 import requisitions as rq
 from .context import Ctx, request_context, require_role
@@ -174,6 +177,17 @@ def _comment_out(c: rq.Comment) -> dict:
             "text": c.text, "at": c.at}
 
 
+def _attachment_out(a: rq.Attachment) -> dict:
+    return {
+        "id": a.id, "filename": a.filename, "content_type": a.content_type,
+        "size": a.size, "uploaded_by": a.uploaded_by, "uploaded_at": a.uploaded_at,
+        # storage_key deliberately excluded — it's an internal detail of
+        # attachments.py, not something the frontend needs or should guess
+        # at. Downloading goes through GET .../attachments/{id}, never a
+        # direct storage_key.
+    }
+
+
 def _audit_out(e: rq.AuditEntry) -> dict:
     return {
         "seq": e.seq, "at": e.at, "actor": e.actor,
@@ -217,6 +231,7 @@ def _detail_out(r: rq.Requisition) -> dict:
         "checks": [_check_out(c) for c in r.checks],
         "approvals": [_approval_out(a) for a in r.approvals],
         "comments": [_comment_out(c) for c in r.comments],
+        "attachments": [_attachment_out(a) for a in r.attachments],
         "audit_log": [_audit_out(e) for e in r.audit_log],
         "audit_chain_valid": rq.verify_audit_chain(r),
     }
@@ -638,6 +653,110 @@ def _step_department(ctx: Ctx, req: rq.Requisition) -> str:
     wf = rq.get_workflow(ctx.org_id)
     step = next((s for s in wf.steps if s.key == req.current_step), None)
     return step.department if step else ""
+
+
+# ─── attachments ────────────────────────────────────────────────────────────
+
+
+@router.post("/requisitions/{req_id}/attachments")
+async def upload_attachment_endpoint(
+    req_id: str,
+    file: Annotated[UploadFile, File(description="The file to attach")],
+    ctx: Ctx = Depends(request_context),
+):
+    """Attach a real file — the invoice, a signed memo, a photo of a
+    receipt — as opposed to `documents`, which only ticks off a label.
+    Requires org.requisition_attachments. Not role-gated: attaching
+    evidence moves no money and grants no authority, same as a comment.
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if len(content) > attachments.MAX_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"File is {len(content):,} bytes — this instance's limit is "
+                     f"{attachments.MAX_ATTACHMENT_BYTES:,} bytes."),
+        )
+
+    # Fail before touching storage if the flag is off or the requisition
+    # doesn't exist — no point uploading bytes that will just be discarded.
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    try:
+        import org_config
+        if not org_config.feature_enabled(ctx.org_id, "requisition_attachments"):
+            raise HTTPException(
+                status_code=400,
+                detail="This organisation has not enabled file attachments on "
+                       "requisitions ('requisition_attachments' feature flag).",
+            )
+    except ImportError:  # pragma: no cover
+        raise HTTPException(status_code=400, detail="Attachments are not available.")
+
+    attachment_id = uuid.uuid4().hex
+    try:
+        storage_key = attachments.get_backend().put(
+            ctx.org_id, req_id, attachment_id, file.filename or "file",
+            content, file.content_type or "application/octet-stream",
+        )
+    except attachments.AttachmentError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not store the file: {exc}") from exc
+
+    try:
+        req = rq.add_attachment(
+            ctx.org_id, req_id, actor=ctx.user_id,
+            filename=file.filename or "file",
+            content_type=file.content_type or "application/octet-stream",
+            size=len(content), storage_key=storage_key, attachment_id=attachment_id,
+        )
+    except rq.RequisitionError as exc:
+        # The file is already in the bucket at this point but the metadata
+        # write was refused (e.g. the flag was switched off between the
+        # check above and here, or the per-requisition cap was hit by a
+        # concurrent upload). The orphaned object is harmless — nothing
+        # references its key — and is cheaper to accept than to build a
+        # cross-backend rollback for a race this narrow.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return _detail_out(req)
+
+
+@router.get("/requisitions/{req_id}/attachments/{attachment_id}")
+async def download_attachment_endpoint(
+    req_id: str, attachment_id: str, ctx: Ctx = Depends(request_context),
+):
+    """Fetch one attached file. Redirects to a short-lived signed URL when
+    the backend supports one (Supabase Storage in production); streams the
+    bytes directly when it doesn't (local disk in dev — see
+    attachments.LocalDiskAttachmentBackend)."""
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    att = next((a for a in req.attachments if a.id == attachment_id), None)
+    if att is None:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+
+    backend = attachments.get_backend()
+    try:
+        url = backend.url(att.storage_key)
+    except attachments.AttachmentError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch the file: {exc}") from exc
+    if url:
+        return RedirectResponse(url)
+
+    if isinstance(backend, attachments.LocalDiskAttachmentBackend):
+        try:
+            content = backend.read(att.storage_key)
+        except attachments.AttachmentError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(
+            content=content, media_type=att.content_type or "application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{att.filename}"'},
+        )
+
+    raise HTTPException(status_code=502, detail="Storage backend returned no way to fetch this file.")
 
 
 @router.post("/requisitions/{req_id}/resubmit")

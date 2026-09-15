@@ -8,7 +8,10 @@
 import { friendlyError } from "@/lib/errors";
 import type { AuthUser } from "@/types/erp";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Exported for the rare caller that needs a raw authenticated fetch instead
+// of apiFetch's JSON handling — e.g. downloading a file, where the response
+// is a redirect to a signed URL or a binary body, not JSON.
+export const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const TOKEN_KEY = "docex.session.token";
 const USER_KEY = "docex.session.user";
 

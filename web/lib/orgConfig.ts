@@ -71,6 +71,7 @@ export const ALL_FEATURES: { key: string; label: string; desc: string }[] = [
   { key: "accounting_export", label: "Accounting export", desc: "Export the coded payment register and cleaned bank statement." },
   { key: "multi_payee_requisitions", label: "Multi-payee requisitions", desc: "Raise one requisition that pays many people at once — a workshop stipend list or a beneficiary payout run." },
   { key: "requisition_hold", label: "Requisition hold", desc: "Let an approver pause a requisition at its current step, with a written reason, instead of approving/declining/returning it." },
+  { key: "requisition_attachments", label: "File attachments", desc: "Attach real files (invoices, memos, receipts) to a requisition, not just a checklist of document labels." },
 ];
 
 /** True only when the flag is explicitly on. Unknown flag ⇒ off. */

@@ -50,6 +50,18 @@ export interface Approval {
   signature: string;
 }
 
+/** A real file attached to a requisition — the invoice itself, not just a
+ * ticked label. Download goes through GET .../attachments/{id}, never a
+ * direct URL — the backend may need to mint a short-lived signed one. */
+export interface Attachment {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  uploaded_by: string;
+  uploaded_at: string;
+}
+
 /** One message on a requisition's discussion thread — separate from a
  * decision's one-shot notes. Append-only, like everything else here. */
 export interface Comment {
@@ -162,6 +174,7 @@ export interface Requisition extends RequisitionSummary {
   checks: PolicyCheck[];
   approvals: Approval[];
   comments: Comment[];
+  attachments: Attachment[];
   audit_log: AuditEntry[];
   /** False means the audit log was tampered with — show it loudly. */
   audit_chain_valid: boolean;

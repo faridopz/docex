@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Banknote,
   Check,
+  Download,
   Loader2,
   Lock,
   MessageSquare,
@@ -16,6 +17,7 @@ import {
   Send,
   ShieldAlert,
   ShieldCheck,
+  Paperclip,
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
@@ -23,12 +25,14 @@ import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
 import {
   addRequisitionComment,
   decideRequisition,
+  downloadRequisitionAttachment,
   getRequisition,
   newIdempotencyKey,
   payRequisition,
   placeRequisitionOnHold,
   releaseRequisitionHold,
   resubmitRequisition,
+  uploadRequisitionAttachment,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
@@ -67,6 +71,12 @@ export default function RequisitionDetailPage() {
   const [busy, setBusy] = useState<"" | Decision | "pay" | "resubmit" | "hold" | "release">("");
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [attachmentsEnabled, setAttachmentsEnabled] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const payKey = useRef<string>(newIdempotencyKey());
 
   useEffect(() => {
@@ -74,7 +84,10 @@ export default function RequisitionDetailPage() {
     (async () => {
       try {
         const cfg = await getClientConfig();
-        if (!cancelled) setHoldEnabled(hasFeature(cfg, "requisition_hold"));
+        if (!cancelled) {
+          setHoldEnabled(hasFeature(cfg, "requisition_hold"));
+          setAttachmentsEnabled(hasFeature(cfg, "requisition_attachments"));
+        }
       } catch {
         /* stays hidden — matches what the server would refuse anyway */
       }
@@ -215,6 +228,44 @@ export default function RequisitionDetailPage() {
       setCommentError(e instanceof Error ? e.message : "Could not post that comment.");
     } finally {
       setCommentBusy(false);
+    }
+  }
+
+  async function handleUpload(file: File) {
+    if (!req) return;
+    setUploadBusy(true);
+    setUploadError(null);
+    try {
+      setReq(await uploadRequisitionAttachment(req.id, file));
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Could not upload that file.");
+    } finally {
+      setUploadBusy(false);
+      // Let the same file be picked again (e.g. after fixing an error).
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleDownload(attachmentId: string, filename: string) {
+    if (!req) return;
+    setDownloadingId(attachmentId);
+    setUploadError(null);
+    try {
+      const blob = await downloadRequisitionAttachment(req.id, attachmentId);
+      // Object URL + a throwaway anchor is the only way to name the saved
+      // file from script — a plain window.open() ignores our filename.
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Could not download that file.");
+    } finally {
+      setDownloadingId(null);
     }
   }
 
@@ -363,6 +414,76 @@ export default function RequisitionDetailPage() {
                 </div>
               ) : null}
             </Card>
+
+            {attachmentsEnabled ? (
+              <Card
+                title="Attachments"
+                subtitle="The real files — invoices, memos, receipts — not just a checklist label"
+              >
+                {req.attachments.length === 0 ? (
+                  <p className="text-sm text-gray-500">Nothing attached yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {req.attachments.map((a) => (
+                      <li
+                        key={a.id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Paperclip className="h-4 w-4 shrink-0 text-gray-400" />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-gray-900">
+                              {a.filename}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {formatBytes(a.size)} · {a.uploaded_by} · {relativeTime(a.uploaded_at)}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(a.id, a.filename)}
+                          disabled={downloadingId === a.id}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {downloadingId === a.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5" />
+                          )}
+                          Download
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleUpload(file);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadBusy}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {uploadBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Paperclip className="h-3.5 w-3.5" />
+                    )}
+                    Attach a file
+                  </button>
+                  {uploadError ? <p className="mt-2 text-xs text-red-700">{uploadError}</p> : null}
+                </div>
+              </Card>
+            ) : null}
 
             <Card
               title="Policy checks"
@@ -801,4 +922,10 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dd className="mt-0.5 text-sm text-gray-900">{value}</dd>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

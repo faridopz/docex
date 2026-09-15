@@ -120,6 +120,28 @@ class Approval(BaseModel):
     signature: str = ""                  # HMAC over the decision payload
 
 
+class Attachment(BaseModel):
+    """A real file on a requisition — the invoice itself, a signed memo, a
+    beneficiary list, a photo of a receipt. Deliberately separate from
+    `documents: list[str]` below, which is a POLICY checklist ("do we have
+    an invoice on file" — a label, ticked or not, checked by
+    _check_documents). This is the actual bytes NEEM asked to attach "as
+    many files as possible" — the label without the file behind it was
+    exactly the gap flagged after the pilot handoff.
+
+    Metadata only. The bytes live wherever attachments.py is configured to
+    put them (local disk in dev, Supabase Storage in production) —
+    `storage_key` is opaque outside that module; nothing here interprets it.
+    """
+    id: str
+    filename: str = ""
+    content_type: str = ""
+    size: int = 0
+    storage_key: str = ""
+    uploaded_by: str = ""
+    uploaded_at: str = ""
+
+
 class Comment(BaseModel):
     """One message on a requisition's discussion thread — separate from
     Approval.notes (the one-shot remark attached to a single decision).
@@ -247,6 +269,7 @@ class Requisition(BaseModel):
     approvals: list[Approval] = Field(default_factory=list)
     audit_log: list[AuditEntry] = Field(default_factory=list)
     comments: list[Comment] = Field(default_factory=list)
+    attachments: list[Attachment] = Field(default_factory=list)
 
     # Set only while status == ON_HOLD; cleared the moment the hold is
     # released. The full history of every hold/release survives in
@@ -1603,6 +1626,61 @@ def add_comment(org_id: str, req_id: str, *, actor: str, department: str = "", t
     ))
     _audit(req, "commented", actor=actor, department=department,
            detail=text.strip()[:200])
+    req.updated_at = _now_iso()
+    return _save(org, req)
+
+
+MAX_ATTACHMENTS_PER_REQUISITION = 50
+
+
+def add_attachment(
+    org_id: str, req_id: str, *, actor: str, filename: str, content_type: str,
+    size: int, storage_key: str, attachment_id: Optional[str] = None,
+) -> Requisition:
+    """Record that a file was stored against this requisition.
+
+    Pure metadata — by the time this is called, the bytes are already
+    sitting in whatever backend attachments.py is configured with; this
+    only appends the reference so it shows up on the record and in the
+    audit log. Never restricted by status: a bank confirmation slip added
+    after payment, or a follow-up document an auditor asked for, are both
+    completely ordinary.
+
+    Gated on `requisition_attachments` — an org that hasn't turned this on
+    should not have submitters discover an upload control with nowhere
+    configured to put the files.
+    """
+    org = store.require_org(org_id)
+    try:
+        import org_config
+        attachments_on = org_config.feature_enabled(org, "requisition_attachments")
+    except ImportError:  # pragma: no cover
+        attachments_on = False
+    if not attachments_on:
+        raise RequisitionError(
+            "This organisation has not enabled file attachments on requisitions "
+            "('requisition_attachments' feature flag)."
+        )
+
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if not filename.strip() or not storage_key.strip():
+        raise RequisitionError("A stored file needs a filename and a storage key.")
+    if len(req.attachments) >= MAX_ATTACHMENTS_PER_REQUISITION:
+        raise RequisitionError(
+            f"{req.ref} already has {len(req.attachments)} attachments, at this "
+            f"organisation's limit of {MAX_ATTACHMENTS_PER_REQUISITION}."
+        )
+
+    att = Attachment(
+        id=attachment_id or uuid.uuid4().hex, filename=filename.strip(),
+        content_type=content_type, size=size, storage_key=storage_key,
+        uploaded_by=actor, uploaded_at=_now_iso(),
+    )
+    req.attachments.append(att)
+    _audit(req, "attached", actor=actor,
+           detail=f"{att.filename} ({att.size:,} bytes)")
     req.updated_at = _now_iso()
     return _save(org, req)
 

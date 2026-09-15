@@ -10,7 +10,7 @@
  * original record instead of raising a second requisition or paying twice.
  * This is the one guarantee a finance system cannot do without.
  */
-import { apiFetch } from "@/lib/session";
+import { apiFetch, BASE, getToken } from "@/lib/session";
 import type {
   AuditSummary,
   Decision,
@@ -190,6 +190,38 @@ export async function addRequisitionComment(id: string, text: string): Promise<R
     method: "POST",
     body: form({ text }),
   });
+}
+
+// ─── attachments ────────────────────────────────────────────────────────────
+
+/** Upload a real file — the invoice itself, not just a ticked document
+ * label. Requires the org's requisition_attachments flag. */
+export async function uploadRequisitionAttachment(id: string, file: File): Promise<Requisition> {
+  const fd = new FormData();
+  fd.append("file", file);
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/attachments`, {
+    method: "POST",
+    body: fd,
+  });
+}
+
+/** Fetch an attached file's bytes, with the object's own filename/type. The
+ * endpoint may redirect to a short-lived signed URL (production) or stream
+ * the bytes directly (local dev) — fetch() follows the redirect either way,
+ * so the caller always just gets a Blob back. Not routed through apiFetch:
+ * the response here is binary or a redirect target, never JSON. */
+export async function downloadRequisitionAttachment(
+  reqId: string, attachmentId: string,
+): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(
+    `${BASE}/requisitions/${encodeURIComponent(reqId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+  );
+  if (!res.ok) {
+    throw new Error(`Could not download this file (${res.status}).`);
+  }
+  return res.blob();
 }
 
 // ─── payment ────────────────────────────────────────────────────────────────

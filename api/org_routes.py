@@ -48,6 +48,7 @@ KNOWN_FEATURES = [
     "attendance_payments", "withholding_tax", "bank_reconciliation",
     "vendor_register", "timesheets", "payroll", "advance_retirement",
     "accounting_export", "multi_payee_requisitions", "requisition_hold",
+    "requisition_attachments",
 ]
 
 
