@@ -142,6 +142,54 @@ class Attachment(BaseModel):
     uploaded_at: str = ""
 
 
+class ComplianceFinding(BaseModel):
+    """One rule's verdict against this requisition's attached documents.
+
+    Deliberately a separate, minimal model rather than importing
+    compliance.py's RuleResult directly (see the module docstring's "No LLM
+    is called anywhere in this module" — this module never imports the
+    compliance engine or its models; api/requisition_routes.py, which DOES
+    call compliance.py, translates its RuleResult into this shape at the
+    route boundary, the same way it already translates UploadFile into
+    Attachment). Keeps requisitions.py self-contained and free to change
+    independently of the compliance module's own (larger) schema.
+    """
+    rule_id: str
+    rule_description: str = ""
+    verdict: Literal["pass", "flag", "block", "not_applicable", "insufficient_evidence"]
+    reasoning: str = ""
+    policy_citation: Optional[str] = None      # quote from the policy
+    payment_evidence: Optional[str] = None     # quote from the attached document
+    applied_to_document: Optional[str] = None  # which attachment this was evaluated against
+
+
+class ComplianceSummary(BaseModel):
+    """Snapshot of the last compliance-rulebook check run against this
+    requisition's real attachments (WO-22 made those attachments possible;
+    this is what WO-21 uses them for).
+
+    Separate from `checks` (PolicyCheck) below — those are this engine's own
+    DETERMINISTIC policy checks (amount ceiling, vendor list, required
+    documents — code owns every number, per CLAUDE.md). This is the
+    AI-assisted rulebook check from compliance.py: semantic judgement against
+    a policy document, attached by reference. A code-level PolicyCheck FAIL
+    is never softened by a clean compliance verdict, or vice versa — the two
+    live side by side on the requisition, not merged into one verdict.
+
+    Re-running a check overwrites this snapshot with the latest result; the
+    full history of every run (verdict, rulebook, timestamp) still survives
+    in audit_log, exactly like every other mutation on this record.
+    """
+    rulebook_id: str
+    rulebook_name: str
+    overall_verdict: Literal["approved", "flagged", "blocked"]
+    overall_summary: str = ""
+    results: list[ComplianceFinding] = Field(default_factory=list)
+    document_count: int = 0            # how many attachments were actually read
+    checked_by: str = ""
+    checked_at: str = ""
+
+
 class Comment(BaseModel):
     """One message on a requisition's discussion thread — separate from
     Approval.notes (the one-shot remark attached to a single decision).
@@ -228,6 +276,16 @@ class RequisitionWorkflow(BaseModel):
     # than no check. A category with no entry falls back to required_documents.
     documents_by_category: dict[str, list[str]] = Field(default_factory=dict)
     duplicate_window_days: int = 30
+    # Compliance rulebook (compliance.py / api/compliance_routes.py) this
+    # org's requisitions are checked against when an approver runs a
+    # compliance check (gated on requisition_compliance_check). None = no
+    # rulebook configured — the check endpoint refuses with a clear message
+    # rather than silently checking against nothing. Deliberately NOT
+    # validated here: rulebooks live in a different store collection this
+    # module never otherwise touches, and one can be deleted after a
+    # workflow references it — the check endpoint is where that's caught,
+    # at the moment it actually matters.
+    rulebook_id: Optional[str] = None
     updated_at: Optional[str] = None
 
 
@@ -270,6 +328,10 @@ class Requisition(BaseModel):
     audit_log: list[AuditEntry] = Field(default_factory=list)
     comments: list[Comment] = Field(default_factory=list)
     attachments: list[Attachment] = Field(default_factory=list)
+    # Last compliance-rulebook check run against this requisition's real
+    # attachments, if any (see ComplianceSummary). None until a check has
+    # been run at least once.
+    compliance: Optional[ComplianceSummary] = None
 
     # Set only while status == ON_HOLD; cleared the moment the hold is
     # released. The full history of every hold/release survives in
@@ -1681,6 +1743,58 @@ def add_attachment(
     req.attachments.append(att)
     _audit(req, "attached", actor=actor,
            detail=f"{att.filename} ({att.size:,} bytes)")
+    req.updated_at = _now_iso()
+    return _save(org, req)
+
+
+def record_compliance_result(
+    org_id: str, req_id: str, *, actor: str, summary: ComplianceSummary,
+) -> Requisition:
+    """Attach the result of a compliance-rulebook check to this requisition.
+
+    The check itself — loading the rulebook, extracting text from the
+    attachments, and the actual Claude call — runs entirely in
+    api/requisition_routes.py, which then translates compliance.py's
+    ComplianceCheckResult into a ComplianceSummary and calls this. Keeping
+    the LLM call there (never here) preserves this module's own invariant
+    that no LLM is ever called from requisitions.py.
+
+    Gated on requisition_compliance_check. Deliberately NOT restricted by
+    status or role, the same reasoning as add_attachment/add_comment:
+    recording a check result is evidence, not a decision — it moves no
+    money and grants no authority. Overwrites any previous snapshot; every
+    run's verdict is still preserved in audit_log regardless.
+    """
+    org = store.require_org(org_id)
+    try:
+        import org_config
+        checks_on = org_config.feature_enabled(org, "requisition_compliance_check")
+    except ImportError:  # pragma: no cover
+        checks_on = False
+    if not checks_on:
+        raise RequisitionError(
+            "This organisation has not enabled compliance-rulebook checks on "
+            "requisitions ('requisition_compliance_check' feature flag)."
+        )
+
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+
+    # This module owns timestamps/attribution for everything it persists —
+    # the route builds the verdicts, but who ran it and when is set here,
+    # the same way add_comment stamps `at` rather than trusting the caller.
+    summary.checked_by = actor
+    summary.checked_at = _now_iso()
+
+    req.compliance = summary
+    _audit(
+        req, "compliance_checked", actor=actor,
+        detail=(
+            f"{summary.overall_verdict} against '{summary.rulebook_name}' "
+            f"({len(summary.results)} rule(s), {summary.document_count} document(s))"
+        ),
+    )
     req.updated_at = _now_iso()
     return _save(org, req)
 

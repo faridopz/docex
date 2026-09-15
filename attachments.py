@@ -79,6 +79,16 @@ class AttachmentBackend(Protocol):
         callers fall back to streaming the bytes through the API instead."""
         ...
 
+    def read(self, storage_key: str) -> bytes:
+        """Fetch the stored bytes directly — for server-side use only (e.g.
+        extracting text for a compliance check), never returned to a
+        browser as-is. Every backend implements this directly rather than
+        making callers round-trip through url(): LocalDiskAttachmentBackend
+        has no URL mechanism at all, and a server-side caller has no reason
+        to pay for a signed-URL round trip when it can read the bytes in
+        one call."""
+        ...
+
 
 def _safe_key_part(name: str) -> str:
     """A filename safe to use as (part of) a storage path — this is a path
@@ -115,9 +125,6 @@ class LocalDiskAttachmentBackend:
         return key
 
     def read(self, storage_key: str) -> bytes:
-        """Not part of AttachmentBackend — only the local-disk fallback
-        route (api/requisition_routes.py) uses this, when url() came back
-        empty because there's no signed-URL mechanism to redirect to."""
         path = self._path(storage_key)
         if not path.is_file():
             raise AttachmentError("Stored file not found.")
@@ -178,6 +185,23 @@ class SupabaseStorageBackend:
         # Supabase returns a path like "/object/sign/<bucket>/<key>?token=...";
         # the caller needs the full URL.
         return f"{self.base_url}/storage/v1{signed}"
+
+    def read(self, storage_key: str) -> bytes:
+        # A direct authenticated GET, not a signed-URL round trip — this
+        # only ever runs server-side (see the Protocol docstring), so there
+        # is nothing to gain from minting a temporary URL first.
+        try:
+            resp = httpx.get(
+                f"{self.base_url}/storage/v1/object/{self.bucket}/{storage_key}",
+                headers=self._headers(), timeout=60,
+            )
+        except httpx.HTTPError as exc:
+            raise AttachmentError(f"Could not reach storage: {exc}") from exc
+        if resp.status_code != 200:
+            raise AttachmentError(
+                f"Could not fetch stored file ({resp.status_code}): {resp.text[:300]}"
+            )
+        return resp.content
 
 
 _backend: Optional[AttachmentBackend] = None

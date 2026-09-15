@@ -303,6 +303,13 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             max_payees=int(wf.get("max_payees", current.max_payees)),
             cc_rules=([requisitions.CCRule(**r) for r in wf["cc_rules"]]
                       if "cc_rules" in wf else current.cc_rules),
+            # Which compliance rulebook (compliance.py's "rulebooks" store
+            # collection) requisitions get checked against, when
+            # requisition_compliance_check is on. A profile sets this by the
+            # rulebook's id — the rulebook itself is created separately
+            # (interpreted from a policy doc, or a starter template) and
+            # isn't something apply_profile can create for you.
+            rulebook_id=wf.get("rulebook_id", current.rulebook_id),
         )
         bad = requisitions.unroutable_steps(org_id, new)
         if bad:

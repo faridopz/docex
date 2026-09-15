@@ -224,6 +224,18 @@ export async function downloadRequisitionAttachment(
   return res.blob();
 }
 
+// ─── compliance check ───────────────────────────────────────────────────────
+
+/** Check this requisition's real attachments against the org's configured
+ * compliance rulebook. Requires requisition_compliance_check AND a
+ * rulebook_id set on the workflow (Settings → Workflow). Costs a real
+ * Claude API call server-side — not something to trigger silently. */
+export async function runComplianceCheck(id: string): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/compliance-check`, {
+    method: "POST",
+  });
+}
+
 // ─── payment ────────────────────────────────────────────────────────────────
 
 export async function payRequisition(

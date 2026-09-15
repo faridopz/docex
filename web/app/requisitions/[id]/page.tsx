@@ -18,6 +18,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Paperclip,
+  Sparkles,
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
@@ -32,6 +33,7 @@ import {
   placeRequisitionOnHold,
   releaseRequisitionHold,
   resubmitRequisition,
+  runComplianceCheck,
   uploadRequisitionAttachment,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
@@ -77,6 +79,10 @@ export default function RequisitionDetailPage() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [complianceEnabled, setComplianceEnabled] = useState(false);
+  const [complianceBusy, setComplianceBusy] = useState(false);
+  const [complianceError, setComplianceError] = useState<string | null>(null);
+
   const payKey = useRef<string>(newIdempotencyKey());
 
   useEffect(() => {
@@ -87,6 +93,7 @@ export default function RequisitionDetailPage() {
         if (!cancelled) {
           setHoldEnabled(hasFeature(cfg, "requisition_hold"));
           setAttachmentsEnabled(hasFeature(cfg, "requisition_attachments"));
+          setComplianceEnabled(hasFeature(cfg, "requisition_compliance_check"));
         }
       } catch {
         /* stays hidden — matches what the server would refuse anyway */
@@ -266,6 +273,19 @@ export default function RequisitionDetailPage() {
       setUploadError(e instanceof Error ? e.message : "Could not download that file.");
     } finally {
       setDownloadingId(null);
+    }
+  }
+
+  async function runCompliance() {
+    if (!req) return;
+    setComplianceBusy(true);
+    setComplianceError(null);
+    try {
+      setReq(await runComplianceCheck(req.id));
+    } catch (e) {
+      setComplianceError(e instanceof Error ? e.message : "Could not run the compliance check.");
+    } finally {
+      setComplianceBusy(false);
     }
   }
 
@@ -482,6 +502,62 @@ export default function RequisitionDetailPage() {
                   </button>
                   {uploadError ? <p className="mt-2 text-xs text-red-700">{uploadError}</p> : null}
                 </div>
+              </Card>
+            ) : null}
+
+            {complianceEnabled ? (
+              <Card
+                title="Compliance rulebook check"
+                subtitle="AI-assisted check against the org's policy rulebook — alongside, not instead of, the checks above"
+              >
+                {req.compliance ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ComplianceVerdictBadge verdict={req.compliance.overall_verdict} />
+                      <span className="text-xs text-gray-500">
+                        against &ldquo;{req.compliance.rulebook_name}&rdquo; ·{" "}
+                        {req.compliance.checked_by} · {relativeTime(req.compliance.checked_at)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700">{req.compliance.overall_summary}</p>
+                    {req.compliance.results.length ? (
+                      <ul className="space-y-2 border-t border-gray-100 pt-3">
+                        {req.compliance.results.map((f, i) => (
+                          <li key={`${f.rule_id}-${i}`} className="flex gap-2 text-sm">
+                            <ComplianceVerdictBadge verdict={f.verdict} compact />
+                            <div className="min-w-0">
+                              <p className="text-gray-900">{f.rule_description}</p>
+                              {f.reasoning ? (
+                                <p className="text-xs text-gray-500">{f.reasoning}</p>
+                              ) : null}
+                              {f.applied_to_document ? (
+                                <p className="text-xs text-gray-400">{f.applied_to_document}</p>
+                              ) : null}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">No compliance check has been run yet.</p>
+                )}
+                <button
+                  type="button"
+                  onClick={runCompliance}
+                  disabled={complianceBusy}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {complianceBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  {req.compliance ? "Re-run compliance check" : "Run compliance check"}
+                </button>
+                {complianceError ? (
+                  <p className="mt-2 text-xs text-red-700">{complianceError}</p>
+                ) : null}
               </Card>
             ) : null}
 
@@ -921,6 +997,36 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</dt>
       <dd className="mt-0.5 text-sm text-gray-900">{value}</dd>
     </div>
+  );
+}
+
+const _COMPLIANCE_VERDICT_STYLE: Record<string, string> = {
+  approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  pass: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  not_applicable: "bg-gray-50 text-gray-500 border-gray-200",
+  flagged: "bg-amber-50 text-amber-700 border-amber-200",
+  flag: "bg-amber-50 text-amber-700 border-amber-200",
+  insufficient_evidence: "bg-amber-50 text-amber-700 border-amber-200",
+  blocked: "bg-red-50 text-red-700 border-red-200",
+  block: "bg-red-50 text-red-700 border-red-200",
+};
+
+function ComplianceVerdictBadge({
+  verdict,
+  compact,
+}: {
+  verdict: string;
+  compact?: boolean;
+}) {
+  const style = _COMPLIANCE_VERDICT_STYLE[verdict] ?? "bg-gray-50 text-gray-600 border-gray-200";
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 font-medium ${style} ${
+        compact ? "text-[11px]" : "text-xs"
+      }`}
+    >
+      {humanise(verdict)}
+    </span>
   );
 }
 

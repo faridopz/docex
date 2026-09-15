@@ -62,6 +62,34 @@ export interface Attachment {
   uploaded_at: string;
 }
 
+/** One rule's verdict from a compliance-rulebook check, mirroring the
+ * backend's own translation of compliance.py's RuleResult (see
+ * requisitions.py's ComplianceFinding). */
+export interface ComplianceFinding {
+  rule_id: string;
+  rule_description: string;
+  verdict: "pass" | "flag" | "block" | "not_applicable" | "insufficient_evidence";
+  reasoning: string;
+  policy_citation: string | null;
+  payment_evidence: string | null;
+  applied_to_document: string | null;
+}
+
+/** Snapshot of the last AI-assisted compliance-rulebook check run against
+ * this requisition's real attachments — separate from `checks` (the
+ * engine's own deterministic PolicyCheck list) above. Null until a check
+ * has been run at least once. */
+export interface ComplianceSummary {
+  rulebook_id: string;
+  rulebook_name: string;
+  overall_verdict: "approved" | "flagged" | "blocked";
+  overall_summary: string;
+  results: ComplianceFinding[];
+  document_count: number;
+  checked_by: string;
+  checked_at: string;
+}
+
 /** One message on a requisition's discussion thread — separate from a
  * decision's one-shot notes. Append-only, like everything else here. */
 export interface Comment {
@@ -122,6 +150,10 @@ export interface RequisitionWorkflow {
    * list, a beneficiary payout run). */
   max_payees: number;
   cc_rules: CCRule[];
+  /** The compliance rulebook (compliance.py) requisitions get checked
+   * against when an approver runs a compliance check. Null = none
+   * configured — the check endpoint refuses with a clear message. */
+  rulebook_id: string | null;
   updated_at: string | null;
 }
 
@@ -175,6 +207,7 @@ export interface Requisition extends RequisitionSummary {
   approvals: Approval[];
   comments: Comment[];
   attachments: Attachment[];
+  compliance: ComplianceSummary | null;
   audit_log: AuditEntry[];
   /** False means the audit log was tampered with — show it loudly. */
   audit_chain_valid: boolean;

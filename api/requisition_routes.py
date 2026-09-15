@@ -33,8 +33,12 @@ from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException,
 from fastapi.responses import RedirectResponse, Response
 
 import attachments
+import compliance
+import fast_extract
 import idempotency
 import requisitions as rq
+import store
+from models import PolicyRulebook
 from .context import Ctx, request_context, require_role
 
 router = APIRouter(tags=["requisitions"])
@@ -188,6 +192,25 @@ def _attachment_out(a: rq.Attachment) -> dict:
     }
 
 
+def _compliance_finding_out(f: rq.ComplianceFinding) -> dict:
+    return {
+        "rule_id": f.rule_id, "rule_description": f.rule_description,
+        "verdict": f.verdict, "reasoning": f.reasoning,
+        "policy_citation": f.policy_citation, "payment_evidence": f.payment_evidence,
+        "applied_to_document": f.applied_to_document,
+    }
+
+
+def _compliance_out(c: rq.ComplianceSummary) -> dict:
+    return {
+        "rulebook_id": c.rulebook_id, "rulebook_name": c.rulebook_name,
+        "overall_verdict": c.overall_verdict, "overall_summary": c.overall_summary,
+        "results": [_compliance_finding_out(f) for f in c.results],
+        "document_count": c.document_count,
+        "checked_by": c.checked_by, "checked_at": c.checked_at,
+    }
+
+
 def _audit_out(e: rq.AuditEntry) -> dict:
     return {
         "seq": e.seq, "at": e.at, "actor": e.actor,
@@ -232,6 +255,7 @@ def _detail_out(r: rq.Requisition) -> dict:
         "approvals": [_approval_out(a) for a in r.approvals],
         "comments": [_comment_out(c) for c in r.comments],
         "attachments": [_attachment_out(a) for a in r.attachments],
+        "compliance": _compliance_out(r.compliance) if r.compliance else None,
         "audit_log": [_audit_out(e) for e in r.audit_log],
         "audit_chain_valid": rq.verify_audit_chain(r),
     }
@@ -757,6 +781,128 @@ async def download_attachment_endpoint(
         )
 
     raise HTTPException(status_code=502, detail="Storage backend returned no way to fetch this file.")
+
+
+# ─── compliance check ───────────────────────────────────────────────────────
+
+
+@router.post("/requisitions/{req_id}/compliance-check")
+async def run_compliance_check_endpoint(
+    req_id: str, ctx: Ctx = Depends(request_context),
+):
+    """Check this requisition's real attachments (WO-22) against the org's
+    configured compliance rulebook — the AI-assisted semantic layer
+    (compliance.py) alongside, never instead of, the deterministic
+    PolicyCheck list this engine already runs on every requisition. A
+    code-level PolicyCheck FAIL is never softened by a clean compliance
+    verdict, or vice versa; the two are shown side by side, not merged.
+
+    Requires org.requisition_compliance_check AND a rulebook configured on
+    the workflow (Settings → Workflow). Role-gated like decide(): running
+    this costs a real Claude API call, so — unlike attaching a file or
+    posting a comment, which are free — it is not open to every signed-in
+    user.
+    """
+    require_role(ctx, "reviewer", "approver", "admin")
+
+    try:
+        import org_config
+        if not org_config.feature_enabled(ctx.org_id, "requisition_compliance_check"):
+            raise HTTPException(
+                status_code=400,
+                detail="This organisation has not enabled compliance-rulebook "
+                       "checks on requisitions ('requisition_compliance_check' "
+                       "feature flag).",
+            )
+    except ImportError:  # pragma: no cover
+        raise HTTPException(status_code=400, detail="Compliance checks are not available.")
+
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+
+    wf = rq.get_workflow(ctx.org_id)
+    rulebook_id = (wf.rulebook_id or "").strip()
+    if not rulebook_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No compliance rulebook is configured for this organisation. "
+                   "Set one under Settings → Workflow.",
+        )
+
+    # Read straight from the shared "rulebooks" store collection rather than
+    # through compliance_routes.py's private loaders — that module owns the
+    # legacy checks/policy-interpretation UI, not rulebook storage itself,
+    # and this keeps the requisition engine from depending on another
+    # router's internals for something both already reach via store.py.
+    raw_rulebook = store.get_store().get(ctx.org_id, "rulebooks", rulebook_id)
+    if raw_rulebook is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"The configured rulebook '{rulebook_id}' no longer exists.",
+        )
+    try:
+        rulebook = PolicyRulebook.model_validate(raw_rulebook)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Could not load the configured rulebook: {exc}"
+        ) from exc
+
+    if not req.attachments:
+        raise HTTPException(
+            status_code=400,
+            detail="Attach at least one file before running a compliance check.",
+        )
+
+    # Read + extract text from every attachment. One unreadable file (a
+    # storage hiccup, a genuinely corrupt upload) shouldn't block a check
+    # the rest of the bundle can still support — skip it, don't fail the
+    # whole request; only fail if NOTHING readable came out of any of them.
+    backend = attachments.get_backend()
+    docs: list[tuple[str, str]] = []
+    for att in req.attachments:
+        try:
+            content = backend.read(att.storage_key)
+        except attachments.AttachmentError as exc:
+            print(f"[DOCex] Could not read attachment {att.id} for compliance check: {exc}")
+            continue
+        text = fast_extract.extract_text(att.filename, content).strip()
+        if text:
+            docs.append((att.filename, text))
+
+    if not docs:
+        raise HTTPException(
+            status_code=422,
+            detail="No readable text in the attached files — scanned images "
+                   "need OCR before a compliance check can read them.",
+        )
+
+    result = compliance.check_payment_safe(docs, rulebook, payment_label=req.ref)
+
+    summary = rq.ComplianceSummary(
+        rulebook_id=rulebook.id,
+        rulebook_name=rulebook.name,
+        overall_verdict=result.overall_verdict,
+        overall_summary=result.overall_summary,
+        results=[
+            rq.ComplianceFinding(
+                rule_id=r.rule_id, rule_description=r.rule_description,
+                verdict=r.verdict, reasoning=r.reasoning,
+                policy_citation=r.policy_citation, payment_evidence=r.payment_evidence,
+                applied_to_document=r.applied_to_document,
+            )
+            for r in result.results
+        ],
+        document_count=len(docs),
+    )
+    try:
+        req = rq.record_compliance_result(
+            ctx.org_id, req_id, actor=ctx.user_id, summary=summary,
+        )
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return _detail_out(req)
 
 
 @router.post("/requisitions/{req_id}/resubmit")

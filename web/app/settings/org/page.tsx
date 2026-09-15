@@ -16,7 +16,7 @@ import {
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { GuidanceCard } from "@/components/GuidanceCard";
-import { getOrgProfile, updateOrgProfile } from "@/lib/api";
+import { getOrgProfile, listRulebooks, updateOrgProfile } from "@/lib/api";
 import { listDepartments, type DepartmentDef } from "@/lib/erpApi";
 import { getWorkflow, setWorkflow } from "@/lib/requisitionApi";
 import {
@@ -27,7 +27,7 @@ import {
   type ClientConfig,
 } from "@/lib/orgConfig";
 import type { CCRule, RequisitionWorkflow, WorkflowStep } from "@/types/requisition";
-import type { OrgProfile, PaymentType } from "@/types";
+import type { OrgProfile, PaymentType, RulebookSummary } from "@/types";
 
 /**
  * Organisation settings.
@@ -75,6 +75,9 @@ export default function OrgSettingsPage() {
   const [newCategory, setNewCategory] = useState("");
   const [newCategoryDocs, setNewCategoryDocs] = useState("");
 
+  // ── saved compliance rulebooks, for the workflow's rulebook picker ──
+  const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
+
   // ── modules & features (real nav gating) ──
   const [cc, setCc] = useState<ClientConfig | null>(null);
   const [ccSaving, setCcSaving] = useState(false);
@@ -85,13 +88,17 @@ export default function OrgSettingsPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [p, depts, wf, clientConfig] = await Promise.all([
+        const [p, depts, wf, clientConfig, rbs] = await Promise.all([
           getOrgProfile(),
           listDepartments(),
           getWorkflow(),
           getClientConfig(),
+          // Best-effort — the rulebook picker just falls back to a manual
+          // id field if this fails, rather than breaking the whole page.
+          listRulebooks().catch(() => []),
         ]);
         if (cancelled) return;
+        setRulebooks(rbs);
         setName(p.name ?? "");
         setSubject(p.payment_subject ?? "Payment requisition");
         setStages(
@@ -346,6 +353,7 @@ export default function OrgSettingsPage() {
         required_documents: workflow.required_documents.map((d) => d.trim()).filter(Boolean),
         forbidden_vendors: workflow.forbidden_vendors.map((v) => v.trim()).filter(Boolean),
         approved_vendors: workflow.approved_vendors.map((v) => v.trim()).filter(Boolean),
+        rulebook_id: workflow.rulebook_id?.trim() || null,
         max_payees: Math.max(1, Number(workflow.max_payees) || 100),
         cc_rules: workflow.cc_rules
           .map((r) => ({
@@ -698,6 +706,36 @@ export default function OrgSettingsPage() {
                       />
                       <span className="block text-xs text-gray-500">
                         The fallback list — a category below with its own pack uses that instead.
+                      </span>
+                    </label>
+                    <label className="space-y-1 text-sm sm:col-span-2">
+                      <span className="font-medium text-gray-900">Compliance rulebook</span>
+                      {rulebooks.length ? (
+                        <select
+                          value={workflow.rulebook_id ?? ""}
+                          onChange={(e) => patchWf({ rulebook_id: e.target.value || null })}
+                          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="">None — compliance checks off</option>
+                          {rulebooks.map((rb) => (
+                            <option key={rb.id} value={rb.id}>
+                              {rb.name} ({rb.active_rule_count} active rule{rb.active_rule_count === 1 ? "" : "s"})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={workflow.rulebook_id ?? ""}
+                          placeholder="rb-… (no saved rulebooks yet — create one under Compliance)"
+                          onChange={(e) => patchWf({ rulebook_id: e.target.value || null })}
+                          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                        />
+                      )}
+                      <span className="block text-xs text-gray-500">
+                        With &ldquo;File attachments&rdquo; and &ldquo;Compliance rulebook check&rdquo;
+                        both on below, an approver can check a requisition&rsquo;s attached files
+                        against this rulebook with AI, alongside the checks above.
                       </span>
                     </label>
                     <label className="space-y-1 text-sm sm:col-span-2">
