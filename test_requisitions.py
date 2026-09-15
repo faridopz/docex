@@ -579,6 +579,27 @@ check("each disbursement carries its own payee's bank account",
       sorted(d.payee_account for d in mp_disbursements),
       sorted(p.account_number for p in _payee_rows))
 
+# ─── CC rules: higher-ups copied once an amount crosses a threshold ─────────
+# Separate from the approval chain on purpose — being CC'd must never grant
+# the authority to approve or override, only visibility.
+
+_cc_wf = rq.RequisitionWorkflow(
+    org_id=MP,
+    cc_rules=[
+        rq.CCRule(min_amount=2_000_000, department="ed", label="Executive Director"),
+        rq.CCRule(min_amount=500_000, department="aed", label="AED"),
+    ],
+)
+check("below every threshold: nobody copied",
+      rq.cc_recipients(_cc_wf, 100_000), [])
+check("crosses the lower threshold only: just AED copied",
+      [r.department for r in rq.cc_recipients(_cc_wf, 600_000)], ["aed"])
+check("crosses both: both copied, not just the higher one",
+      sorted(r.department for r in rq.cc_recipients(_cc_wf, 3_000_000)),
+      ["aed", "ed"])
+check("exactly at a threshold counts as crossing it",
+      [r.department for r in rq.cc_recipients(_cc_wf, 500_000)], ["aed"])
+
 # The script tracked failures in _fail throughout but, until this fix, always
 # printed a clean success message and exited 0 regardless — exactly the
 # "every signal was green" failure mode the .gitignore incident (see

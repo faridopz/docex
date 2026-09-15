@@ -141,6 +141,21 @@ class WorkflowStep(BaseModel):
     override_limit: Optional[float] = None  # max amount it may override up to
 
 
+class CCRule(BaseModel):
+    """A department copied on a requisition once its amount crosses a
+    threshold — informed, never asked to act.
+
+    Deliberately separate from WorkflowStep: `decide()` only ever checks a
+    step's department, so being CC'd can never let someone approve or
+    override a requisition they were only copied on. NEEM's own workflow
+    document draws exactly this line — the AED and Director of Operations
+    are added to the copy list well before either is required to sign off.
+    """
+    min_amount: float = 0.0
+    department: str = ""
+    label: str = ""                      # "Executive Director", shown in the notification
+
+
 class RequisitionWorkflow(BaseModel):
     """The org's approval chain + spend policy. Pure DATA, set at onboarding."""
     org_id: str = ""
@@ -158,6 +173,7 @@ class RequisitionWorkflow(BaseModel):
     # to hold it); kept configurable rather than hard-coded so a different
     # client's actual bank batch limit doesn't silently inherit NEEM's number.
     max_payees: int = 100
+    cc_rules: list[CCRule] = Field(default_factory=list)
     # Per-category packs. NEEM's own deck says it plainly: "the correct pack
     # depends on whether it concerns goods, services, an activity, an advance,
     # a reimbursement or a final balance payment." One flat list asks a
@@ -495,6 +511,20 @@ def _steps_for(wf: RequisitionWorkflow, amount: float) -> list[WorkflowStep]:
 
 def _step(wf: RequisitionWorkflow, key: str) -> Optional[WorkflowStep]:
     return next((s for s in wf.steps if s.key == key), None)
+
+
+def cc_recipients(wf: RequisitionWorkflow, amount: float) -> list[CCRule]:
+    """Which CC rules this amount triggers.
+
+    Every matching rule fires — unlike approval steps, being CC'd is
+    additive rather than a ladder, so crossing both a 2,000,000 and a
+    5,000,000 threshold copies both departments, not just the higher one.
+    Pure and side-effect-free: the caller (the route layer, matching where
+    every other notification is emitted — see notify_transition's callers)
+    decides how to act on the result.
+    """
+    return [r for r in wf.cc_rules
+            if r.department and _money(amount) >= _money(r.min_amount)]
 
 
 # ─── policy checks (deterministic — code owns every number) ─────────────────

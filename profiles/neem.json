@@ -88,6 +88,13 @@
       }
     ],
     "max_amount": 100000000,
+    "cc_rules": [
+      {
+        "min_amount": 2000000,
+        "department": "ed",
+        "label": "Executive Director"
+      }
+    ],
     "allowed_categories": [
       "client_support_food",
       "client_support_other",
@@ -244,6 +251,7 @@
     "advance_retirement": true,
     "multi_payee_requisitions": true
   },
+  "_cc_rules_note": "Provisional — confirm the real thresholds with Farid. AED already sits in the approval chain on every requisition (see workflow.steps), so this only copies the ED early, well before her formal joint-approval trigger at ₦7,000,001.",
   "_confirm_before_go_live": [
     "THRESHOLD CONFLICT — the signed Procurement Policy (p6) says three quotes are required from N200,001. The Finance Processes deck (slide 4) says a direct memo suffices up to N499,999 and RFQ starts at N500,000. These disagree across N200,001-N499,999. Ask which governs; the policy is signed, the deck is what staff are trained on.",
     "GTBANK GAPS — payments are batched into a WEEKLY schedule and uploaded to GAPS; the AED gives final release approval inside GAPS. Confirm whether the statement shows one debit per payee or one per batch. This decides individual vs bulk in the payment ledger.",

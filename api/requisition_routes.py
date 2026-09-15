@@ -36,6 +36,42 @@ from .context import Ctx, request_context, require_role
 router = APIRouter(tags=["requisitions"])
 
 
+def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
+            title: str, body: str = "") -> None:
+    """Best-effort. The requisition or payment this fires after has already
+    succeeded and been saved — a notification failing must never look like
+    the underlying operation failed, so this swallows its own errors rather
+    than raising past the caller.
+
+    Mirrors the existing notify_transition() pattern used by vouchers and
+    the legacy transaction flow: notifications are emitted from the route
+    layer, right after the engine call that changed something, never from
+    inside the engine itself.
+    """
+    try:
+        import notification_center as nc
+        nc.create(req.ref, department, kind, title, body=body,
+                  actor=ctx.user_id, org_id=ctx.org_id)
+    except Exception:
+        pass
+
+
+def _notify_current_step(ctx: Ctx, req: rq.Requisition, wf: rq.RequisitionWorkflow) -> None:
+    """Tell whichever department the requisition is now parked on that it's
+    their turn. This did not exist for requisitions at all before — the
+    in-app notification feed only ever fired for the older voucher/
+    transaction flow, so nobody was actually told a requisition needed them
+    unless they happened to check the list."""
+    if not req.current_step:
+        return
+    step = next((s for s in wf.steps if s.key == req.current_step), None)
+    if step is None or not step.department:
+        return
+    _notify(ctx, req, kind="assigned", department=step.department,
+            title=f"{req.ref}: {step.label or step.key}",
+            body=f"{req.vendor_name} — {req.amount:,.2f} {req.currency}.")
+
+
 # ─── serialisers ────────────────────────────────────────────────────────────
 
 
@@ -197,6 +233,19 @@ async def create_requisition_endpoint(
                 raise HTTPException(
                     status_code=422, detail=f"Could not raise requisition: {exc}"
                 ) from exc
+
+            wf = rq.get_workflow(ctx.org_id)
+            _notify_current_step(ctx, req, wf)
+            # CC fires once, here, at submission — not on every later step
+            # change. NEEM's own process adds the AED/Director of Operations
+            # to the copy list once, when a pack is forwarded; it does not
+            # re-notify them at every intermediate review.
+            for rule in rq.cc_recipients(wf, req.amount):
+                _notify(ctx, req, kind="cc", department=rule.department,
+                        title=f"{req.ref}: copied on a new requisition",
+                        body=(f"{req.vendor_name} — {req.amount:,.2f} {req.currency}. "
+                              f"{rule.label or rule.department} is copied because this "
+                              f"is at or above {rule.min_amount:,.0f}."))
 
             return slot.store(_detail_out(req))
     except idempotency.IdempotencyConflict as exc:
@@ -394,6 +443,13 @@ async def decide_endpoint(
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if req.status == rq.ReqStatus.IN_REVIEW:
+        _notify_current_step(ctx, req, rq.get_workflow(ctx.org_id))
+    elif req.status in {rq.ReqStatus.DECLINED, rq.ReqStatus.RETURNED}:
+        _notify(ctx, req, kind="returned", department=req.department,
+                title=f"{req.ref}: {req.status.value}",
+                body=notes or f"{decision} at the {dec.value} step.")
+
     return _detail_out(req)
 
 
@@ -443,6 +499,12 @@ async def pay_endpoint(
                 )
             except rq.RequisitionError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            paid_req = rq.get_requisition(ctx.org_id, req_id)
+            if paid_req is not None:
+                _notify(ctx, paid_req, kind="paid", department=paid_req.department,
+                        title=f"{paid_req.ref}: paid",
+                        body=f"{txn.amount:,.2f} {txn.currency} — ref {txn.bank_reference or '(none)'}.")
 
             return slot.store(_txn_out(txn))
     except idempotency.IdempotencyConflict as exc:
