@@ -62,8 +62,14 @@ export default function NewRequisitionPage() {
   }, []);
 
   const currency = workflow?.currency ?? "NGN";
-  const parsedAmount = Number(amount);
-  const amountValid = amount.trim() !== "" && Number.isFinite(parsedAmount) && parsedAmount > 0;
+  // Nigerian naira amounts are near-universally typed with thousands commas
+  // ("1,500,000") — Number() on that raw string is NaN, which silently left
+  // the submit button disabled with no obvious reason. That is exactly what
+  // NEEM hit during the pilot handoff: they filled in a request and nothing
+  // happened. Strip thousands separators and stray whitespace before parsing.
+  const cleanedAmount = amount.replace(/,/g, "").trim();
+  const parsedAmount = Number(cleanedAmount);
+  const amountValid = cleanedAmount !== "" && Number.isFinite(parsedAmount) && parsedAmount > 0;
 
   /** Warn about the ceiling before submitting — the server enforces it, but
    *  there is no reason to make someone submit to find out. */
