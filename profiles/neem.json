@@ -250,7 +250,8 @@
     "withholding_tax": true,
     "advance_retirement": true,
     "multi_payee_requisitions": true,
-    "requisition_hold": true
+    "requisition_hold": true,
+    "requisition_export": true
   },
   "_cc_rules_note": "Provisional — confirm the real thresholds with Farid. AED already sits in the approval chain on every requisition (see workflow.steps), so this only copies the ED early, well before her formal joint-approval trigger at ₦7,000,001.",
   "_confirm_before_go_live": [

@@ -73,6 +73,7 @@ export const ALL_FEATURES: { key: string; label: string; desc: string }[] = [
   { key: "requisition_hold", label: "Requisition hold", desc: "Let an approver pause a requisition at its current step, with a written reason, instead of approving/declining/returning it." },
   { key: "requisition_attachments", label: "File attachments", desc: "Attach real files (invoices, memos, receipts) to a requisition, not just a checklist of document labels." },
   { key: "requisition_compliance_check", label: "Compliance rulebook check", desc: "Check a requisition's attached files against the org's compliance rulebook with AI, alongside the built-in policy checks." },
+  { key: "requisition_export", label: "Requisition export", desc: "Download a requisition as a PDF or Excel packet, or export a date range of requisitions as an audit log." },
 ];
 
 /** True only when the flag is explicitly on. Unknown flag ⇒ off. */

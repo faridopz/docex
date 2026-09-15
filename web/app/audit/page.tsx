@@ -2,11 +2,20 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { getAuditSummary } from "@/lib/requisitionApi";
+import {
+  downloadRequisitionLog,
+  getAuditSummary,
+  triggerBlobDownload,
+} from "@/lib/requisitionApi";
+import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money } from "@/lib/requisitionFormat";
 import type { AuditSummary } from "@/types/requisition";
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
 /**
  * The auditor's first screen.
@@ -23,6 +32,15 @@ export default function AuditPage() {
   const [summary, setSummary] = useState<AuditSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [exportEnabled, setExportEnabled] = useState(false);
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 6);
+  const [logStart, setLogStart] = useState(isoDate(weekAgo));
+  const [logEnd, setLogEnd] = useState(isoDate(today));
+  const [logBusy, setLogBusy] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,6 +60,34 @@ export default function AuditPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await getClientConfig();
+        if (!cancelled) setExportEnabled(hasFeature(cfg, "requisition_export"));
+      } catch {
+        /* stays hidden — matches what the server would refuse anyway */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function downloadLog() {
+    setLogBusy(true);
+    setLogError(null);
+    try {
+      const blob = await downloadRequisitionLog(logStart, logEnd);
+      triggerBlobDownload(blob, `requisition-log_${logStart}_to_${logEnd}.xlsx`);
+    } catch (e) {
+      setLogError(e instanceof Error ? e.message : "Could not export the log.");
+    } finally {
+      setLogBusy(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -77,6 +123,50 @@ export default function AuditPage() {
             Generated {dateTime(summary.generated_at)}.
           </p>
         </div>
+
+        {exportEnabled ? (
+          <section className="rounded-lg border border-gray-200 bg-white p-4">
+            <h2 className="text-sm font-semibold text-gray-900">Export a period log</h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Every requisition raised in this range, one row each — for a weekly or monthly
+              audit sweep.
+            </p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="text-sm">
+                <span className="mb-1 block text-xs font-medium text-gray-700">From</span>
+                <input
+                  type="date"
+                  value={logStart}
+                  onChange={(e) => setLogStart(e.target.value)}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs font-medium text-gray-700">To</span>
+                <input
+                  type="date"
+                  value={logEnd}
+                  onChange={(e) => setLogEnd(e.target.value)}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={downloadLog}
+                disabled={logBusy || !logStart || !logEnd}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {logBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                Download .xlsx
+              </button>
+            </div>
+            {logError ? <p className="mt-2 text-xs text-red-700">{logError}</p> : null}
+          </section>
+        ) : null}
 
         {/* The verdict, stated before any detail. */}
         {summary.audit_ready ? (

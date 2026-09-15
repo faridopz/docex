@@ -111,6 +111,7 @@
     "multi_payee_requisitions": false,
     "requisition_hold": false,
     "requisition_attachments": false,
-    "requisition_compliance_check": false
+    "requisition_compliance_check": false,
+    "requisition_export": false
   }
 }

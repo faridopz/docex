@@ -236,6 +236,55 @@ export async function runComplianceCheck(id: string): Promise<Requisition> {
   });
 }
 
+// ─── export ─────────────────────────────────────────────────────────────────
+
+/** Trigger a browser save for an already-fetched file. Object URL + a
+ * throwaway anchor is the only way to control the saved filename from
+ * script — a plain window.open() ignores it. */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Fetch a requisition's export packet as a Blob — the printable/pasteable
+ * artifact, not the JSON detail view. Raw authenticated fetch(), like
+ * downloadRequisitionAttachment: the response is binary, never JSON. */
+export async function downloadRequisitionExport(
+  id: string, format: "pdf" | "xlsx",
+): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(
+    `${BASE}/requisitions/${encodeURIComponent(id)}/export.${format}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Could not export this requisition (${res.status}).`);
+  }
+  return res.blob();
+}
+
+/** Fetch the weekly/monthly requisition log for a date range (YYYY-MM-DD,
+ * inclusive both ends) as a Blob — the audit sweep export. */
+export async function downloadRequisitionLog(start: string, end: string): Promise<Blob> {
+  const token = getToken();
+  const q = new URLSearchParams({ start, end });
+  const res = await fetch(`${BASE}/requisitions/export/log.xlsx?${q.toString()}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Could not export the log (${res.status}).`);
+  }
+  return res.blob();
+}
+
 // ─── payment ────────────────────────────────────────────────────────────────
 
 export async function payRequisition(

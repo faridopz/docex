@@ -27,6 +27,7 @@ import {
   addRequisitionComment,
   decideRequisition,
   downloadRequisitionAttachment,
+  downloadRequisitionExport,
   getRequisition,
   newIdempotencyKey,
   payRequisition,
@@ -34,6 +35,7 @@ import {
   releaseRequisitionHold,
   resubmitRequisition,
   runComplianceCheck,
+  triggerBlobDownload,
   uploadRequisitionAttachment,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
@@ -83,6 +85,10 @@ export default function RequisitionDetailPage() {
   const [complianceBusy, setComplianceBusy] = useState(false);
   const [complianceError, setComplianceError] = useState<string | null>(null);
 
+  const [exportEnabled, setExportEnabled] = useState(false);
+  const [exportBusy, setExportBusy] = useState<"" | "pdf" | "xlsx">("");
+  const [exportError, setExportError] = useState<string | null>(null);
+
   const payKey = useRef<string>(newIdempotencyKey());
 
   useEffect(() => {
@@ -94,6 +100,7 @@ export default function RequisitionDetailPage() {
           setHoldEnabled(hasFeature(cfg, "requisition_hold"));
           setAttachmentsEnabled(hasFeature(cfg, "requisition_attachments"));
           setComplianceEnabled(hasFeature(cfg, "requisition_compliance_check"));
+          setExportEnabled(hasFeature(cfg, "requisition_export"));
         }
       } catch {
         /* stays hidden — matches what the server would refuse anyway */
@@ -259,20 +266,25 @@ export default function RequisitionDetailPage() {
     setUploadError(null);
     try {
       const blob = await downloadRequisitionAttachment(req.id, attachmentId);
-      // Object URL + a throwaway anchor is the only way to name the saved
-      // file from script — a plain window.open() ignores our filename.
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, filename);
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Could not download that file.");
     } finally {
       setDownloadingId(null);
+    }
+  }
+
+  async function handleExport(format: "pdf" | "xlsx") {
+    if (!req) return;
+    setExportBusy(format);
+    setExportError(null);
+    try {
+      const blob = await downloadRequisitionExport(req.id, format);
+      triggerBlobDownload(blob, `${req.ref}.${format}`);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Could not export this requisition.");
+    } finally {
+      setExportBusy("");
     }
   }
 
@@ -343,6 +355,37 @@ export default function RequisitionDetailPage() {
             <p>
               {humanise(req.department)} · {relativeTime(req.submitted_at)}
             </p>
+            {exportEnabled ? (
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleExport("pdf")}
+                  disabled={exportBusy !== ""}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {exportBusy === "pdf" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Download className="h-3 w-3" />
+                  )}
+                  PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExport("xlsx")}
+                  disabled={exportBusy !== ""}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {exportBusy === "xlsx" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Download className="h-3 w-3" />
+                  )}
+                  Excel
+                </button>
+              </div>
+            ) : null}
+            {exportError ? <p className="mt-1 text-red-700">{exportError}</p> : null}
           </div>
         </div>
 

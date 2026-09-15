@@ -1917,8 +1917,14 @@ def list_requisitions(
     step: Optional[str] = None,
     department: Optional[str] = None,
     grant_code: Optional[str] = None,
+    submitted_from: Optional[str] = None,  # ISO timestamp, inclusive — for audit-period exports
+    submitted_to: Optional[str] = None,    # ISO timestamp, inclusive
 ) -> list[Requisition]:
-    """Newest first. `step` powers each department's 'waiting on me' view."""
+    """Newest first. `step` powers each department's 'waiting on me' view.
+    `submitted_from`/`submitted_to` bound by `submitted_at` (the record's
+    raise time, set even for a draft — see create_requisition) — plain ISO
+    string comparison, the same idiom the duplicate-window check already
+    uses, since ISO 8601 timestamps sort correctly as strings."""
     org = store.require_org(org_id)
     out: list[Requisition] = []
     for raw in store.get_store().list(org, _REQUISITIONS):
@@ -1933,6 +1939,10 @@ def list_requisitions(
         if department is not None and req.department != department:
             continue
         if grant_code is not None and req.grant_code != grant_code:
+            continue
+        if submitted_from is not None and (req.submitted_at or "") < submitted_from:
+            continue
+        if submitted_to is not None and (req.submitted_at or "") > submitted_to:
             continue
         out.append(req)
     out.sort(key=lambda r: r.updated_at or r.created_at or "", reverse=True)

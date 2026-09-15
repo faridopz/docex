@@ -25,17 +25,19 @@ FastAPI would match them as an id.
 """
 from __future__ import annotations
 
+import io
 import json
 import uuid
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 import attachments
 import compliance
 import fast_extract
 import idempotency
+import requisition_export
 import requisitions as rq
 import store
 from models import PolicyRulebook
@@ -433,6 +435,77 @@ async def pending_for_me_endpoint(ctx: Ctx = Depends(request_context)):
     }
 
 
+# ─── log export (audit sweep) ───────────────────────────────────────────────
+#
+# Declared here, ahead of /requisitions/{req_id}, for the same reason
+# /requisitions/pending is — a literal path after the {req_id} pattern would
+# never match; FastAPI would try to load a requisition literally named
+# "export".
+
+
+def _export_gate(ctx: Ctx) -> None:
+    try:
+        import org_config
+    except ImportError:  # pragma: no cover
+        raise HTTPException(status_code=400, detail="Exports are not available.")
+    if not org_config.feature_enabled(ctx.org_id, "requisition_export"):
+        raise HTTPException(
+            status_code=400,
+            detail="This organisation has not enabled requisition exports "
+                   "('requisition_export' feature flag).",
+        )
+
+
+@router.get("/requisitions/export/log.xlsx")
+async def export_requisition_log_endpoint(
+    start: str = Query(..., description="Start date, inclusive, YYYY-MM-DD"),
+    end: str = Query(..., description="End date, inclusive, YYYY-MM-DD"),
+    ctx: Ctx = Depends(request_context),
+):
+    """The weekly/monthly audit sweep: every requisition raised in [start,
+    end], one row each, as an .xlsx. No role gate beyond being signed in —
+    matches GET /requisitions/{id}'s own visibility (org-wide, see the
+    requisition_visibility toggle); exporting what you can already see
+    grants no new access.
+    """
+    _export_gate(ctx)
+    import datetime as _dt
+    try:
+        start_d = _dt.date.fromisoformat(start)
+        end_d = _dt.date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="'end' cannot be before 'start'.")
+
+    submitted_from = f"{start_d.isoformat()}T00:00:00"
+    submitted_to = f"{end_d.isoformat()}T23:59:59.999999"
+
+    reqs = rq.list_requisitions(
+        ctx.org_id, submitted_from=submitted_from, submitted_to=submitted_to,
+    )
+    if not reqs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No requisitions raised between {start} and {end}.",
+        )
+    txns_by_id = {
+        r.transaction_id: rq.get_transaction(ctx.org_id, r.transaction_id)
+        for r in reqs if r.transaction_id
+    }
+    txns_by_id = {k: v for k, v in txns_by_id.items() if v is not None}
+
+    content = requisition_export.requisition_log_xlsx(
+        reqs, org_name=ctx.org_id, start=start, end=end, transactions_by_id=txns_by_id,
+    )
+    filename = f"requisition-log_{start}_to_{end}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ─── workflow config ────────────────────────────────────────────────────────
 
 
@@ -466,6 +539,39 @@ async def get_requisition_endpoint(req_id: str, ctx: Ctx = Depends(request_conte
     if req is None:
         raise HTTPException(status_code=404, detail="Requisition not found.")
     return _detail_out(req)
+
+
+@router.get("/requisitions/{req_id}/export.pdf")
+async def export_requisition_pdf_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
+    """The printable packet — everything this screen shows, laid out to
+    file or email. No role gate beyond being signed in, same as viewing
+    the requisition itself: exporting what you can already see grants no
+    new access."""
+    _export_gate(ctx)
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    content = requisition_export.requisition_pdf(req)
+    return Response(
+        content=content, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{req.ref}.pdf"'},
+    )
+
+
+@router.get("/requisitions/{req_id}/export.xlsx")
+async def export_requisition_xlsx_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
+    """The same content as the PDF, one sheet per section — for pasting
+    into a working file rather than filing as-is."""
+    _export_gate(ctx)
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    content = requisition_export.requisition_xlsx(req)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{req.ref}.xlsx"'},
+    )
 
 
 # ─── decide ─────────────────────────────────────────────────────────────────

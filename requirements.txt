@@ -34,6 +34,10 @@ rapidfuzz>=3.6,<4.0
 # Excel schedule parsing (Bank Verify reads payment schedules from .xlsx).
 openpyxl>=3.1,<4.0
 
+# PDF generation for requisition export packets (requisition_export.py).
+# Pure-Python, no system libraries required (unlike weasyprint/wkhtmltopdf).
+reportlab>=4.0,<6.0
+
 # OCR for scans and phone photos of receipts (fast_extract._ocr).
 # REQUIRES the tesseract binary — see api/Dockerfile. pytesseract on its own
 # is only a wrapper and will silently produce nothing without it.
