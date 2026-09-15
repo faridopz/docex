@@ -294,6 +294,35 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
 
     out: list[Disbursement] = []
     for txn in rq.list_transactions(org_id):
+        payees = getattr(txn, "payees", None) or []
+        if payees:
+            # A multi-payee requisition is one approval but many transfers —
+            # the same shape record_batch() already gives payroll. One
+            # disbursement per payee, sharing batch_id, so reconciliation can
+            # match each one individually against the bank statement while
+            # still showing "12 of 12 matched" as a single group.
+            for i, payee in enumerate(payees):
+                out.append(Disbursement(
+                    id=f"req-{txn.id}-{i}",
+                    org_id=org_id,
+                    source_kind=SourceKind.REQUISITION,
+                    source_id=txn.requisition_id or txn.id,
+                    source_ref=txn.requisition_ref or txn.id,
+                    payee_name=payee.name,
+                    payee_account=payee.account_number,
+                    amount=_money(payee.amount),
+                    currency=txn.currency or "NGN",
+                    paid_at=txn.paid_at,
+                    paid_by=txn.paid_by,
+                    bank_reference=txn.bank_reference,
+                    batch_id=txn.id,
+                    settlement=Settlement.INDIVIDUAL,
+                    memo=payee.purpose or txn.category or "",
+                    project_code=txn.project_code or "",
+                    grant_code=txn.grant_code,
+                    created_at=txn.paid_at,
+                ))
+            continue
         out.append(Disbursement(
             # Deterministic id derived from the transaction, so the same
             # payment keeps the same identity across calls — the reconciliation

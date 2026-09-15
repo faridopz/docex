@@ -500,6 +500,85 @@ check("the sequence has no gaps despite the race",
       sorted(int(r.split("-")[1]) for r in _refs),
       list(range(1, 21)))
 
+# ─── multi-payee requisitions: NEEM's "up to 100 participants in one go" ────
+# A workshop stipend list, a beneficiary payout run — one approval, many
+# transfers. Flag-gated (existing single-vendor callers are the default and
+# must stay untouched), and every payee still has to clear the same approval
+# chain and the same policy engine as a single-vendor requisition — there is
+# no separate, weaker path for a batch just because it has more rows.
+import org_config as _org_config
+import disbursements as _disb
+
+MP = "multipayee-test"
+departments.save(departments.default_registry(), MP)
+_mpwf = rq.default_workflow(MP, size="small")
+_mpwf.allowed_categories = ["training"]
+rq.set_workflow(MP, _mpwf)
+
+_payee_rows = [
+    rq.Payee(name=f"Participant {i}", account_number=f"00{i}1234567",
+             bank_name="GT Bank", amount=5_000, purpose="Workshop stipend",
+             payee_type="beneficiary")
+    for i in range(1, 4)
+]
+
+expect_err("multi-payee refused while the flag is off",
+    lambda: rq.create_requisition(
+        MP, submitted_by="program@eva.org", department="program",
+        vendor_name="Workshop stipends — batch 1", amount=0,
+        category="training", project_code="P-WS-1", payees=_payee_rows,
+    ))
+
+_org_config.set_features(MP, multi_payee_requisitions=True)
+
+batch = rq.create_requisition(
+    MP, submitted_by="program@eva.org", department="program",
+    vendor_name="Workshop stipends — batch 1", amount=1,  # deliberately wrong
+    category="training", project_code="P-WS-1", payees=_payee_rows,
+)
+check("amount is recomputed from the payees, not the (wrong) amount passed in",
+      batch.amount, 15_000)
+check("payee rows are stored", len(batch.payees), 3)
+check("PAYEES_VALID passed", next(c.result for c in batch.checks if c.code == "PAYEES_VALID"),
+      rq.CheckResult.PASS)
+check("no single-vendor checks fired (VENDOR_APPROVED doesn't apply to a batch title)",
+      any(c.code == "VENDOR_APPROVED" for c in batch.checks), False)
+
+# a blank row is a FAIL, exactly like an unnamed single vendor
+bad_rows = _payee_rows + [rq.Payee(name="", amount=0)]
+bad_batch = rq.create_requisition(
+    MP, submitted_by="program@eva.org", department="program",
+    vendor_name="Workshop stipends — batch 2", amount=0,
+    category="training", project_code="P-WS-1", payees=bad_rows,
+)
+check("incomplete payee row blocks", len(rq.blocking_checks(bad_batch)) > 0, True)
+
+# NEEM's own stated ceiling
+expect_err("more than the org's max_payees is refused outright",
+    lambda: rq.create_requisition(
+        MP, submitted_by="program@eva.org", department="program",
+        vendor_name="Too many payees", amount=0, category="training",
+        project_code="P-WS-1",
+        payees=[rq.Payee(name=f"P{i}", amount=100) for i in range(101)],
+    ))
+
+# full approval + payment: the payee list survives onto the frozen record and
+# out into the payment ledger as individual, reconcilable transfers.
+batch = rq.decide(MP, batch.id, decision=rq.Decision.APPROVED,
+                  actor="finance@eva.org", department="finance", notes="ok")
+check("batch fully approved", batch.status, rq.ReqStatus.APPROVED)
+mp_txn = rq.mark_paid(MP, batch.id, actor="finance2@eva.org",
+                      bank_reference="GTB/BATCH-1")
+check("transaction freezes all three payees", len(mp_txn.payees), 3)
+check("transaction total still the sum", mp_txn.amount, 15_000)
+
+mp_disbursements = [d for d in _disb.list_disbursements(MP) if d.batch_id == mp_txn.id]
+check("one disbursement per payee, not one lump sum", len(mp_disbursements), 3)
+check("disbursement total matches the payment", sum(d.amount for d in mp_disbursements), 15_000)
+check("each disbursement carries its own payee's bank account",
+      sorted(d.payee_account for d in mp_disbursements),
+      sorted(p.account_number for p in _payee_rows))
+
 # The script tracked failures in _fail throughout but, until this fix, always
 # printed a clean success message and exited 0 regardless — exactly the
 # "every signal was green" failure mode the .gitignore incident (see

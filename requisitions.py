@@ -88,6 +88,25 @@ class PolicyCheck(BaseModel):
     override_authority: Optional[str] = None
 
 
+class Payee(BaseModel):
+    """One line of a multi-payee requisition — a workshop stipend list, a
+    beneficiary payout, a batch of vendor payments raised as one request.
+
+    Mirrors NEEM's own Advance/Reimbursement Request Form ("Section B: PAYEE
+    ... Below table can be replicated if the payees are more than one"), so a
+    requisition raised this way captures the same fields their paper memo
+    already required — nothing invented, nothing dropped.
+    """
+    name: str = ""                       # as it appears on the bank statement
+    account_number: str = ""
+    bank_name: str = ""
+    amount: float = 0.0
+    purpose: str = ""                    # this payee's line item, if it differs
+    tin: str = ""
+    phone_or_email: str = ""
+    payee_type: Literal["staff", "vendor", "beneficiary"] = "vendor"
+
+
 class Approval(BaseModel):
     """One approver's decision at one workflow step. Never mutated."""
     step: str                            # compliance, finance, ed, ...
@@ -134,6 +153,11 @@ class RequisitionWorkflow(BaseModel):
     forbidden_vendors: list[str] = Field(default_factory=list)
     approved_vendors: list[str] = Field(default_factory=list)  # empty = allow all
     required_documents: list[str] = Field(default_factory=list)
+    # A batch of participant/vendor payments raised as one requisition. NEEM
+    # names 100 as their real ceiling (their weekly GTBank GAPS schedule has
+    # to hold it); kept configurable rather than hard-coded so a different
+    # client's actual bank batch limit doesn't silently inherit NEEM's number.
+    max_payees: int = 100
     # Per-category packs. NEEM's own deck says it plainly: "the correct pack
     # depends on whether it concerns goods, services, an activity, an advance,
     # a reimbursement or a final balance payment." One flat list asks a
@@ -170,6 +194,12 @@ class Requisition(BaseModel):
     receipt_ids: list[str] = Field(default_factory=list)
     documents: list[str] = Field(default_factory=list)
 
+    # Multi-payee batch (workshop stipends, beneficiary payouts, ...). Empty
+    # for the ordinary single-vendor requisition — every existing caller is
+    # unaffected. When populated, `amount` above is always the sum of these
+    # and `vendor_name` is the batch's title/purpose, not a payee's name.
+    payees: list[Payee] = Field(default_factory=list)
+
     # Workflow
     status: ReqStatus = ReqStatus.DRAFT
     current_step: Optional[str] = None   # which step it's waiting on
@@ -197,6 +227,7 @@ class TransactionRecord(BaseModel):
     category: str = ""
     project_code: str = ""
     grant_code: Optional[str] = None
+    payees: list[Payee] = Field(default_factory=list)  # frozen copy, see Requisition.payees
 
     bank_reference: str = ""
     paid_by: str = ""
@@ -502,13 +533,18 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
             message="Requisition amount must be greater than zero.",
         ))
 
-    # 3. Vendor present
+    # 3. Vendor / title present. In multi-payee mode this is the batch's
+    # title ("Workshop stipends — Abuja cohort"), not one payee's name — the
+    # payee list gets its own validation (_check_payees) instead of the
+    # single-vendor checks below, which are meaningless against a title.
     if not req.vendor_name.strip():
         checks.append(PolicyCheck(
             code="VENDOR_PRESENT", name="Vendor identified",
             result=CheckResult.FAIL,
             message="No vendor named. A payee is required before approval.",
         ))
+    elif req.payees:
+        checks.extend(_check_payees(req))
     else:
         # 4. Forbidden vendor
         if req.vendor_name.strip().lower() in {v.lower() for v in wf.forbidden_vendors}:
@@ -722,6 +758,33 @@ def _check_vendor_register(org_id: str, req: Requisition) -> Optional[PolicyChec
         message=(f"Bank account {bank.account_number} confirmed as "
                  f"'{bank.resolved_name}'; {tin_note}."),
     )
+
+
+def _check_payees(req: Requisition) -> list[PolicyCheck]:
+    """Validate a multi-payee batch the way a single vendor is validated above.
+
+    A row with no name or no positive amount is not a payment — it is a blank
+    line that slipped through the form, and paying it means either nothing
+    happens (harmless) or the wrong person gets paid (not harmless). FAIL,
+    same as an unnamed vendor, so it needs an override with a reason rather
+    than a shrug at payment time.
+    """
+    bad = [f"row {i + 1}" for i, p in enumerate(req.payees)
+           if not p.name.strip() or _money(p.amount) <= 0]
+    if bad:
+        return [PolicyCheck(
+            code="PAYEES_VALID", name="Every payee has a name and an amount",
+            result=CheckResult.FAIL,
+            actual_value=", ".join(bad),
+            message=(f"Incomplete payee row(s): {', '.join(bad)}. Each payee "
+                     "needs a name and an amount greater than zero."),
+        )]
+    return [PolicyCheck(
+        code="PAYEES_VALID", name="Every payee has a name and an amount",
+        result=CheckResult.PASS,
+        actual_value=f"{len(req.payees)} payee(s)",
+        message="Every payee row is complete.",
+    )]
 
 
 def _check_outstanding_advances(org_id: str,
@@ -964,15 +1027,47 @@ def create_requisition(
     description: str = "",
     receipt_ids: Optional[list[str]] = None,
     documents: Optional[list[str]] = None,
+    payees: Optional[list[Payee]] = None,
     currency: str = "NGN",
     submit: bool = True,
 ) -> Requisition:
     """
     Raise a requisition. Runs policy checks immediately so the submitter sees
     problems before an approver ever opens it.
+
+    `payees`, when given, raises a multi-payee batch instead of a single
+    payment — a workshop's stipend list, a beneficiary payout run. Gated on
+    the `multi_payee_requisitions` flag so an org that hasn't adopted it can't
+    have a batch land in front of an approver who's never seen the shape
+    before. `amount` is always recomputed as the sum of the payees; whatever
+    was passed for it is ignored, on purpose — one caller passing a total
+    that disagrees with its own line items is exactly the mistake this
+    engine exists to catch, not repeat.
     """
     org = store.require_org(org_id)
     now = _now_iso()
+    payees = list(payees or [])
+
+    if payees:
+        try:
+            import org_config
+            multi_payee_on = org_config.feature_enabled(org, "multi_payee_requisitions")
+        except ImportError:  # pragma: no cover
+            multi_payee_on = False
+        if not multi_payee_on:
+            raise RequisitionError(
+                "This organisation has not enabled multi-payee requisitions "
+                "('multi_payee_requisitions' feature flag). Raise this as a "
+                "single-vendor requisition, or enable the flag first."
+            )
+        cap = get_workflow(org).max_payees or 100
+        if len(payees) > cap:
+            raise RequisitionError(
+                f"This requisition names {len(payees)} payees, above this "
+                f"organisation's limit of {cap} in one batch. Split it into "
+                "more than one requisition."
+            )
+        amount = sum(p.amount for p in payees)
 
     req = Requisition(
         id=uuid.uuid4().hex,
@@ -991,6 +1086,7 @@ def create_requisition(
         description=description.strip(),
         receipt_ids=list(receipt_ids or []),
         documents=list(documents or []),
+        payees=payees,
         created_at=now,
         updated_at=now,
     )
@@ -1031,6 +1127,7 @@ def _submit(org_id: str, req: Requisition) -> Requisition:
 _DRAFT_EDITABLE = (
     "vendor_name", "vendor_account", "amount", "currency", "category",
     "project_code", "grant_code", "description", "receipt_ids", "documents",
+    "payees",
 )
 
 
@@ -1064,6 +1161,15 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
         if getattr(req, key) != value:
             setattr(req, key, value)
             changed.append(key)
+
+    # Editing the payee list changes what's owed — the total must always be
+    # their sum, never a stale figure left over from before the edit.
+    if "payees" in changed and req.payees:
+        new_total = _money(sum(p.amount for p in req.payees))
+        if req.amount != new_total:
+            req.amount = new_total
+            if "amount" not in changed:
+                changed.append("amount")
 
     if changed:
         _audit(req, "draft_edited", actor=actor, department=req.department,
@@ -1334,6 +1440,7 @@ def mark_paid(
         category=req.category,
         project_code=req.project_code,
         grant_code=req.grant_code,
+        payees=[p.model_copy(deep=True) for p in req.payees],
         bank_reference=bank_reference.strip(),
         paid_by=actor,
         paid_at=_now_iso(),

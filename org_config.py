@@ -300,6 +300,7 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             documents_by_category=wf.get("documents_by_category",
                                          current.documents_by_category),
             duplicate_window_days=int(wf.get("duplicate_window_days", current.duplicate_window_days)),
+            max_payees=int(wf.get("max_payees", current.max_payees)),
         )
         bad = requisitions.unroutable_steps(org_id, new)
         if bad:
@@ -463,6 +464,7 @@ def describe_org(org_id: str) -> dict:
             "forbidden_vendors": wf.forbidden_vendors,
             "approved_vendors": wf.approved_vendors,
             "duplicate_window_days": wf.duplicate_window_days,
+            "max_payees": wf.max_payees,
         },
         "modules": client_config(org)["modules"],
         "features": client_config(org)["features"],
