@@ -6,9 +6,11 @@ import { CheckCircle2, Download, Loader2, ShieldAlert, ShieldCheck } from "lucid
 import { AppShell } from "@/components/AppShell";
 import {
   downloadRequisitionLog,
+  getAuditFindings,
   getAuditSummary,
   triggerBlobDownload,
 } from "@/lib/requisitionApi";
+import type { AuditFindingsReport } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money } from "@/lib/requisitionFormat";
 import type { AuditSummary } from "@/types/requisition";
@@ -30,6 +32,8 @@ function isoDate(d: Date): string {
  */
 export default function AuditPage() {
   const [summary, setSummary] = useState<AuditSummary | null>(null);
+  const [findings, setFindings] = useState<AuditFindingsReport | null>(null);
+  const [findingsError, setFindingsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +58,16 @@ export default function AuditPage() {
         }
       } finally {
         if (!cancelled) setLoading(false);
+      }
+      try {
+        const f = await getAuditFindings();
+        if (!cancelled) setFindings(f);
+      } catch (e) {
+        if (!cancelled) {
+          setFindingsError(
+            e instanceof Error ? e.message : "Could not run the audit tests.",
+          );
+        }
       }
     })();
     return () => {
@@ -123,6 +137,100 @@ export default function AuditPage() {
             Generated {dateTime(summary.generated_at)}.
           </p>
         </div>
+
+        {/* THE TESTS. Above the export and the counts, because this is the
+            part that does work — each one looks for a specific way money goes
+            wrong across the whole population, which is what a single payment's
+            own checks cannot see. */}
+        <section className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold text-gray-900">Audit tests</h2>
+            {findings ? (
+              <span className="text-xs text-gray-500">
+                {findings.requisitions_examined} requisitions ·{" "}
+                {findings.transactions_examined} payments examined
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs text-gray-500">
+            Run over every record, every time this page opens. Each test is
+            arithmetic over stored data — no estimate, no judgement call, so any
+            finding can be checked by hand.
+          </p>
+
+          {findingsError ? (
+            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              {findingsError}
+            </p>
+          ) : !findings ? (
+            <p className="mt-3 flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 className="h-4 w-4 animate-spin" /> Running the tests…
+            </p>
+          ) : findings.clean ? (
+            <div className="mt-3 flex gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+              <div>
+                <p className="text-sm font-semibold text-emerald-900">
+                  Every test passed
+                </p>
+                <p className="mt-0.5 text-sm text-emerald-800">
+                  No broken audit trail, no unexplained exception, no one person
+                  approving twice, no shared payee account, nothing shaved under a
+                  threshold and no split payments.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <SeverityPill label="High" count={findings.by_severity.high} tone="high" />
+                <SeverityPill label="Medium" count={findings.by_severity.medium} tone="medium" />
+                <SeverityPill label="Low" count={findings.by_severity.low} tone="low" />
+              </div>
+              <ul className="mt-3 space-y-3">
+                {findings.findings.map((f) => (
+                  <li
+                    key={f.code}
+                    className={
+                      f.severity === "high"
+                        ? "rounded-lg border border-red-200 bg-red-50/60 p-3"
+                        : f.severity === "medium"
+                          ? "rounded-lg border border-amber-200 bg-amber-50/60 p-3"
+                          : "rounded-lg border border-gray-200 bg-gray-50/60 p-3"
+                    }
+                  >
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span
+                        className={
+                          f.severity === "high"
+                            ? "text-sm font-semibold text-red-900"
+                            : f.severity === "medium"
+                              ? "text-sm font-semibold text-amber-900"
+                              : "text-sm font-semibold text-gray-900"
+                        }
+                      >
+                        {f.title}
+                      </span>
+                      {f.amount > 0 ? (
+                        <span className="text-xs font-medium text-gray-600">
+                          {money(f.amount)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 text-sm text-gray-800">{f.detail}</p>
+                    <p className="mt-1 text-xs text-gray-600">{f.why}</p>
+                    {f.refs.length ? (
+                      <p className="mt-1.5 text-xs text-gray-500">
+                        {f.refs.slice(0, 12).join(", ")}
+                        {f.refs.length > 12 ? ` and ${f.refs.length - 12} more` : ""}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
 
         {exportEnabled ? (
           <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -355,5 +463,33 @@ function Th({ children }: { children: React.ReactNode }) {
     >
       {children}
     </th>
+  );
+}
+
+/** One severity count. Zero is shown greyed rather than hidden — "0 high"
+ *  is a statement an auditor wants to read, not an absence. */
+function SeverityPill({
+  label,
+  count,
+  tone,
+}: {
+  label: string;
+  count: number;
+  tone: "high" | "medium" | "low";
+}) {
+  const active = count > 0;
+  const style = !active
+    ? "bg-gray-50 text-gray-400 ring-gray-200"
+    : tone === "high"
+      ? "bg-red-50 text-red-800 ring-red-200"
+      : tone === "medium"
+        ? "bg-amber-50 text-amber-800 ring-amber-200"
+        : "bg-gray-100 text-gray-700 ring-gray-200";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset ${style}`}
+    >
+      {count} {label}
+    </span>
   );
 }

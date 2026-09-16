@@ -262,6 +262,40 @@ export async function runComplianceCheck(
   });
 }
 
+// ─── audit findings ─────────────────────────────────────────────────────────
+
+export interface AuditFinding {
+  code: string;
+  title: string;
+  severity: "high" | "medium" | "low";
+  /** What was found, in plain words. */
+  detail: string;
+  /** Why an auditor cares — shown, not hidden behind a tooltip. */
+  why: string;
+  /** The exact records involved, so the finding can be checked by hand. */
+  refs: string[];
+  amount: number;
+}
+
+export interface AuditFindingsReport {
+  org_id: string;
+  generated_at: string;
+  requisitions_examined: number;
+  transactions_examined: number;
+  clean: boolean;
+  by_severity: { high: number; medium: number; low: number };
+  findings: AuditFinding[];
+}
+
+/** Run the audit tests over the organisation's records. Deterministic — every
+ * finding is arithmetic or pattern matching over stored records, so an
+ * auditor can reproduce it by hand. Sends the browser's UTC offset because
+ * the working-hours test only means anything in the org's own time. */
+export async function getAuditFindings(): Promise<AuditFindingsReport> {
+  const offset = new Date().getTimezoneOffset();
+  return apiFetch(`/audit/findings?tz_offset_minutes=${offset}`);
+}
+
 // ─── payee import ───────────────────────────────────────────────────────────
 
 export interface ImportedPayeeRow {

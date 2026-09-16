@@ -40,6 +40,7 @@ from pydantic import BaseModel
 import approval_tokens
 import approval_webhook
 import attachments
+import audit_findings
 import compliance
 import fast_extract
 import idempotency
@@ -566,6 +567,46 @@ async def preview_payee_import_endpoint(
                 "warnings": r.warnings,
             }
             for r in result.rows
+        ],
+    }
+
+
+@router.get("/audit/findings")
+async def audit_findings_endpoint(
+    tz_offset_minutes: int = Query(
+        0, description="The caller's UTC offset, JavaScript getTimezoneOffset "
+                       "convention. Only affects the working-hours test."),
+    ctx: Ctx = Depends(request_context),
+):
+    """Run the audit tests over this organisation's records.
+
+    Not a dashboard — a set of deterministic tests, each looking for one
+    specific way money goes wrong: a broken hash chain, an exception with no
+    reason, one person signing two stages, one account paid under several
+    names, amounts shaved just under a threshold, a purchase split across
+    several payments, a stage escalated past, approvals at 3am, gaps in the
+    reference sequence.
+
+    Readable by any signed-in user, like the rest of the audit surface: an
+    organisation that hides its own control findings from its own staff is
+    not running a control.
+    """
+    report = audit_findings.run_audit_tests(
+        ctx.org_id, tz_offset_minutes=tz_offset_minutes,
+    )
+    return {
+        "org_id": report.org_id,
+        "generated_at": report.generated_at,
+        "requisitions_examined": report.requisitions_examined,
+        "transactions_examined": report.transactions_examined,
+        "clean": report.clean,
+        "by_severity": report.by_severity,
+        "findings": [
+            {
+                "code": f.code, "title": f.title, "severity": f.severity,
+                "detail": f.detail, "why": f.why, "refs": f.refs, "amount": f.amount,
+            }
+            for f in report.findings
         ],
     }
 
