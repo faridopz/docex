@@ -262,6 +262,19 @@ export async function runComplianceCheck(
   });
 }
 
+/** Send a requisition up or down the chain — escalate it to a later stage,
+ * or hand it back to an earlier one without bouncing it to the submitter and
+ * losing the reviews already done. The reason is required and read at audit.
+ * Only the department currently holding it can do this. */
+export async function routeRequisition(
+  id: string, input: { target_step: string; reason: string },
+): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/route`, {
+    method: "POST",
+    body: form({ target_step: input.target_step, reason: input.reason }),
+  });
+}
+
 // ─── emailed sign-off ───────────────────────────────────────────────────────
 
 export interface SignoffRequestResult {

@@ -1134,6 +1134,39 @@ async def run_compliance_check_endpoint(
     return _detail_out(req)
 
 
+@router.post("/requisitions/{req_id}/route")
+async def route_requisition_endpoint(
+    req_id: str,
+    target_step: Annotated[str, Form(description="Which stage to send it to")],
+    reason: Annotated[str, Form(description="Why — required, and read at audit")] = "",
+    ctx: Ctx = Depends(request_context),
+):
+    """Send a requisition up or down the approval chain.
+
+    The fourth move, alongside approve / return / decline. Escalating forward
+    skips the stages in between and says so on the audit trail; sending it
+    back hands it to an earlier stage without bouncing it to the submitter,
+    so the reviews already done are not thrown away.
+
+    Not role-gated beyond the department boundary the engine enforces: only
+    whoever the requisition is actually sitting with can move it, which is
+    the same rule that governs deciding it and putting it on hold.
+    """
+    try:
+        req = rq.route_to(
+            ctx.org_id, req_id, target_step=target_step,
+            actor=ctx.user_id, department=ctx.department, reason=reason,
+        )
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Tell whoever it just landed on. Escalating to someone who never finds
+    # out is the same stall the escalation was meant to break.
+    wf = rq.get_workflow(ctx.org_id)
+    _notify_current_step(ctx, req, wf)
+    return _detail_out(req)
+
+
 # ─── emailed sign-off: escalate, delegate, or send to someone outside ──────
 #
 # Requisitions are approved in-app by signed-in people, and that remains the

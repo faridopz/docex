@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   ArrowLeft,
+  ArrowLeftRight,
   Banknote,
   Check,
   Download,
@@ -37,6 +38,7 @@ import {
   releaseRequisitionHold,
   resubmitRequisition,
   requestRequisitionSignoff,
+  routeRequisition,
   runComplianceCheck,
   triggerBlobDownload,
   uploadRequisitionAttachment,
@@ -100,6 +102,13 @@ export default function RequisitionDetailPage() {
   // answer "who owns each stage, and where is this right now", which is the
   // question everyone opens a requisition to answer.
   const [workflow, setWorkflow] = useState<RequisitionWorkflow | null>(null);
+
+  // Moving it along the chain without deciding it — escalate to a later
+  // stage, or hand it back to an earlier one.
+  const [routeTarget, setRouteTarget] = useState("");
+  const [routeReason, setRouteReason] = useState("");
+  const [routeBusy, setRouteBusy] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   // Emailed sign-off — escalate, delegate, or send this to someone who has
   // no DOCex account (a travelling AED, an auditor, a board member).
@@ -324,6 +333,24 @@ export default function RequisitionDetailPage() {
       setExportError(e instanceof Error ? e.message : "Could not export this requisition.");
     } finally {
       setExportBusy("");
+    }
+  }
+
+  async function handleRoute() {
+    if (!req || !routeTarget || routeReason.trim() === "") return;
+    setRouteBusy(true);
+    setRouteError(null);
+    try {
+      setReq(await routeRequisition(req.id, {
+        target_step: routeTarget,
+        reason: routeReason.trim(),
+      }));
+      setRouteTarget("");
+      setRouteReason("");
+    } catch (e) {
+      setRouteError(e instanceof Error ? e.message : "Could not move this requisition.");
+    } finally {
+      setRouteBusy(false);
     }
   }
 
@@ -939,6 +966,68 @@ export default function RequisitionDetailPage() {
               )}
             </Card>
 
+            {/* Move it along the chain WITHOUT deciding it. The three
+                decisions each move a requisition one fixed way — approve
+                goes one step on, return goes all the way back to the
+                submitter, decline ends it. Neither "the AED should see this
+                now" nor "finance should re-check this figure" was
+                expressible, and both happen constantly.
+
+                Only shown to whoever currently holds it; the server enforces
+                the same boundary, so this is not the control. */}
+            {workflow && req.status === "in_review" && req.current_step ? (
+              <Card
+                title="Move it along the chain"
+                subtitle="Escalate it, or hand it back a stage — without deciding it"
+              >
+                <p className="text-xs text-gray-500">
+                  Sending it back to an earlier stage keeps it in review with the reviews
+                  already done — unlike &ldquo;Return for fixes&rdquo;, which hands it to
+                  the person who raised it. Skipping stages is recorded by name.
+                </p>
+                <div className="mt-3 space-y-2">
+                  <select
+                    value={routeTarget}
+                    onChange={(e) => setRouteTarget(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  >
+                    <option value="">Send to…</option>
+                    {workflow.steps
+                      .filter((s) => s.key !== req.current_step && req.amount >= (s.min_amount ?? 0))
+                      .map((s) => (
+                        <option key={s.key} value={s.key}>
+                          {s.label || humanise(s.key)}
+                          {s.department ? ` · ${humanise(s.department)}` : ""}
+                        </option>
+                      ))}
+                  </select>
+                  <textarea
+                    value={routeReason}
+                    onChange={(e) => setRouteReason(e.target.value)}
+                    rows={2}
+                    placeholder="Why it needs to go there — required, and read at audit."
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleRoute}
+                    disabled={routeBusy || !routeTarget || routeReason.trim() === ""}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {routeBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ArrowLeftRight className="h-3.5 w-3.5" />
+                    )}
+                    Move it
+                  </button>
+                </div>
+                {routeError ? (
+                  <p className="mt-2 text-xs text-red-700">{routeError}</p>
+                ) : null}
+              </Card>
+            ) : null}
+
             {/* Escalate / delegate outward. Only offered while the request is
                 actually sitting at a step — there is nothing to sign off
                 otherwise, and offering it would be a dead end. */}
@@ -1297,6 +1386,13 @@ function ApprovalRoute({
         const position = engagedKeys.indexOf(step.key);
         const isUpcoming =
           engaged && !decision && !isCurrent && currentIndex >= 0 && position > currentIndex;
+        // Passed over: the requisition is now BEYOND this stage and nobody
+        // ever decided it — which happens when someone escalated straight
+        // past it. Showing this is the whole point of recording the skip;
+        // a stage that was silently bypassed is the thing an auditor is
+        // looking for, so it must not look identical to one still to come.
+        const isSkipped =
+          engaged && !decision && !isCurrent && currentIndex >= 0 && position < currentIndex;
         const isLast = i === workflow.steps.length - 1;
 
         const dot = !engaged
@@ -1309,7 +1405,9 @@ function ApprovalRoute({
                 ? "border-orange-400 bg-orange-400"
                 : isCurrent
                   ? "border-brand-600 bg-white ring-4 ring-brand-100"
-                  : "border-gray-300 bg-white";
+                  : isSkipped
+                    ? "border-amber-400 bg-white"
+                    : "border-gray-300 bg-white";
 
         return (
           <li key={step.key} className="flex gap-3">
@@ -1329,6 +1427,11 @@ function ApprovalRoute({
                 {isCurrent ? (
                   <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700 ring-1 ring-brand-200">
                     Waiting here now
+                  </span>
+                ) : null}
+                {isSkipped ? (
+                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                    Skipped
                   </span>
                 ) : null}
                 {decision ? (
@@ -1363,6 +1466,10 @@ function ApprovalRoute({
                 </p>
               ) : isUpcoming ? (
                 <p className="mt-0.5 text-xs text-gray-400">Next after the current step</p>
+              ) : isSkipped ? (
+                <p className="mt-0.5 text-xs text-amber-700">
+                  Passed over without a decision — see the audit log for who moved it and why
+                </p>
               ) : isCurrent ? (
                 <p className="mt-0.5 text-xs text-gray-500">
                   {req.status === "on_hold"

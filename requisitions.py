@@ -1942,6 +1942,116 @@ def record_compliance_result(
     return _save(org, req)
 
 
+def route_to(
+    org_id: str, req_id: str, *, target_step: str, actor: str,
+    department: str = "", reason: str = "",
+) -> Requisition:
+    """Move a requisition to a different stage of the chain — forward to
+    escalate it, or backward to send it to an earlier stage for another look.
+
+    The gap this fills. `decide()` offers three outcomes and each moves the
+    requisition exactly one way: approve advances one step, return sends it
+    all the way back to the SUBMITTER, decline ends it. Real chains need a
+    fourth move. Finance cannot settle a question and wants the AED to look
+    at it now rather than after two more hops. The AED wants Finance to
+    re-check a figure — which is not "return for fixes", because the
+    submitter did nothing wrong and bouncing it to them loses the reviews
+    already done. Both are routing, not judgement, and neither was
+    expressible.
+
+    decide()'s own comment already anticipated this: "a requisition sitting
+    with the wrong department should reassign it — a visible, recorded act —
+    not silently stand in for that department." This is that act.
+
+    What it deliberately does NOT do:
+
+      - It never erases an approval. The log is append-only, so a stage
+        revisited after being sent back simply carries two decisions, and
+        the later one describes where things stand.
+      - It cannot route to a step that does not engage at this amount.
+        Sending a N50,000 payment to a step that only starts at N7,000,000
+        would invent an approval the policy never asked for.
+      - It cannot skip the reason. Routing is a deviation from the chain the
+        org configured; an auditor comparing the trail to the policy will
+        find the jump, and "why" should already be sitting there. Same
+        principle as a hold and an override.
+
+    Skipping forward leaves the passed-over stages undecided, and that is
+    visible rather than hidden — the route display marks them skipped, which
+    is exactly what an auditor needs to see.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if req.status != ReqStatus.IN_REVIEW:
+        raise RequisitionError(
+            f"{req.ref} is not awaiting review (status: {req.status.value}); only a "
+            "requisition currently with an approver can be sent to another stage."
+        )
+    if not reason.strip():
+        raise RequisitionError(
+            "Sending a requisition to another stage requires a written reason."
+        )
+
+    wf = get_workflow(org)
+    current = _step(wf, req.current_step or "")
+    if current is None:
+        raise RequisitionError(f"{req.ref} has no active approval step.")
+
+    # Same department boundary as decide() and place_on_hold(): only whoever
+    # the requisition is actually sitting with may move it on. Otherwise this
+    # becomes the side door around the approval chain that those two guards
+    # exist to close.
+    if department and current.department and department != current.department:
+        raise RequisitionError(
+            f"{req.ref} is with {current.department} ({current.label or current.key}); "
+            f"you are in {department}. Only {current.department} can move it from here."
+        )
+
+    target = _step(wf, target_step.strip())
+    if target is None:
+        raise RequisitionError(f"No approval step '{target_step}' in this workflow.")
+    if target.key == current.key:
+        raise RequisitionError(f"{req.ref} is already with {current.label or current.key}.")
+
+    engaged = _steps_for(wf, req.amount)
+    engaged_keys = [s.key for s in engaged]
+    if target.key not in engaged_keys:
+        raise RequisitionError(
+            f"'{target.label or target.key}' does not apply to a "
+            f"{_money(req.amount)} {req.currency} payment — it engages from "
+            f"{_money(target.min_amount)}. Routing there would invent an approval "
+            "this organisation's policy does not require."
+        )
+
+    forward = engaged_keys.index(target.key) > engaged_keys.index(current.key)
+    skipped = (
+        [s for s in engaged
+         if engaged_keys.index(current.key) < engaged_keys.index(s.key) < engaged_keys.index(target.key)]
+        if forward else []
+    )
+
+    req.current_step = target.key
+    # "rerouted", NOT "routed". decide() already writes "routed" every time a
+    # requisition advances normally to its next step. Sharing that name would
+    # mix ordinary progression in with deliberate deviations from the chain,
+    # and the entire reason for recording a deviation is that someone can
+    # find it later — an auditor filtering the log for departures from the
+    # configured route must not have to read every normal hop to spot one.
+    _audit(
+        req, "rerouted", actor=actor, department=department,
+        detail=(
+            f"{'Escalated' if forward else 'Sent back'} from "
+            f"{current.label or current.key} to {target.label or target.key}"
+            + (f", skipping {', '.join(s.label or s.key for s in skipped)}" if skipped else "")
+            + f" — {reason.strip()}"
+        ),
+    )
+    req.updated_at = _now_iso()
+    return _save(org, req)
+
+
 def note_event(
     org_id: str, req_id: str, *, actor: str, event: str,
     department: str = "", detail: str = "",
