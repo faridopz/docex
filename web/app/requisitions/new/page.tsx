@@ -2,17 +2,28 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2, Plus, Send, Trash2, Users } from "lucide-react";
+import { ArrowRight, Loader2, Plus, Send, ShieldCheck, Sparkles, Trash2, Users } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { DropZone } from "@/components/DropZone";
 import { PolicyCheckList } from "@/components/erp/PolicyChecks";
 import {
   createRequisition,
   getWorkflow,
+  listComplianceRulebooks,
   newIdempotencyKey,
+  runComplianceCheck,
+  uploadRequisitionAttachment,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { humanise, money } from "@/lib/requisitionFormat";
-import type { BudgetLine, Payee, PaymentType, Requisition, RequisitionWorkflow } from "@/types/requisition";
+import type {
+  BudgetLine,
+  Payee,
+  PaymentType,
+  Requisition,
+  RequisitionWorkflow,
+  RulebookSummary,
+} from "@/types/requisition";
 
 /** One payee row as the form edits it — amount stays a raw string (so a
  * comma-typed "20,000" isn't fought while typing) and is only parsed at the
@@ -123,8 +134,25 @@ export default function NewRequisitionPage() {
 
   const [budgetLines, setBudgetLines] = useState<BudgetLineRow[]>([]);
 
+  // Attach the real files and choose the policy HERE, while raising it —
+  // not afterwards on the detail screen. Mirrors /compliance/check's model
+  // ("here is the payment, which policy does it have to satisfy?"), which
+  // is how people actually think about a payment pack.
+  const [attachmentsEnabled, setAttachmentsEnabled] = useState(false);
+  const [complianceEnabled, setComplianceEnabled] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
+  const [rulebookId, setRulebookId] = useState("");
+  const [runCheck, setRunCheck] = useState(true);
+
   const [submitting, setSubmitting] = useState(false);
+  // What the submit button is actually doing right now — raising it,
+  // uploading files, or waiting on the model. A compliance check takes
+  // real seconds, and a button that just says "submitting" through all of
+  // it reads as a hang.
+  const [stage, setStage] = useState<"" | "raising" | "uploading" | "checking">("");
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [result, setResult] = useState<Requisition | null>(null);
 
   // One key per logical submission. Cleared only after a success, so every
@@ -142,9 +170,21 @@ export default function NewRequisitionPage() {
       }
       try {
         const cfg = await getClientConfig();
-        if (!cancelled) setMultiPayeeEnabled(hasFeature(cfg, "multi_payee_requisitions"));
+        if (cancelled) return;
+        setMultiPayeeEnabled(hasFeature(cfg, "multi_payee_requisitions"));
+        setAttachmentsEnabled(hasFeature(cfg, "requisition_attachments"));
+        const canCheck = hasFeature(cfg, "requisition_compliance_check");
+        setComplianceEnabled(canCheck);
+        if (canCheck) {
+          try {
+            const rbs = await listComplianceRulebooks();
+            if (!cancelled) setRulebooks(rbs);
+          } catch {
+            /* No picker, no check — the section explains itself below. */
+          }
+        }
       } catch {
-        /* Fails closed — the toggle just stays hidden, matching what the
+        /* Fails closed — the toggles just stay hidden, matching what the
            server would refuse anyway. */
       }
     })();
@@ -254,8 +294,10 @@ export default function NewRequisitionPage() {
 
     setSubmitting(true);
     setError(null);
+    setWarning(null);
+    setStage("raising");
     try {
-      const req = await createRequisition(
+      let req = await createRequisition(
         {
           vendor_name: vendorName.trim(),
           amount: effectiveAmount,
@@ -288,19 +330,62 @@ export default function NewRequisitionPage() {
         },
         idemKey.current,
       );
-      setResult(req);
       // Fresh key so the next requisition on this screen is a new write.
       idemKey.current = newIdempotencyKey();
+
+      // The requisition EXISTS from here on. Everything below is additive —
+      // attaching files, running the policy check — so a failure in any of
+      // it must never read as "your request wasn't raised". It downgrades to
+      // a warning on the result screen, with the requisition still shown and
+      // both actions still available on its detail page.
+      if (attachmentsEnabled && files.length > 0) {
+        setStage("uploading");
+        const failed: string[] = [];
+        for (const file of files) {
+          try {
+            req = await uploadRequisitionAttachment(req.id, file);
+          } catch {
+            failed.push(file.name);
+          }
+        }
+        if (failed.length) {
+          setWarning(
+            `${req.ref} was raised, but ${failed.length === 1 ? "this file" : "these files"} ` +
+              `did not attach: ${failed.join(", ")}. You can attach ${failed.length === 1 ? "it" : "them"} again from the requisition.`,
+          );
+        }
+      }
+
+      const canCheckNow =
+        complianceEnabled && runCheck && rulebookId !== "" && req.attachments.length > 0;
+      if (canCheckNow) {
+        setStage("checking");
+        try {
+          req = await runComplianceCheck(req.id, rulebookId);
+        } catch (e) {
+          setWarning(
+            (e instanceof Error ? e.message : "The policy check could not run.") +
+              ` ${req.ref} was still raised — you can run the check from the requisition itself.`,
+          );
+        }
+      }
+
+      setResult(req);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not raise this requisition.");
     } finally {
       setSubmitting(false);
+      setStage("");
     }
   }
 
   function startAnother() {
     setResult(null);
     setError(null);
+    setWarning(null);
+    setFiles([]);
+    setRulebookId("");
+    setRunCheck(true);
     setVendorName("");
     setAmount("");
     setCategory("");
@@ -385,10 +470,56 @@ export default function NewRequisitionPage() {
             </div>
           )}
 
+          {warning ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              {warning}
+            </div>
+          ) : null}
+
           <section>
             <h2 className="mb-2 text-sm font-semibold text-gray-900">Policy checks</h2>
             <PolicyCheckList checks={result.checks} />
           </section>
+
+          {/* The AI-assisted verdict sits BELOW the deterministic checks and
+              visibly apart from them, never merged: a clean policy reading
+              does not release a blocking check, and a flagged one does not
+              create a block that the engine itself didn't find. */}
+          {result.compliance ? (
+            <section>
+              <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-900">
+                <Sparkles className="h-3.5 w-3.5 text-gray-400" />
+                Checked against &ldquo;{result.compliance.rulebook_name}&rdquo;
+              </h2>
+              <div className="rounded-lg border border-gray-200 bg-white p-4">
+                <p className="text-sm font-semibold text-gray-900">
+                  {humanise(result.compliance.overall_verdict)} ·{" "}
+                  <span className="font-normal text-gray-500">
+                    {result.compliance.document_count}{" "}
+                    {result.compliance.document_count === 1 ? "document" : "documents"} read
+                  </span>
+                </p>
+                <p className="mt-1 text-sm text-gray-700">
+                  {result.compliance.overall_summary}
+                </p>
+                {result.compliance.results.length ? (
+                  <ul className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+                    {result.compliance.results.map((f, i) => (
+                      <li key={`${f.rule_id}-${i}`} className="text-sm">
+                        <span className="font-medium text-gray-900">
+                          {humanise(f.verdict)}
+                        </span>
+                        <span className="text-gray-700"> — {f.rule_description}</span>
+                        {f.reasoning ? (
+                          <p className="text-xs text-gray-500">{f.reasoning}</p>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
 
           <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-5">
             <Link
@@ -663,6 +794,86 @@ export default function NewRequisitionPage() {
             </Field>
           ) : null}
 
+          {attachmentsEnabled ? (
+            <div className="space-y-2">
+              <span className="block text-sm font-medium text-gray-700">
+                Attach the actual documents
+                <span className="ml-1.5 font-normal text-gray-400">(optional)</span>
+              </span>
+              <p className="text-xs text-gray-500">
+                The real files — memo, invoice, quotes, receipts. The ticks above are a
+                checklist; these are the documents themselves, and the only thing a policy
+                check can actually read.
+              </p>
+              <DropZone files={files} onFilesChange={setFiles} />
+            </div>
+          ) : null}
+
+          {complianceEnabled ? (
+            <div className="rounded-lg border border-gray-200 bg-gray-50/70 p-4">
+              <div className="flex items-start gap-2">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">Check against a policy</p>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Reads the attached documents against one of your uploaded policies and
+                      returns a verdict alongside the checks above — it never replaces them.
+                    </p>
+                  </div>
+
+                  {rulebooks.length === 0 ? (
+                    <p className="text-xs text-gray-500">
+                      No policies uploaded yet.{" "}
+                      <Link href="/compliance" className="font-medium text-brand-600 underline">
+                        Upload one under Compliance
+                      </Link>{" "}
+                      and it will appear here.
+                    </p>
+                  ) : (
+                    <>
+                      <select
+                        value={rulebookId}
+                        onChange={(e) => setRulebookId(e.target.value)}
+                        className="w-full max-w-sm rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      >
+                        <option value="">Don&rsquo;t check against a policy</option>
+                        {rulebooks.map((rb) => (
+                          <option key={rb.id} value={rb.id}>
+                            {rb.name} ({rb.active_rule_count}{" "}
+                            {rb.active_rule_count === 1 ? "rule" : "rules"})
+                          </option>
+                        ))}
+                      </select>
+
+                      {rulebookId ? (
+                        <label className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={runCheck}
+                            onChange={(e) => setRunCheck(e.target.checked)}
+                            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          <span className="text-xs text-gray-600">
+                            Run the check as soon as this is submitted. Untick to raise it now
+                            and run the check later from the requisition.
+                          </span>
+                        </label>
+                      ) : null}
+
+                      {rulebookId && runCheck && attachmentsEnabled && files.length === 0 ? (
+                        <p className="text-xs text-amber-700">
+                          Attach at least one document above — a policy check has nothing to
+                          read without one, so it will be skipped.
+                        </p>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {error ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
               {error}
@@ -706,7 +917,13 @@ export default function NewRequisitionPage() {
               ) : (
                 <Send className="h-4 w-4" />
               )}
-              {submitting ? "Running policy checks…" : "Submit requisition"}
+              {stage === "uploading"
+                ? "Attaching documents…"
+                : stage === "checking"
+                  ? "Reading them against your policy…"
+                  : submitting
+                    ? "Running policy checks…"
+                    : "Submit requisition"}
             </button>
             <Link
               href="/requisitions"

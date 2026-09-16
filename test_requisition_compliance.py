@@ -319,6 +319,49 @@ check("neither an override nor a default: refused", r4.status_code == 400)
 check("refusal explains a rulebook must be chosen",
       "chosen" in r4.json()["detail"].lower() or "rulebook" in r4.json()["detail"].lower())
 
+# ─── WO-31: the exact sequence /requisitions/new now performs when someone
+# raises a request, attaches the documents and picks the policy on the one
+# form — create, attach, then check against the CHOSEN rulebook. Worth
+# testing as a sequence and not just as three endpoints: the frontend now
+# depends on each step returning the updated requisition so the next step
+# has something to act on, and on the check working with NO workflow
+# default configured (cleared above) because the policy was chosen at raise
+# time instead ─────────────────────────────────────────────────────────────
+
+r = client.post("/requisitions", headers=ph, data={
+    "vendor_name": "Raise-Flow Ltd", "amount": "250000", "category": "supplies",
+    "payment_type": "advance", "vendor_bank_name": "Zenith Bank",
+})
+check("raise-flow: requisition created", r.status_code == 200)
+flow_id, flow_ref = r.json()["id"], r.json()["ref"]
+check("raise-flow: no compliance verdict before the check runs", r.json()["compliance"] is None)
+
+r = client.post(f"/requisitions/{flow_id}/attachments", headers=ph,
+                 files={"file": ("quote-a.txt", b"Quote A from Raise-Flow Ltd, N250,000.", "text/plain")})
+check("raise-flow: first document attached", r.status_code == 200)
+r = client.post(f"/requisitions/{flow_id}/attachments", headers=ph,
+                 files={"file": ("quote-b.txt", b"Quote B from another vendor, N265,000.", "text/plain")})
+check("raise-flow: second document attached", r.status_code == 200)
+check("raise-flow: attach returns the updated requisition, so the next step can use it",
+      len(r.json()["attachments"]) == 2)
+
+install_fake(fake_response(lean("flagged", "rule-vendor-quote", "flag", "Only 2 of 3 quotes attached")))
+r = client.post(f"/requisitions/{flow_id}/compliance-check", headers=ph,
+                 data={"rulebook_id": "rb-test-001"})
+check("raise-flow: check runs against the policy chosen at raise time, with no workflow default set",
+      r.status_code == 200)
+flow_body = r.json()
+check("raise-flow: verdict lands on the requisition",
+      flow_body["compliance"]["overall_verdict"] == "flagged")
+check("raise-flow: verdict names the chosen policy",
+      flow_body["compliance"]["rulebook_id"] == "rb-test-001")
+check("raise-flow: both attached documents were read",
+      flow_body["compliance"]["document_count"] == 2)
+check("raise-flow: the deterministic checks are still there, unmerged",
+      len(flow_body["checks"]) > 0)
+check("raise-flow: WO-29 detail survives the whole sequence",
+      flow_body["payment_type"] == "advance" and flow_body["vendor_bank_name"] == "Zenith Bank")
+
 if _fail:
     print(f"\n{_fail} check(s) FAILED.")
     import sys
