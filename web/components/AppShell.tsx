@@ -51,6 +51,7 @@ import { NotificationBell } from "@/components/erp/NotificationBell";
 export type NavSection =
   | "dashboard"
   | "requisitions"
+  | "pipeline"
   | "payments"
   | "audit"
   | "reconciliation"
@@ -94,6 +95,14 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { section: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutGrid, match: ["/dashboard", "/transactions"] },
       { section: "requisitions", label: "Requisitions", href: "/requisitions", icon: Send, match: ["/requisitions"] },
+      // The payment pipeline. Sits directly under Requisitions because it is
+      // the same data seen a different way — every card on it IS a
+      // requisition. It used to live in the settings footer, pointing at
+      // /compliance/board, where it was fed by compliance checks and so could
+      // not see a single requisition: the one screen titled "every payment"
+      // was blind to the payment engine. Daily working view, so it belongs in
+      // the working nav, not below a divider with Security and Org settings.
+      { section: "pipeline", label: "Pipeline", href: "/requisitions/board", icon: LayoutGrid, match: ["/requisitions/board"] },
       { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] },
       { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] },
       // Month end. Sits next to Audit deliberately: reconciliation is the
@@ -287,23 +296,24 @@ export function AppShell({
         </nav>
 
         <div className="border-t border-gray-100 px-3 py-3">
+          {/* Pipeline used to sit here, below the divider, next to Security
+              and Org settings — a daily working view filed under settings. It
+              is now in the working nav directly under Requisitions, where the
+              data it shows actually lives.
+
+              "Audit log" also used to sit here pointing at /compliance/checks,
+              one nav item above "Audit" (/audit) pointing at the requisition
+              audit summary. Two different systems, both called audit, three
+              items apart. This is the policy-check history, so it says so —
+              and it sits under Compliance, which is the policy area. */}
           {complianceOn && (
-            <>
-              <Link
-                href="/compliance/board"
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-              >
-                <LayoutGrid className="h-4 w-4 shrink-0 text-gray-400" />
-                Pipeline
-              </Link>
-              <Link
-                href="/compliance/checks"
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-              >
-                <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
-                Audit log
-              </Link>
-            </>
+            <Link
+              href="/compliance/checks"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+            >
+              <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
+              Policy check history
+            </Link>
           )}
           <Link
             href="/settings/org"
