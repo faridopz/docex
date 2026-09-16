@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Inbox, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Download, Inbox, Loader2, Plus } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ReqStatusBadge } from "@/components/erp/PolicyChecks";
-import { listPendingForMe, listRequisitions } from "@/lib/requisitionApi";
+import {
+  downloadRequisitionLog,
+  listPendingForMe,
+  listRequisitions,
+  triggerBlobDownload,
+} from "@/lib/requisitionApi";
 import { agingLabel, humanise, money, relativeTime } from "@/lib/requisitionFormat";
 import type { RequisitionSummary, ReqStatus } from "@/types/requisition";
 
@@ -37,6 +42,36 @@ export default function RequisitionsPage() {
   const [department, setDepartment] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<"" | "week" | "month">("");
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  /** The weekly/monthly audit log. Week starts Monday, matching how a
+   *  payment run is actually scheduled, not the calendar's Sunday. */
+  async function handleExport(period: "week" | "month") {
+    setExporting(period);
+    setExportError(null);
+    try {
+      const now = new Date();
+      let start: Date;
+      if (period === "week") {
+        const day = (now.getDay() + 6) % 7;
+        start = new Date(now);
+        start.setDate(now.getDate() - day);
+      } else {
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+      }
+      const iso = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+          d.getDate(),
+        ).padStart(2, "0")}`;
+      const blob = await downloadRequisitionLog(iso(start), iso(now));
+      triggerBlobDownload(blob, `requisition-log-${iso(start)}-to-${iso(now)}.xlsx`);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Could not export the log.");
+    } finally {
+      setExporting("");
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,7 +160,44 @@ export default function RequisitionsPage() {
               ))}
             </select>
           ) : null}
+
+          {/* The audit sweep, from the list as well as the board. NEEM asked
+              for the log "each month week etc" — it should be reachable
+              wherever someone is already looking at the requisitions, not
+              only from one screen. */}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleExport("week")}
+              disabled={exporting !== ""}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+            >
+              {exporting === "week" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              This week
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExport("month")}
+              disabled={exporting !== ""}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+            >
+              {exporting === "month" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Download className="h-3.5 w-3.5" />
+              )}
+              This month
+            </button>
+          </div>
         </div>
+
+        {exportError ? (
+          <p className="text-xs text-red-700">{exportError}</p>
+        ) : null}
 
         {error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">

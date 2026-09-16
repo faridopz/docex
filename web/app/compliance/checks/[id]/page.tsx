@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  ArrowRight,
   Download,
   Loader2,
   ShieldCheck,
@@ -18,7 +19,6 @@ import {
   getRulebook,
   unapproveCheck,
 } from "@/lib/api";
-import { ApprovalChain } from "@/components/compliance/ApprovalChain";
 import { RiskPanel } from "@/components/compliance/RiskPanel";
 import type { ComplianceCheckResult, PolicyRulebook } from "@/types";
 
@@ -179,15 +179,40 @@ export default function SavedCheckPage({
                 payload={check}
               />
             </div>
-            {rulebook?.approval_workflow && rulebook.approval_workflow.length > 0 && (
-              <div className="mb-6">
-                <ApprovalChain
-                  check={check}
-                  workflow={rulebook.approval_workflow}
-                  onUpdate={(updated) => setCheck(updated)}
-                />
-              </div>
-            )}
+            {/* A saved check used to carry its OWN three-stage approval chain
+                with emailed sign-off — a second, competing copy of the
+                requisition engine's chain. Two approval chains over the same
+                payment meant two audit trails, two places to look, and a
+                pipeline board that could not see half the work.
+
+                A check is an ASSESSMENT — does this pack satisfy this policy —
+                and an assessment authorises nothing. Authorisation lives on
+                the requisition, which has the org's real chain, the hash-
+                chained audit log and the frozen transaction record. So the
+                chain is gone from here, and what replaces it is the bridge:
+                if this needs paying, raise it as a payment request.
+
+                The chain itself still exists in the codebase and still serves
+                the emailed sign-off links already in flight; it is simply no
+                longer offered as a parallel way to authorise a payment. */}
+            <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
+              <p className="text-sm font-semibold text-gray-900">
+                This is a policy check, not a payment request
+              </p>
+              <p className="mt-1 text-sm text-gray-600">
+                It records whether these documents satisfy the policy. It doesn&rsquo;t
+                authorise anything and no money moves from here. If this needs paying,
+                raise it as a payment request — that is where the approval chain, the
+                audit trail and the payment record live.
+              </p>
+              <Link
+                href={`/requisitions/new?payee=${encodeURIComponent(check.payment_label ?? "")}&rulebook=${encodeURIComponent(check.rulebook_id ?? "")}`}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700"
+              >
+                Raise a payment request from this
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
             <div className="mb-6">
               <RiskPanel check={check} onUpdate={(updated) => setCheck(updated)} />
             </div>

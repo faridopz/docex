@@ -29,6 +29,7 @@ import {
   downloadRequisitionAttachment,
   downloadRequisitionExport,
   getRequisition,
+  getWorkflow,
   listComplianceRulebooks,
   newIdempotencyKey,
   payRequisition,
@@ -43,7 +44,12 @@ import {
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
-import type { Decision, Requisition, RulebookSummary } from "@/types/requisition";
+import type {
+  Decision,
+  Requisition,
+  RequisitionWorkflow,
+  RulebookSummary,
+} from "@/types/requisition";
 
 /**
  * Requisition detail — where a decision actually gets made.
@@ -90,6 +96,11 @@ export default function RequisitionDetailPage() {
   const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
   const [selectedRulebookId, setSelectedRulebookId] = useState<string>("");
 
+  // The org's approval chain. Needed here — not just on the raise form — to
+  // answer "who owns each stage, and where is this right now", which is the
+  // question everyone opens a requisition to answer.
+  const [workflow, setWorkflow] = useState<RequisitionWorkflow | null>(null);
+
   // Emailed sign-off — escalate, delegate, or send this to someone who has
   // no DOCex account (a travelling AED, an auditor, a board member).
   const [signoffEmail, setSignoffEmail] = useState("");
@@ -126,6 +137,12 @@ export default function RequisitionDetailPage() {
         }
       } catch {
         /* stays hidden — matches what the server would refuse anyway */
+      }
+      try {
+        const wf = await getWorkflow();
+        if (!cancelled) setWorkflow(wf);
+      } catch {
+        /* the route card just doesn't render; the rest of the page is fine */
       }
     })();
     return () => {
@@ -859,7 +876,33 @@ export default function RequisitionDetailPage() {
           </div>
 
           <div className="space-y-6">
-            <Card title="Approvals">
+            {/* THE APPROVAL ROUTE — who owns each stage, and where this is now.
+                The raise form showed this before submitting and then it
+                vanished: afterwards the page said only "with finance", a bare
+                step key with no indication of who that is, what came before,
+                or what happens next. This is the question everyone opens a
+                payment request to answer, so it is answered on the page.
+
+                Derived from the org's own workflow at THIS amount, so a step
+                that doesn't engage below its threshold is shown as not
+                required rather than silently omitted — "why didn't this go to
+                the ED?" is an audit question, and the answer is visible. */}
+            {workflow ? (
+              <Card
+                title="Approval route"
+                subtitle={`This organisation's chain for ${money(req.amount, req.currency)}`}
+              >
+                <ApprovalRoute req={req} workflow={workflow} />
+              </Card>
+            ) : null}
+
+            {/* Who is copied. The notifications already fired (they are sent
+                when the requisition is raised); nobody looking at the request
+                could see who got them. "Was the ED told about this?" is a
+                question people ask out loud, and it has a written answer. */}
+            {workflow ? <CopiedCard req={req} workflow={workflow} /> : null}
+
+            <Card title="Decisions recorded">
               {req.approvals.length === 0 ? (
                 <p className="text-sm text-gray-500">No decisions recorded yet.</p>
               ) : (
@@ -1196,6 +1239,183 @@ function DecisionPanel({
           Decline
         </button>
       </div>
+    </Card>
+  );
+}
+
+// ─── the approval route ─────────────────────────────────────────────────────
+
+/**
+ * Every stage of the org's chain for this amount, in order, each showing the
+ * department that owns it and what has happened there.
+ *
+ * Four states a stage can be in, and each is shown differently because they
+ * mean different things to whoever is reading:
+ *
+ *   done         someone decided — named, dated, and with what they decided
+ *   current      it is sitting here now, waiting on this department
+ *   upcoming     it will reach here next
+ *   not required this step does not engage at this amount
+ *
+ * The last one earns its place: silently hiding a step that did not engage
+ * makes "why did this never reach the ED?" unanswerable from the record,
+ * and that is exactly the kind of question an auditor asks months later.
+ */
+function ApprovalRoute({
+  req,
+  workflow,
+}: {
+  req: Requisition;
+  workflow: RequisitionWorkflow;
+}) {
+  if (!workflow.steps.length) {
+    return (
+      <p className="text-sm text-gray-500">
+        No approval chain is configured for this organisation, so requisitions are
+        approved on submission. Set one under Org settings.
+      </p>
+    );
+  }
+
+  // The last decision recorded at each step — a step can be decided more than
+  // once if a requisition was returned and resubmitted, and the latest is the
+  // one that describes where things stand.
+  const lastAt = new Map<string, (typeof req.approvals)[number]>();
+  for (const a of req.approvals) lastAt.set(a.step, a);
+
+  const engagedKeys = workflow.steps
+    .filter((s) => req.amount >= (s.min_amount ?? 0))
+    .map((s) => s.key);
+  const currentIndex = req.current_step ? engagedKeys.indexOf(req.current_step) : -1;
+
+  return (
+    <ol className="space-y-0">
+      {workflow.steps.map((step, i) => {
+        const engaged = req.amount >= (step.min_amount ?? 0);
+        const decision = lastAt.get(step.key);
+        const isCurrent = req.current_step === step.key;
+        const position = engagedKeys.indexOf(step.key);
+        const isUpcoming =
+          engaged && !decision && !isCurrent && currentIndex >= 0 && position > currentIndex;
+        const isLast = i === workflow.steps.length - 1;
+
+        const dot = !engaged
+          ? "border-gray-200 bg-white"
+          : decision?.decision === "approved"
+            ? "border-emerald-500 bg-emerald-500"
+            : decision?.decision === "declined"
+              ? "border-red-500 bg-red-500"
+              : decision?.decision === "returned"
+                ? "border-orange-400 bg-orange-400"
+                : isCurrent
+                  ? "border-brand-600 bg-white ring-4 ring-brand-100"
+                  : "border-gray-300 bg-white";
+
+        return (
+          <li key={step.key} className="flex gap-3">
+            <div className="flex flex-col items-center">
+              <span className={`mt-1 h-3 w-3 shrink-0 rounded-full border-2 ${dot}`} />
+              {!isLast ? <span className="my-0.5 w-px flex-1 bg-gray-200" /> : null}
+            </div>
+            <div className={`min-w-0 flex-1 ${isLast ? "pb-0" : "pb-4"}`}>
+              <div className="flex flex-wrap items-center gap-x-2">
+                <span
+                  className={
+                    engaged ? "text-sm font-medium text-gray-900" : "text-sm text-gray-400"
+                  }
+                >
+                  {step.label || humanise(step.key)}
+                </span>
+                {isCurrent ? (
+                  <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700 ring-1 ring-brand-200">
+                    Waiting here now
+                  </span>
+                ) : null}
+                {decision ? (
+                  <span
+                    className={
+                      decision.decision === "approved"
+                        ? "text-[11px] font-semibold text-emerald-700"
+                        : decision.decision === "declined"
+                          ? "text-[11px] font-semibold text-red-700"
+                          : "text-[11px] font-semibold text-orange-700"
+                    }
+                  >
+                    {humanise(decision.decision)}
+                  </span>
+                ) : null}
+              </div>
+
+              {/* Who owns this stage — the question this card exists for. */}
+              <p className={engaged ? "text-xs text-gray-600" : "text-xs text-gray-400"}>
+                {step.department ? humanise(step.department) : "No department assigned"}
+                {step.can_override ? " · may release a blocking check" : ""}
+              </p>
+
+              {decision ? (
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {decision.actor} · {dateTime(decision.at)}
+                </p>
+              ) : !engaged ? (
+                <p className="mt-0.5 text-xs text-gray-400">
+                  Not required at {money(req.amount, req.currency)} — engages from{" "}
+                  {money(step.min_amount, req.currency)}
+                </p>
+              ) : isUpcoming ? (
+                <p className="mt-0.5 text-xs text-gray-400">Next after the current step</p>
+              ) : isCurrent ? (
+                <p className="mt-0.5 text-xs text-gray-500">
+                  {req.status === "on_hold"
+                    ? "On hold — still owned by this department"
+                    : "Awaiting a decision from this department"}
+                </p>
+              ) : null}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Who was copied on this requisition, and why. Informed, never asked to act. */
+function CopiedCard({
+  req,
+  workflow,
+}: {
+  req: Requisition;
+  workflow: RequisitionWorkflow;
+}) {
+  // Mirrors requisitions.cc_recipients() exactly: every matching rule fires,
+  // because being copied is additive rather than a ladder.
+  const rules = workflow.cc_rules.filter(
+    (r) => (r.department || r.emails.length) && req.amount >= r.min_amount,
+  );
+  if (!rules.length) return null;
+
+  return (
+    <Card
+      title="Copied on this request"
+      subtitle="Notified when it was raised — informed, never asked to approve"
+    >
+      <ul className="space-y-2">
+        {rules.map((r, i) => (
+          <li key={`${r.min_amount}-${i}`} className="text-sm">
+            <span className="font-medium text-gray-900">
+              {r.label || humanise(r.department) || "Named recipients"}
+            </span>
+            {r.department ? (
+              <span className="text-gray-600"> · {humanise(r.department)} department</span>
+            ) : null}
+            {r.emails.length ? (
+              <p className="text-xs text-gray-600">{r.emails.join(", ")}</p>
+            ) : null}
+            <p className="text-xs text-gray-400">
+              Copied because this is at or above {money(r.min_amount, req.currency)}
+            </p>
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }

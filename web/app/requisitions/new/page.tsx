@@ -159,6 +159,19 @@ export default function NewRequisitionPage() {
   // retry of the same attempt carries the same key.
   const idemKey = useRef<string>(newIdempotencyKey());
 
+  // Handed over from a policy check ("raise a payment request from this").
+  // Read from window.location rather than useSearchParams deliberately: this
+  // page is statically rendered, and useSearchParams would force a Suspense
+  // boundary around the whole form for two optional prefill values.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const payee = params.get("payee");
+    const rulebook = params.get("rulebook");
+    if (payee) setVendorName(payee);
+    if (rulebook) setRulebookId(rulebook);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
