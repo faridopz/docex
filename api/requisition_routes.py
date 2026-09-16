@@ -41,6 +41,7 @@ import approval_tokens
 import approval_webhook
 import attachments
 import audit_findings
+import audit_report
 import compliance
 import fast_extract
 import idempotency
@@ -609,6 +610,95 @@ async def audit_findings_endpoint(
             for f in report.findings
         ],
     }
+
+
+_REPORTS = "audit_reports"
+
+
+@router.get("/audit/report.pdf")
+async def audit_report_endpoint(
+    start: str = Query(..., description="Period start, inclusive, YYYY-MM-DD"),
+    end: str = Query(..., description="Period end, inclusive, YYYY-MM-DD"),
+    label: str = Query("", description="How the period is named, e.g. 'September 2026'"),
+    refresh: bool = Query(False, description="Rewrite the narrative even if one is stored"),
+    tz_offset_minutes: int = Query(0),
+    ctx: Ctx = Depends(request_context),
+):
+    """The month-end or quarter-end audit report, as a filed PDF.
+
+    Every figure is computed in Python from stored records. One small model
+    call writes the prose around those figures, and it is shown the finished
+    summary rather than the population — so the cost is the same whether the
+    period held ten payments or four hundred.
+
+    The narrative is STORED per period. Re-opening a closed month returns the
+    same report rather than paying to reword it, because a period that has
+    ended cannot produce new figures. `refresh=true` forces a rewrite.
+    """
+    _export_gate(ctx)
+    import datetime as _dt
+    try:
+        start_d = _dt.date.fromisoformat(start)
+        end_d = _dt.date.fromisoformat(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
+    if end_d < start_d:
+        raise HTTPException(status_code=400, detail="'end' cannot be before 'start'.")
+
+    data = audit_report.build_period_data(
+        ctx.org_id, start, end, label=label, tz_offset_minutes=tz_offset_minutes,
+    )
+
+    key = f"{start}_{end}"
+    narrative = None
+    if not refresh:
+        stored = store.get_store().get(ctx.org_id, _REPORTS, key)
+        # Only reuse a narrative written against the same figures. If anything
+        # in the period changed — a late payment, a released exception — the
+        # prose could now contradict the tables beside it, and a report that
+        # disagrees with itself is worse than one that cost a fraction of a
+        # penny to rewrite.
+        if stored and stored.get("fingerprint") == _period_fingerprint(data):
+            narrative = stored.get("narrative")
+
+    if narrative is None:
+        narrative = audit_report.narrate(data)
+        try:
+            store.get_store().put(ctx.org_id, _REPORTS, key, {
+                "fingerprint": _period_fingerprint(data),
+                "narrative": narrative,
+                "generated_at": data.generated_at,
+            })
+        except Exception as exc:                                # pragma: no cover
+            print(f"[audit_report] could not store the narrative: {exc}")
+
+    org_name = ""
+    try:
+        org_name = (org_config.describe(ctx.org_id) or {}).get("name", "") or ""
+    except Exception:
+        pass
+
+    content = audit_report.audit_report_pdf(data, narrative, org_name=org_name)
+    filename = f"audit-report_{start}_to_{end}.pdf"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _period_fingerprint(data) -> str:
+    """What the narrative was written against. Any change here means the
+    stored prose is stale."""
+    import hashlib
+    parts = [
+        data.raised_count, data.raised_value, data.paid_count, data.paid_value,
+        data.outstanding_count, data.declined_count,
+        sorted(data.by_status.items()), sorted(data.by_category.items()),
+        len(data.exceptions),
+        sorted((f.code, f.detail) for f in data.findings),
+    ]
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
 
 
 @router.get("/requisitions/pending")
