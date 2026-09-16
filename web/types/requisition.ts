@@ -169,6 +169,26 @@ export interface Payee {
   payee_type: "staff" | "vendor" | "beneficiary";
 }
 
+/** "full", "70% advance", or "30% balance" — NEEM's own memo wording for
+ * which kind of payment this is, kept as a real field. */
+export type PaymentType = "full" | "advance" | "balance";
+
+/** One line of the expense breakdown — mirrors NEEM's own memo item table
+ * (Description/Item, Unit, Budget Line, Quantity, Frequency, Unit Cost,
+ * Total). `line_total` is always server-computed from
+ * quantity * frequency * unit_cost — never trust a typed total. */
+export interface BudgetLine {
+  description: string;
+  unit: string;
+  /** The org's own budget-line code/label — distinct from the
+   * requisition's project_code. */
+  budget_line: string;
+  quantity: number;
+  frequency: number;
+  unit_cost: number;
+  line_total: number;
+}
+
 /** List-row shape — enough to triage a queue without opening anything. */
 export interface RequisitionSummary {
   id: string;
@@ -191,6 +211,18 @@ export interface RequisitionSummary {
 
 export interface Requisition extends RequisitionSummary {
   vendor_account: string;
+  /** Payee bank/contact detail for the single-vendor path — a batch's rows
+   * carry these per-payee on Payee instead. */
+  vendor_bank_name: string;
+  vendor_tin: string;
+  vendor_phone_or_email: string;
+  payment_type: PaymentType;
+  /** The expense breakdown, if one was given — empty for a requisition with
+   * no line-item detail. */
+  budget_lines: BudgetLine[];
+  /** Server-computed, e.g. "Sixty Thousand Naira Only" — never store or
+   * type this; it is derived fresh from `amount` on every response. */
+  amount_in_words: string;
   description: string;
   receipt_ids: string[];
   documents: string[];
@@ -247,6 +279,18 @@ export interface TransactionSummaryRow {
   grant_code: string | null;
   paid_at: string;
   exceptions_count: number;
+}
+
+/** One saved compliance rulebook, summary view — enough to populate a
+ * picker before running a check (GET /compliance/rulebooks). */
+export interface RulebookSummary {
+  id: string;
+  name: string;
+  rule_count: number;
+  active_rule_count: number;
+  source_documents: string[];
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 /** One released FAIL, as the auditor sees it. */

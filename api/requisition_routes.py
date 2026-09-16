@@ -54,6 +54,14 @@ _PAYEE_FIELDS = (
     "tin", "phone_or_email", "payee_type",
 )
 
+# Every field the frontend is allowed to set on a budget-line row.
+# `line_total` is deliberately absent — requisitions.py always recomputes it
+# from quantity * frequency * unit_cost (DETERMINISTIC-FIRST), so a client
+# value there is silently ignored rather than trusted.
+_BUDGET_LINE_FIELDS = (
+    "description", "unit", "budget_line", "quantity", "frequency", "unit_cost",
+)
+
 
 def _parse_payees(raw: str) -> list[rq.Payee]:
     """Decode the JSON array of payee rows the frontend posts for a
@@ -84,6 +92,32 @@ def _parse_payees(raw: str) -> list[rq.Payee]:
             out.append(rq.Payee(**{k: row[k] for k in _PAYEE_FIELDS if k in row}))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"payees[{i}] is invalid: {exc}") from exc
+    return out
+
+
+def _parse_budget_lines(raw: str) -> list[rq.BudgetLine]:
+    """Decode the JSON array of budget-line rows the frontend posts for the
+    expense breakdown table (mirrors NEEM's memo item table). Same
+    empty-means-none, malformed-is-a-400 treatment as _parse_payees above —
+    this is data a human typed, so a bad payload should say so loudly rather
+    than silently becoming "no breakdown"."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"budget_lines is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail="budget_lines must be a JSON array.")
+    out: list[rq.BudgetLine] = []
+    for i, row in enumerate(parsed):
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail=f"budget_lines[{i}] must be an object.")
+        try:
+            out.append(rq.BudgetLine(**{k: row[k] for k in _BUDGET_LINE_FIELDS if k in row}))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"budget_lines[{i}] is invalid: {exc}") from exc
     return out
 
 
@@ -178,6 +212,18 @@ def _payee_out(p: rq.Payee) -> dict:
     }
 
 
+def _budget_line_out(bl: rq.BudgetLine) -> dict:
+    return {
+        "description": bl.description,
+        "unit": bl.unit,
+        "budget_line": bl.budget_line,
+        "quantity": bl.quantity,
+        "frequency": bl.frequency,
+        "unit_cost": bl.unit_cost,
+        "line_total": bl.line_total,
+    }
+
+
 def _comment_out(c: rq.Comment) -> dict:
     return {"id": c.id, "author": c.author, "department": c.department,
             "text": c.text, "at": c.at}
@@ -245,6 +291,12 @@ def _detail_out(r: rq.Requisition) -> dict:
     return {
         **_summary_out(r),
         "vendor_account": r.vendor_account,
+        "vendor_bank_name": r.vendor_bank_name,
+        "vendor_tin": r.vendor_tin,
+        "vendor_phone_or_email": r.vendor_phone_or_email,
+        "payment_type": r.payment_type,
+        "budget_lines": [_budget_line_out(bl) for bl in r.budget_lines],
+        "amount_in_words": rq.amount_in_words(r.amount, r.currency),
         "description": r.description,
         "receipt_ids": r.receipt_ids,
         "documents": r.documents,
@@ -298,6 +350,15 @@ async def create_requisition_endpoint(
     project_code: Annotated[str, Form(description="Project / cost centre")] = "",
     grant_code: Annotated[str, Form(description="Grant being charged")] = "",
     vendor_account: Annotated[str, Form(description="Vendor bank account")] = "",
+    vendor_bank_name: Annotated[str, Form(description="Vendor's bank")] = "",
+    vendor_tin: Annotated[str, Form(description="Vendor's Tax Identification Number")] = "",
+    vendor_phone_or_email: Annotated[str, Form(description="Vendor phone or email")] = "",
+    payment_type: Annotated[str, Form(
+        description="full, advance, or balance — matches the org's own memo wording")] = "full",
+    budget_lines: Annotated[str, Form(
+        description="JSON array of expense-breakdown rows (description, unit, "
+                    "budget_line, quantity, frequency, unit_cost). Totals are "
+                    "always server-computed. Omit or send '[]' for none.")] = "",
     description: Annotated[str, Form(description="What this is for")] = "",
     receipt_ids: Annotated[str, Form(description="Comma-separated field receipt IDs")] = "",
     documents: Annotated[str, Form(description="Comma-separated document labels")] = "",
@@ -324,6 +385,7 @@ async def create_requisition_endpoint(
     replays the original requisition instead of raising a duplicate.
     """
     payee_rows = _parse_payees(payees)
+    budget_line_rows = _parse_budget_lines(budget_lines)
     try:
         with idempotency.guard(ctx.org_id, "requisition.create", idempotency_key) as slot:
             if slot.replayed:
@@ -340,6 +402,11 @@ async def create_requisition_endpoint(
                     project_code=project_code,
                     grant_code=grant_code.strip() or None,
                     vendor_account=vendor_account,
+                    vendor_bank_name=vendor_bank_name,
+                    vendor_tin=vendor_tin,
+                    vendor_phone_or_email=vendor_phone_or_email,
+                    payment_type=payment_type,
+                    budget_lines=budget_line_rows or None,
                     description=description,
                     receipt_ids=[s.strip() for s in receipt_ids.split(",") if s.strip()],
                     documents=[s.strip() for s in documents.split(",") if s.strip()],
@@ -460,6 +527,11 @@ def _export_gate(ctx: Ctx) -> None:
 async def export_requisition_log_endpoint(
     start: str = Query(..., description="Start date, inclusive, YYYY-MM-DD"),
     end: str = Query(..., description="End date, inclusive, YYYY-MM-DD"),
+    tz_offset_minutes: int = Query(
+        0, description="minutes to ADD to the naive local start/end to reach "
+                       "UTC (JavaScript Date.getTimezoneOffset()'s own sign — "
+                       "e.g. -60 for WAT/UTC+1). Defaults to 0 (UTC) for any "
+                       "caller that doesn't send it."),
     ctx: Ctx = Depends(request_context),
 ):
     """The weekly/monthly audit sweep: every requisition raised in [start,
@@ -467,6 +539,17 @@ async def export_requisition_log_endpoint(
     matches GET /requisitions/{id}'s own visibility (org-wide, see the
     requisition_visibility toggle); exporting what you can already see
     grants no new access.
+
+    `start`/`end` are calendar dates as the person running the export means
+    them — their own local "today", not UTC's. `submitted_at` is always
+    stored in UTC (see requisitions._now_iso), so comparing a naive
+    UTC-midnight boundary against it silently drops anything raised in the
+    gap between local midnight and UTC midnight for any org east of UTC —
+    for NEEM/TA Connect (WAT, UTC+1) that is the first hour of every day.
+    `tz_offset_minutes` closes that gap without inventing per-org timezone
+    config: the browser already knows the caller's offset
+    (Date.getTimezoneOffset()), so the frontend sends it and this shifts the
+    boundary to match, no matter which org or which timezone is asking.
     """
     _export_gate(ctx)
     import datetime as _dt
@@ -478,8 +561,11 @@ async def export_requisition_log_endpoint(
     if end_d < start_d:
         raise HTTPException(status_code=400, detail="'end' cannot be before 'start'.")
 
-    submitted_from = f"{start_d.isoformat()}T00:00:00"
-    submitted_to = f"{end_d.isoformat()}T23:59:59.999999"
+    offset = _dt.timedelta(minutes=tz_offset_minutes)
+    from_utc = _dt.datetime.combine(start_d, _dt.time.min) + offset
+    to_utc = _dt.datetime.combine(end_d, _dt.time.max) + offset
+    submitted_from = from_utc.isoformat()
+    submitted_to = to_utc.isoformat()
 
     reqs = rq.list_requisitions(
         ctx.org_id, submitted_from=submitted_from, submitted_to=submitted_to,
@@ -586,6 +672,12 @@ async def update_draft_endpoint(
     project_code: Annotated[Optional[str], Form()] = None,
     grant_code: Annotated[Optional[str], Form()] = None,
     vendor_account: Annotated[Optional[str], Form()] = None,
+    vendor_bank_name: Annotated[Optional[str], Form()] = None,
+    vendor_tin: Annotated[Optional[str], Form()] = None,
+    vendor_phone_or_email: Annotated[Optional[str], Form()] = None,
+    payment_type: Annotated[Optional[str], Form()] = None,
+    budget_lines: Annotated[Optional[str], Form(
+        description="JSON array of expense-breakdown rows. Send '[]' to clear it.")] = None,
     description: Annotated[Optional[str], Form()] = None,
     receipt_ids: Annotated[Optional[str], Form()] = None,
     documents: Annotated[Optional[str], Form()] = None,
@@ -605,6 +697,8 @@ async def update_draft_endpoint(
     fields = {
         "vendor_name": vendor_name, "amount": amount, "category": category,
         "project_code": project_code, "vendor_account": vendor_account,
+        "vendor_bank_name": vendor_bank_name, "vendor_tin": vendor_tin,
+        "vendor_phone_or_email": vendor_phone_or_email, "payment_type": payment_type,
         "description": description, "currency": currency,
     }
     if grant_code is not None:
@@ -614,6 +708,8 @@ async def update_draft_endpoint(
             fields[key] = [s.strip() for s in raw.split(",") if s.strip()]
     if payees is not None:
         fields["payees"] = _parse_payees(payees)
+    if budget_lines is not None:
+        fields["budget_lines"] = _parse_budget_lines(budget_lines)
     try:
         req = rq.update_draft(ctx.org_id, req_id, actor=ctx.user_id, **fields)
     except rq.RequisitionError as exc:
@@ -894,24 +990,40 @@ async def download_attachment_endpoint(
 
 @router.post("/requisitions/{req_id}/compliance-check")
 async def run_compliance_check_endpoint(
-    req_id: str, ctx: Ctx = Depends(request_context),
+    req_id: str,
+    rulebook_id: Annotated[Optional[str], Form(
+        description="Explicit rulebook to check this requisition against — "
+                    "overrides the workflow's default rulebook_id for this "
+                    "one run. Omit to use the workflow's configured default.",
+    )] = None,
+    ctx: Ctx = Depends(request_context),
 ):
-    """Check this requisition's real attachments (WO-22) against the org's
-    configured compliance rulebook — the AI-assisted semantic layer
-    (compliance.py) alongside, never instead of, the deterministic
-    PolicyCheck list this engine already runs on every requisition. A
-    code-level PolicyCheck FAIL is never softened by a clean compliance
-    verdict, or vice versa; the two are shown side by side, not merged.
+    """Check this requisition's real attachments (WO-22) against a compliance
+    rulebook — the AI-assisted semantic layer (compliance.py) alongside,
+    never instead of, the deterministic PolicyCheck list this engine already
+    runs on every requisition. A code-level PolicyCheck FAIL is never
+    softened by a clean compliance verdict, or vice versa; the two are shown
+    side by side, not merged.
 
-    Requires org.requisition_compliance_check AND a rulebook configured on
-    the workflow (Settings → Workflow). NOT role-gated — any signed-in user
-    who can already see the requisition can run this, the same visibility
-    rule as attaching a file or posting a comment: it moves no money and
-    grants no authority, a submitter checking their own request before an
-    approver ever opens it is exactly the point. The API cost this incurs
-    is controlled at the org level, by the feature flag itself — an org
-    that finds this too expensive to run freely turns the flag off, rather
-    than this route picking which roles are trusted to spend money.
+    Which rulebook: an explicit `rulebook_id` on this request wins; otherwise
+    falls back to the workflow's configured default (Settings → Workflow).
+    Not every requisition should be judged against the same policy document
+    — a travel claim and an equipment purchase read against different
+    rulebooks in practice — so whoever is running the check, not just
+    whoever configured the workflow months ago, decides which one applies
+    here. The chosen rulebook is recorded on the saved ComplianceSummary
+    (rulebook_id/rulebook_name) exactly as before, so the audit trail always
+    shows which policy a given verdict was actually checked against.
+
+    Requires org.requisition_compliance_check AND a rulebook, one way or the
+    other. NOT role-gated — any signed-in user who can already see the
+    requisition can run this, the same visibility rule as attaching a file
+    or posting a comment: it moves no money and grants no authority, a
+    submitter checking their own request before an approver ever opens it is
+    exactly the point. The API cost this incurs is controlled at the org
+    level, by the feature flag itself — an org that finds this too expensive
+    to run freely turns the flag off, rather than this route picking which
+    roles are trusted to spend money.
     """
     try:
         import org_config
@@ -930,12 +1042,13 @@ async def run_compliance_check_endpoint(
         raise HTTPException(status_code=404, detail="Requisition not found.")
 
     wf = rq.get_workflow(ctx.org_id)
-    rulebook_id = (wf.rulebook_id or "").strip()
-    if not rulebook_id:
+    chosen_rulebook_id = (rulebook_id or "").strip() or (wf.rulebook_id or "").strip()
+    if not chosen_rulebook_id:
         raise HTTPException(
             status_code=400,
-            detail="No compliance rulebook is configured for this organisation. "
-                   "Set one under Settings → Workflow.",
+            detail="No compliance rulebook was chosen for this check, and this "
+                   "organisation has no default configured under Settings → "
+                   "Workflow. Pick one when running the check, or set a default.",
         )
 
     # Read straight from the shared "rulebooks" store collection rather than
@@ -943,17 +1056,17 @@ async def run_compliance_check_endpoint(
     # legacy checks/policy-interpretation UI, not rulebook storage itself,
     # and this keeps the requisition engine from depending on another
     # router's internals for something both already reach via store.py.
-    raw_rulebook = store.get_store().get(ctx.org_id, "rulebooks", rulebook_id)
+    raw_rulebook = store.get_store().get(ctx.org_id, "rulebooks", chosen_rulebook_id)
     if raw_rulebook is None:
         raise HTTPException(
             status_code=404,
-            detail=f"The configured rulebook '{rulebook_id}' no longer exists.",
+            detail=f"The rulebook '{chosen_rulebook_id}' no longer exists.",
         )
     try:
         rulebook = PolicyRulebook.model_validate(raw_rulebook)
     except Exception as exc:
         raise HTTPException(
-            status_code=500, detail=f"Could not load the configured rulebook: {exc}"
+            status_code=500, detail=f"Could not load the chosen rulebook: {exc}"
         ) from exc
 
     if not req.attachments:

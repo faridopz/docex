@@ -259,6 +259,66 @@ check("still exactly one finding (replaced, not appended)", len(body2["complianc
 check("two compliance_checked audit entries now (history preserved)",
       sum(1 for e in body2["audit_log"] if e["event"] == "compliance_checked") == 2)
 
+# ─── WO-30: an explicit rulebook_id on the request overrides the workflow's
+# configured default for that one run — not every requisition should be
+# judged against the same policy document, so whoever is running the check
+# picks it, rather than always using whatever the workflow was set up with
+# once, org-wide ──────────────────────────────────────────────────────────
+
+second_rulebook = PolicyRulebook(
+    id="rb-test-002", name="NEEM Travel Policy",
+    source_documents=["travel_policy.pdf"],
+    rules=[PolicyRule(
+        id="rule-travel-approval", description="Travel over 3 days needs Director sign-off.",
+        category="documentation", source_quote="Travel exceeding 3 days requires the Director's approval.",
+        evaluation_type="llm", active=True,
+    )],
+)
+store.get_store().put("default", "rulebooks", second_rulebook.id, json.loads(second_rulebook.model_dump_json()))
+
+install_fake(fake_response(lean("approved", "rule-travel-approval", "pass", "Director sign-off attached")))
+r = client.post(f"/requisitions/{req_id}/compliance-check", headers=ph,
+                 data={"rulebook_id": "rb-test-002"})
+check("explicit rulebook override succeeds", r.status_code == 200)
+override_body = r.json()
+check("checked against the EXPLICIT rulebook, not the workflow default",
+      override_body["compliance"]["rulebook_id"] == "rb-test-002")
+check("explicit rulebook's name recorded", override_body["compliance"]["rulebook_name"] == "NEEM Travel Policy")
+
+wf_after_override = client.get("/requisitions/workflow", headers=ah).json()
+check("the workflow's own default rulebook_id is untouched by a one-off override",
+      wf_after_override["rulebook_id"] == "rb-test-001")
+
+r = client.post(f"/requisitions/{req_id}/compliance-check", headers=ph,
+                 data={"rulebook_id": "rb-does-not-exist-either"})
+check("an explicit but nonexistent rulebook_id still 404s", r.status_code == 404)
+
+# No override given at all still falls back to the workflow's own default,
+# exactly as before this feature existed.
+install_fake(fake_response(lean("approved", "rule-vendor-quote", "pass", "Back to the default rulebook")))
+r = client.post(f"/requisitions/{req_id}/compliance-check", headers=ph)
+check("no override given: falls back to the workflow's configured default", r.status_code == 200)
+check("fallback checked against the workflow default rulebook",
+      r.json()["compliance"]["rulebook_id"] == "rb-test-001")
+
+# Neither an explicit override nor a workflow default: refused with a
+# message that makes clear a choice is needed, not just missing config.
+r2 = client.post("/requisitions", headers=ph, data={
+    "vendor_name": "No Rulebook At All Ltd", "amount": "10000", "category": "supplies",
+})
+no_rb_req_id = r2.json()["id"]
+client.post(f"/requisitions/{no_rb_req_id}/attachments", headers=ph,
+            files={"file": ("note.txt", b"Some note.", "text/plain")})
+r3 = client.put("/requisitions/workflow", headers=ah, json={
+    "steps": [{"key": "finance", "label": "Finance", "department": "finance"}],
+    "rulebook_id": None,
+})
+check("workflow can be cleared back to no default rulebook", r3.json()["rulebook_id"] is None)
+r4 = client.post(f"/requisitions/{no_rb_req_id}/compliance-check", headers=ph)
+check("neither an override nor a default: refused", r4.status_code == 400)
+check("refusal explains a rulebook must be chosen",
+      "chosen" in r4.json()["detail"].lower() or "rulebook" in r4.json()["detail"].lower())
+
 if _fail:
     print(f"\n{_fail} check(s) FAILED.")
     import sys

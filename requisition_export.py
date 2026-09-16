@@ -123,9 +123,43 @@ def requisition_pdf(req: rq.Requisition) -> bytes:
         + (f" · grant {req.grant_code}" if req.grant_code else ""),
         meta,
     ))
+    story.append(Paragraph(
+        f"Payment type: {_humanise(req.payment_type)} · "
+        f"Amount in words: {rq.amount_in_words(req.amount, req.currency)}",
+        meta,
+    ))
     if req.description:
         story.append(Spacer(1, 4))
         story.append(Paragraph(req.description, body))
+
+    # Payee bank/contact detail — the memo/Payment Voucher fields beyond the
+    # bare name (multi-payee requisitions already carry this per row below).
+    if not req.payees and (req.vendor_account or req.vendor_bank_name or req.vendor_tin
+                            or req.vendor_phone_or_email):
+        story.append(Paragraph("Payee detail", h2))
+        rows = [[
+            req.vendor_account or "—", req.vendor_bank_name or "—",
+            req.vendor_tin or "—", req.vendor_phone_or_email or "—",
+        ]]
+        story.append(table(
+            ["Account number", "Bank", "TIN", "Phone / email"], rows, [100, 100, 90, 130],
+        ))
+
+    # Budget line breakdown — mirrors NEEM's own memo item table. Totals are
+    # always server-computed (see requisitions.BudgetLine).
+    if req.budget_lines:
+        story.append(Paragraph("Budget breakdown", h2))
+        rows = [
+            [bl.description, bl.unit, bl.budget_line, bl.quantity, bl.frequency,
+             _money(bl.unit_cost, req.currency), _money(bl.line_total, req.currency)]
+            for bl in req.budget_lines
+        ]
+        total_line = sum(bl.line_total for bl in req.budget_lines)
+        rows.append(["", "", "", "", "", "Grand total", _money(total_line, req.currency)])
+        story.append(table(
+            ["Description", "Unit", "Budget line", "Qty", "Freq.", "Unit cost", "Total"],
+            rows, [110, 45, 55, 30, 30, 65, 65],
+        ))
 
     # Policy checks
     if req.checks:
@@ -278,6 +312,8 @@ def requisition_xlsx(req: rq.Requisition) -> bytes:
         ["Reference", req.ref],
         ["Vendor / payee", req.vendor_name],
         ["Amount", _money(req.amount, req.currency)],
+        ["Amount in words", rq.amount_in_words(req.amount, req.currency)],
+        ["Payment type", _humanise(req.payment_type)],
         ["Category", _humanise(req.category)],
         ["Department", _humanise(req.department)],
         ["Status", _humanise(req.status.value)],
@@ -286,6 +322,10 @@ def requisition_xlsx(req: rq.Requisition) -> bytes:
         ["Submitted at", _dt(req.submitted_at)],
         ["Project code", req.project_code or "—"],
         ["Grant code", req.grant_code or "—"],
+        ["Vendor account", req.vendor_account or "—"],
+        ["Vendor bank", req.vendor_bank_name or "—"],
+        ["Vendor TIN", req.vendor_tin or "—"],
+        ["Vendor phone / email", req.vendor_phone_or_email or "—"],
         ["Description", req.description or "—"],
         ["Audit chain", "Verified" if rq.verify_audit_chain(req) else "DOES NOT VERIFY"],
     ]
@@ -308,6 +348,21 @@ def requisition_xlsx(req: rq.Requisition) -> bytes:
         write_rows(ws2, rows, tint_col=2, tint_map=RESULT_FILL)
         for col, w in zip("ABCDEF", [28, 12, 18, 18, 40, 40]):
             ws2.column_dimensions[col].width = w
+
+    # Budget lines sheet — the expense breakdown, mirroring NEEM's own memo
+    # item table. Totals are always server-computed (requisitions.BudgetLine).
+    if req.budget_lines:
+        wsb = wb.create_sheet("Budget Lines")
+        banner_row(wsb, "Budget breakdown", req.ref, 7)
+        header_row(wsb, ["Description", "Unit", "Budget line", "Quantity", "Frequency",
+                          "Unit cost", "Total"])
+        write_rows(wsb, [
+            [bl.description, bl.unit, bl.budget_line, bl.quantity, bl.frequency,
+             bl.unit_cost, bl.line_total]
+            for bl in req.budget_lines
+        ])
+        for col, w in zip("ABCDEFG", [32, 12, 18, 10, 10, 14, 14]):
+            wsb.column_dimensions[col].width = w
 
     # Approvals sheet
     if req.approvals:

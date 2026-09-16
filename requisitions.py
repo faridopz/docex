@@ -108,6 +108,28 @@ class Payee(BaseModel):
     payee_type: Literal["staff", "vendor", "beneficiary"] = "vendor"
 
 
+class BudgetLine(BaseModel):
+    """One line of the expense breakdown — mirrors NEEM's own memo table
+    ("Description/Item, Unit of Measurement, Budget Line, Quantity,
+    Frequency, Unit Cost, Total Amount") rather than inventing a shape of
+    our own. `line_total` is ALWAYS code-computed as
+    quantity * frequency * unit_cost (DETERMINISTIC-FIRST, CLAUDE.md: code
+    owns every number) — a submitter's typed total is never trusted, so the
+    route layer discards any client-supplied value and requisitions.py
+    recomputes it on every create/edit. See _priced_budget_lines().
+    """
+    description: str = ""
+    unit: str = ""                # "Pieces", "Packs", "Carton", "Person", ...
+    budget_line: str = ""         # the org's own budget-line code/label —
+                                   # distinct from `project_code` on the
+                                   # requisition itself (memo keeps them as
+                                   # separate columns)
+    quantity: float = 1.0
+    frequency: float = 1.0
+    unit_cost: float = 0.0
+    line_total: float = 0.0       # computed — never accepted from a client
+
+
 class Approval(BaseModel):
     """One approver's decision at one workflow step. Never mutated."""
     step: str                            # compliance, finance, ed, ...
@@ -310,6 +332,28 @@ class Requisition(BaseModel):
     grant_code: Optional[str] = None
     description: str = ""
 
+    # Payee detail beyond the bare name/account — the same fields NEEM's own
+    # Advance/Reimbursement Request Form and Payment Voucher already ask for
+    # (bank, TIN, phone/email), captured here for the single-vendor path.
+    # The multi-payee path already carries these per-row on Payee — this is
+    # the single-payee equivalent, not a replacement for it.
+    vendor_bank_name: str = ""
+    vendor_tin: str = ""
+    vendor_phone_or_email: str = ""
+
+    # "This request is for full payment, 70% advance payment, or 30% balance
+    # payment" — NEEM's memo template's own wording, kept as a real field
+    # rather than free text buried in `description` so the export and any
+    # future policy check can read it directly.
+    payment_type: Literal["full", "advance", "balance"] = "full"
+
+    # The expense breakdown a memo's item table asks for. Optional: a
+    # requisition raised with none just shows `amount` as a single line on
+    # export, exactly like every requisition before this field existed.
+    # Totals are always code-computed — see BudgetLine and
+    # _priced_budget_lines().
+    budget_lines: list[BudgetLine] = Field(default_factory=list)
+
     # Evidence
     receipt_ids: list[str] = Field(default_factory=list)
     documents: list[str] = Field(default_factory=list)
@@ -390,6 +434,80 @@ def _now_iso() -> str:
 
 def _money(x: Optional[float]) -> float:
     return round(float(x or 0.0), 2)
+
+
+def _priced_budget_lines(lines: Optional[list[BudgetLine]]) -> list[BudgetLine]:
+    """Recompute every line's total as quantity * frequency * unit_cost,
+    discarding whatever the caller put in `line_total`. DETERMINISTIC-FIRST
+    (CLAUDE.md): a typed total that disagrees with its own quantity/rate is
+    exactly the mistake this engine exists to catch, not repeat — the same
+    reasoning create_requisition() already applies to a multi-payee batch's
+    total versus its rows.
+    """
+    out: list[BudgetLine] = []
+    for bl in lines or []:
+        priced = bl.model_copy()
+        priced.line_total = _money(priced.quantity * priced.frequency * priced.unit_cost)
+        out.append(priced)
+    return out
+
+
+_ONES = ("", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+          "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+          "Seventeen", "Eighteen", "Nineteen")
+_TENS = ("", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety")
+_CURRENCY_WORDS = {
+    "NGN": ("Naira", "Kobo"), "USD": ("Dollars", "Cents"), "GBP": ("Pounds", "Pence"),
+    "EUR": ("Euros", "Cents"), "GHS": ("Cedis", "Pesewas"), "KES": ("Shillings", "Cents"),
+}
+
+
+def _three_digit_words(n: int) -> str:
+    words = []
+    if n >= 100:
+        words.append(f"{_ONES[n // 100]} Hundred")
+        n %= 100
+    if n >= 20:
+        tens_word = _TENS[n // 10]
+        if n % 10:
+            words.append(f"{tens_word}-{_ONES[n % 10]}")
+        else:
+            words.append(tens_word)
+    elif n > 0:
+        words.append(_ONES[n])
+    return " ".join(words)
+
+
+def _int_to_words(n: int) -> str:
+    if n == 0:
+        return "Zero"
+    scales = (("Billion", 1_000_000_000), ("Million", 1_000_000), ("Thousand", 1_000))
+    parts: list[str] = []
+    for name, size in scales:
+        if n >= size:
+            parts.append(f"{_three_digit_words(n // size)} {name}")
+            n %= size
+    if n:
+        parts.append(_three_digit_words(n))
+    return " ".join(parts)
+
+
+def amount_in_words(amount: float, currency: str = "NGN") -> str:
+    """"Sixty Thousand Naira Only" / "One Hundred Twenty Thousand Naira, Fifty
+    Kobo Only" — the line NEEM's own memo template asks for by name ("Amount
+    in Words") and the Payment Voucher has a blank line for. Computed, never
+    typed, so it can never disagree with the figure above it (the same
+    DETERMINISTIC-FIRST reasoning as _priced_budget_lines: a number an
+    approver reads on a printed voucher must match the number they signed
+    against).
+    """
+    major_name, minor_name = _CURRENCY_WORDS.get(currency, ("Units", "Cents"))
+    cents_total = round(abs(amount) * 100)
+    major, minor = divmod(cents_total, 100)
+    words = f"{_int_to_words(int(major))} {major_name}"
+    if minor:
+        words += f", {_int_to_words(int(minor))} {minor_name}"
+    return f"{words} Only"
 
 
 def _secret() -> bytes:
@@ -1175,6 +1293,11 @@ def create_requisition(
     project_code: str = "",
     grant_code: Optional[str] = None,
     vendor_account: str = "",
+    vendor_bank_name: str = "",
+    vendor_tin: str = "",
+    vendor_phone_or_email: str = "",
+    payment_type: str = "full",
+    budget_lines: Optional[list[BudgetLine]] = None,
     description: str = "",
     receipt_ids: Optional[list[str]] = None,
     documents: Optional[list[str]] = None,
@@ -1220,6 +1343,12 @@ def create_requisition(
             )
         amount = sum(p.amount for p in payees)
 
+    payment_type = (payment_type or "full").strip().lower()
+    if payment_type not in ("full", "advance", "balance"):
+        raise RequisitionError(
+            f"payment_type must be 'full', 'advance', or 'balance', not '{payment_type}'."
+        )
+
     req = Requisition(
         id=uuid.uuid4().hex,
         ref=_next_ref(org),
@@ -1229,6 +1358,11 @@ def create_requisition(
         submitted_at=now,
         vendor_name=vendor_name.strip(),
         vendor_account=vendor_account.strip(),
+        vendor_bank_name=vendor_bank_name.strip(),
+        vendor_tin=vendor_tin.strip(),
+        vendor_phone_or_email=vendor_phone_or_email.strip(),
+        payment_type=payment_type,
+        budget_lines=_priced_budget_lines(budget_lines),
         amount=_money(amount),
         currency=currency or "NGN",
         category=category.strip(),
@@ -1276,9 +1410,10 @@ def _submit(org_id: str, req: Requisition) -> Requisition:
 
 
 _DRAFT_EDITABLE = (
-    "vendor_name", "vendor_account", "amount", "currency", "category",
-    "project_code", "grant_code", "description", "receipt_ids", "documents",
-    "payees",
+    "vendor_name", "vendor_account", "vendor_bank_name", "vendor_tin",
+    "vendor_phone_or_email", "payment_type", "budget_lines", "amount",
+    "currency", "category", "project_code", "grant_code", "description",
+    "receipt_ids", "documents", "payees",
 )
 
 
@@ -1309,6 +1444,14 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
             continue
         if key == "amount":
             value = _money(value)
+        elif key == "budget_lines":
+            value = _priced_budget_lines(value)
+        elif key == "payment_type":
+            value = (value or "full").strip().lower()
+            if value not in ("full", "advance", "balance"):
+                raise RequisitionError(
+                    f"payment_type must be 'full', 'advance', or 'balance', not '{value}'."
+                )
         if getattr(req, key) != value:
             setattr(req, key, value)
             changed.append(key)

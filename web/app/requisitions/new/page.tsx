@@ -12,7 +12,7 @@ import {
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { humanise, money } from "@/lib/requisitionFormat";
-import type { Payee, Requisition, RequisitionWorkflow } from "@/types/requisition";
+import type { BudgetLine, Payee, PaymentType, Requisition, RequisitionWorkflow } from "@/types/requisition";
 
 /** One payee row as the form edits it — amount stays a raw string (so a
  * comma-typed "20,000" isn't fought while typing) and is only parsed at the
@@ -25,6 +25,28 @@ const EMPTY_ROW: PayeeRow = {
 };
 
 const PAYEE_TYPES: Payee["payee_type"][] = ["beneficiary", "staff", "vendor"];
+
+/** One budget-line row as the form edits it — quantity/frequency/unit cost
+ * stay raw strings for the same reason the amount field does: a partially
+ * typed number shouldn't fight the input or silently become 0. The line
+ * total shown here is a client-side preview only; the server always
+ * recomputes the real one from these three values (DETERMINISTIC-FIRST —
+ * nothing typed as a total is ever trusted). */
+type BudgetLineRow = Omit<BudgetLine, "quantity" | "frequency" | "unit_cost" | "line_total"> & {
+  quantity: string;
+  frequency: string;
+  unit_cost: string;
+};
+
+const EMPTY_BUDGET_ROW: BudgetLineRow = {
+  description: "", unit: "", budget_line: "", quantity: "1", frequency: "1", unit_cost: "",
+};
+
+const PAYMENT_TYPES: { value: PaymentType; label: string }[] = [
+  { value: "full", label: "Full payment" },
+  { value: "advance", label: "Advance payment" },
+  { value: "balance", label: "Balance payment" },
+];
 
 /** Strip thousands separators the way the single-amount field already does,
  * so pasted or typed "1,500,000" parses instead of silently failing. */
@@ -89,11 +111,17 @@ export default function NewRequisitionPage() {
   const [projectCode, setProjectCode] = useState("");
   const [grantCode, setGrantCode] = useState("");
   const [vendorAccount, setVendorAccount] = useState("");
+  const [vendorBankName, setVendorBankName] = useState("");
+  const [vendorTin, setVendorTin] = useState("");
+  const [vendorPhoneOrEmail, setVendorPhoneOrEmail] = useState("");
+  const [paymentType, setPaymentType] = useState<PaymentType>("full");
   const [description, setDescription] = useState("");
   const [documents, setDocuments] = useState<string[]>([]);
 
   const [payeeRows, setPayeeRows] = useState<PayeeRow[]>([{ ...EMPTY_ROW }]);
   const [bulkPaste, setBulkPaste] = useState("");
+
+  const [budgetLines, setBudgetLines] = useState<BudgetLineRow[]>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -196,6 +224,18 @@ export default function NewRequisitionPage() {
     setPayeeRows((prev) => [...prev, { ...EMPTY_ROW }]);
   }
 
+  function patchBudgetRow(i: number, patch: Partial<BudgetLineRow>) {
+    setBudgetLines((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  }
+
+  function removeBudgetRow(i: number) {
+    setBudgetLines((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function addBudgetRow() {
+    setBudgetLines((prev) => [...prev, { ...EMPTY_BUDGET_ROW }]);
+  }
+
   function addFromPaste() {
     const parsed = parseBulkPayees(bulkPaste);
     if (!parsed.length) return;
@@ -223,6 +263,21 @@ export default function NewRequisitionPage() {
           project_code: projectCode.trim(),
           grant_code: grantCode.trim() || undefined,
           vendor_account: mode === "batch" ? "" : vendorAccount.trim(),
+          vendor_bank_name: mode === "batch" ? "" : vendorBankName.trim(),
+          vendor_tin: mode === "batch" ? "" : vendorTin.trim(),
+          vendor_phone_or_email: mode === "batch" ? "" : vendorPhoneOrEmail.trim(),
+          payment_type: paymentType,
+          budget_lines: budgetLines
+            .filter((r) => r.description.trim() !== "")
+            .map((r) => ({
+              description: r.description.trim(),
+              unit: r.unit.trim(),
+              budget_line: r.budget_line.trim(),
+              quantity: parseMoney(r.quantity) || 1,
+              frequency: parseMoney(r.frequency) || 1,
+              unit_cost: parseMoney(r.unit_cost),
+              line_total: 0, // server-computed — this value is ignored
+            })),
           description: description.trim(),
           documents,
           payees:
@@ -252,10 +307,15 @@ export default function NewRequisitionPage() {
     setProjectCode("");
     setGrantCode("");
     setVendorAccount("");
+    setVendorBankName("");
+    setVendorTin("");
+    setVendorPhoneOrEmail("");
+    setPaymentType("full");
     setDescription("");
     setDocuments([]);
     setPayeeRows([{ ...EMPTY_ROW }]);
     setBulkPaste("");
+    setBudgetLines([]);
   }
 
   // ─── result view ──────────────────────────────────────────────────────────
@@ -489,15 +549,55 @@ export default function NewRequisitionPage() {
               />
             </Field>
 
+            <Field label="Payment type" hint="Full, or an advance/balance split">
+              <select
+                value={paymentType}
+                onChange={(e) => setPaymentType(e.target.value as PaymentType)}
+                className={inputClass}
+              >
+                {PAYMENT_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
             {mode === "single" ? (
-              <Field label="Vendor bank account">
-                <input
-                  value={vendorAccount}
-                  onChange={(e) => setVendorAccount(e.target.value)}
-                  placeholder="Optional"
-                  className={inputClass}
-                />
-              </Field>
+              <>
+                <Field label="Vendor bank account">
+                  <input
+                    value={vendorAccount}
+                    onChange={(e) => setVendorAccount(e.target.value)}
+                    placeholder="Optional"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Bank name">
+                  <input
+                    value={vendorBankName}
+                    onChange={(e) => setVendorBankName(e.target.value)}
+                    placeholder="Optional"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Tax Identification Number (TIN)">
+                  <input
+                    value={vendorTin}
+                    onChange={(e) => setVendorTin(e.target.value)}
+                    placeholder="Optional"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Phone / email">
+                  <input
+                    value={vendorPhoneOrEmail}
+                    onChange={(e) => setVendorPhoneOrEmail(e.target.value)}
+                    placeholder="Optional"
+                    className={inputClass}
+                  />
+                </Field>
+              </>
             ) : null}
           </div>
 
@@ -516,6 +616,14 @@ export default function NewRequisitionPage() {
               onAddRow={addPayeeRow}
             />
           ) : null}
+
+          <BudgetLineEditor
+            rows={budgetLines}
+            currency={currency}
+            onPatchRow={patchBudgetRow}
+            onRemoveRow={removeBudgetRow}
+            onAddRow={addBudgetRow}
+          />
 
           <Field label="What this is for">
             <textarea
@@ -865,6 +973,149 @@ function PayeeEditor({
           Add pasted rows
         </button>
       </details>
+    </div>
+  );
+}
+
+/**
+ * Optional expense breakdown — mirrors the item table on NEEM's own memo
+ * ("Description/Item, Unit of Measurement, Budget Line, Quantity,
+ * Frequency, Unit Cost, Total Amount"). Empty by default: a requisition
+ * with no rows behaves exactly as before this existed. The total shown per
+ * row is a live preview only — the server always recomputes it from
+ * quantity * frequency * unit cost and ignores anything sent as a total.
+ */
+function BudgetLineEditor({
+  rows,
+  currency,
+  onPatchRow,
+  onRemoveRow,
+  onAddRow,
+}: {
+  rows: BudgetLineRow[];
+  currency: string;
+  onPatchRow: (i: number, patch: Partial<BudgetLineRow>) => void;
+  onRemoveRow: (i: number) => void;
+  onAddRow: () => void;
+}) {
+  const grandTotal = rows.reduce(
+    (sum, r) => sum + parseMoney(r.quantity) * parseMoney(r.frequency) * parseMoney(r.unit_cost),
+    0,
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-gray-700">
+          Budget breakdown
+          <span className="ml-1.5 font-normal text-gray-400">(optional)</span>
+        </span>
+        {rows.length ? (
+          <span className="text-xs text-gray-500">
+            Preview total {money(grandTotal, currency)} — recalculated on submit
+          </span>
+        ) : null}
+      </div>
+
+      {rows.length ? (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full min-w-[820px] text-left text-xs">
+            <thead className="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+              <tr>
+                <th className="px-2 py-2 font-medium">#</th>
+                <th className="px-2 py-2 font-medium">Description / item</th>
+                <th className="px-2 py-2 font-medium">Unit</th>
+                <th className="px-2 py-2 font-medium">Budget line</th>
+                <th className="px-2 py-2 font-medium">Qty</th>
+                <th className="px-2 py-2 font-medium">Freq.</th>
+                <th className="px-2 py-2 font-medium">Unit cost ({currency})</th>
+                <th className="px-2 py-2 font-medium">Total</th>
+                <th className="px-2 py-2" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row, i) => {
+                const lineTotal =
+                  parseMoney(row.quantity) * parseMoney(row.frequency) * parseMoney(row.unit_cost);
+                return (
+                  <tr key={i}>
+                    <td className="px-2 py-1.5 text-gray-400">{i + 1}</td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.description}
+                        onChange={(e) => onPatchRow(i, { description: e.target.value })}
+                        placeholder="e.g. Flip chart"
+                        className={payeeInputClass}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.unit}
+                        onChange={(e) => onPatchRow(i, { unit: e.target.value })}
+                        placeholder="Pieces"
+                        className={payeeInputClass}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.budget_line}
+                        onChange={(e) => onPatchRow(i, { budget_line: e.target.value })}
+                        className={payeeInputClass}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.quantity}
+                        onChange={(e) => onPatchRow(i, { quantity: e.target.value })}
+                        inputMode="decimal"
+                        className={`${payeeInputClass} w-16`}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.frequency}
+                        onChange={(e) => onPatchRow(i, { frequency: e.target.value })}
+                        inputMode="decimal"
+                        className={`${payeeInputClass} w-16`}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        value={row.unit_cost}
+                        onChange={(e) => onPatchRow(i, { unit_cost: e.target.value })}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        className={payeeInputClass}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap font-medium text-gray-700">
+                      {money(lineTotal, currency)}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onRemoveRow(i)}
+                        className="text-gray-300 transition hover:text-red-500"
+                        title="Remove row"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={onAddRow}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+      >
+        <Plus className="h-3.5 w-3.5" /> Add line item
+      </button>
     </div>
   );
 }

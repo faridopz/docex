@@ -75,11 +75,22 @@ r = client.put("/requisitions/workflow", headers=ah, json={
 })
 check("workflow saved", r.status_code == 200)
 
+import json as _json
+
 r = client.post("/requisitions", headers=ph, data={
     "vendor_name": "Greenview Caterers", "amount": "75000", "category": "catering",
+    "vendor_bank_name": "Zenith Bank", "vendor_tin": "TIN-55210",
+    "vendor_phone_or_email": "billing@greenview.example",
+    "payment_type": "advance",
+    "budget_lines": _json.dumps([
+        {"description": "Workshop catering", "unit": "Person", "budget_line": "B-300",
+         "quantity": 25, "frequency": 1, "unit_cost": 3000},
+    ]),
 })
 check("requisition raised", r.status_code == 200)
 req_id, req_ref = r.json()["id"], r.json()["ref"]
+check("budget line total is server-computed (25 * 1 * 3000)",
+      r.json()["budget_lines"][0]["line_total"] == 75000)
 client.post(f"/requisitions/{req_id}/comments", headers=ph, data={"text": "Vendor confirmed for the workshop."})
 
 # ─── flag off: all three refused ────────────────────────────────────────────
@@ -112,6 +123,12 @@ check("PDF contains the vendor name", "Greenview Caterers" in pdf_text)
 check("PDF contains the comment text", "Vendor confirmed for the workshop" in pdf_text)
 check("PDF contains the submitter", "program@neem.org" in pdf_text)
 check("PDF confirms the audit chain verified", "Hash chain verified" in pdf_text)
+check("PDF shows the payment type", "Advance" in pdf_text)
+check("PDF shows the amount in words", "Seventy-Five Thousand Naira Only" in pdf_text)
+check("PDF shows the vendor's bank", "Zenith Bank" in pdf_text)
+check("PDF shows the vendor's TIN", "TIN-55210" in pdf_text)
+check("PDF shows the budget-line description", "Workshop catering" in pdf_text)
+check("PDF shows the computed budget-line total", "75,000.00" in pdf_text)
 
 # ─── per-requisition Excel: real workbook, real sheets, real values ────────
 
@@ -128,6 +145,13 @@ check("Audit Log sheet present", "Audit Log" in wb.sheetnames)
 summary_values = [c.value for row in wb["Summary"].iter_rows() for c in row]
 check("Summary sheet carries the ref", req_ref in summary_values)
 check("Summary sheet carries the vendor", "Greenview Caterers" in summary_values)
+check("Summary sheet carries the amount in words",
+      "Seventy-Five Thousand Naira Only" in summary_values)
+check("Summary sheet carries the vendor's bank", "Zenith Bank" in summary_values)
+check("Budget Lines sheet present", "Budget Lines" in wb.sheetnames)
+budget_values = [c.value for row in wb["Budget Lines"].iter_rows() for c in row]
+check("Budget Lines sheet carries the description", "Workshop catering" in budget_values)
+check("Budget Lines sheet carries the server-computed total", 75000.0 in budget_values)
 
 # ─── nonexistent requisition 404s on both formats ──────────────────────────
 
@@ -146,15 +170,28 @@ tomorrow_s = (today + dt.timedelta(days=1)).isoformat()
 far_past_start = (today - dt.timedelta(days=400)).isoformat()
 far_past_end = (today - dt.timedelta(days=399)).isoformat()
 
+# `dt.date.today()` is this machine's LOCAL calendar date; requisitions are
+# timestamped in UTC (requisitions._now_iso). Without tz_offset_minutes, a
+# requisition raised in the gap between local midnight and UTC midnight
+# silently falls outside "today" for any timezone east of UTC — exactly
+# what this sandbox runs (WAT, UTC+1) and exactly NEEM/TA Connect's own
+# timezone. Pass the same offset the frontend now sends
+# (Date.getTimezoneOffset()'s own convention) so "today" means the
+# server-local calendar day, matching what a NEEM user picking "today" on
+# their own machine actually means.
+local_offset_minutes = int((dt.datetime.now() - dt.datetime.utcnow()).total_seconds() // 60) * -1
+
 r = client.get("/requisitions/export/log.xlsx", headers=ph,
-                params={"start": today_s, "end": tomorrow_s})
+                params={"start": today_s, "end": tomorrow_s,
+                        "tz_offset_minutes": local_offset_minutes})
 check("log export (today..tomorrow) succeeds", r.status_code == 200)
 wb2 = load_workbook(io.BytesIO(r.content))
 log_values = [c.value for row in wb2["Requisition Log"].iter_rows() for c in row]
 check("today's requisition IS in the in-range log", req_ref in log_values)
 
 r = client.get("/requisitions/export/log.xlsx", headers=ph,
-                params={"start": far_past_start, "end": far_past_end})
+                params={"start": far_past_start, "end": far_past_end,
+                        "tz_offset_minutes": local_offset_minutes})
 check("empty range 404s", r.status_code == 404)
 
 # ─── malformed / inverted dates ─────────────────────────────────────────────

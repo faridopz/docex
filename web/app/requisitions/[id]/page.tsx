@@ -29,6 +29,7 @@ import {
   downloadRequisitionAttachment,
   downloadRequisitionExport,
   getRequisition,
+  listComplianceRulebooks,
   newIdempotencyKey,
   payRequisition,
   placeRequisitionOnHold,
@@ -40,7 +41,7 @@ import {
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
-import type { Decision, Requisition } from "@/types/requisition";
+import type { Decision, Requisition, RulebookSummary } from "@/types/requisition";
 
 /**
  * Requisition detail — where a decision actually gets made.
@@ -84,6 +85,8 @@ export default function RequisitionDetailPage() {
   const [complianceEnabled, setComplianceEnabled] = useState(false);
   const [complianceBusy, setComplianceBusy] = useState(false);
   const [complianceError, setComplianceError] = useState<string | null>(null);
+  const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
+  const [selectedRulebookId, setSelectedRulebookId] = useState<string>("");
 
   const [exportEnabled, setExportEnabled] = useState(false);
   const [exportBusy, setExportBusy] = useState<"" | "pdf" | "xlsx">("");
@@ -101,6 +104,14 @@ export default function RequisitionDetailPage() {
           setAttachmentsEnabled(hasFeature(cfg, "requisition_attachments"));
           setComplianceEnabled(hasFeature(cfg, "requisition_compliance_check"));
           setExportEnabled(hasFeature(cfg, "requisition_export"));
+          if (hasFeature(cfg, "requisition_compliance_check")) {
+            try {
+              const rbs = await listComplianceRulebooks();
+              if (!cancelled) setRulebooks(rbs);
+            } catch {
+              /* the picker just stays empty — "workflow default" still works */
+            }
+          }
         }
       } catch {
         /* stays hidden — matches what the server would refuse anyway */
@@ -293,7 +304,7 @@ export default function RequisitionDetailPage() {
     setComplianceBusy(true);
     setComplianceError(null);
     try {
-      setReq(await runComplianceCheck(req.id));
+      setReq(await runComplianceCheck(req.id, selectedRulebookId || undefined));
     } catch (e) {
       setComplianceError(e instanceof Error ? e.message : "Could not run the compliance check.");
     } finally {
@@ -454,13 +465,24 @@ export default function RequisitionDetailPage() {
               <dl className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
                 <Detail label="Payee" value={req.vendor_name} />
                 <Detail label="Amount" value={money(req.amount, req.currency)} />
+                <Detail label="Payment type" value={humanise(req.payment_type)} />
                 <Detail label="Category" value={humanise(req.category)} />
                 <Detail label="Project / cost centre" value={req.project_code || "—"} />
                 <Detail label="Grant" value={req.grant_code || "—"} />
-                <Detail label="Vendor account" value={req.vendor_account || "—"} />
+                {req.payees.length === 0 ? (
+                  <>
+                    <Detail label="Vendor account" value={req.vendor_account || "—"} />
+                    <Detail label="Bank" value={req.vendor_bank_name || "—"} />
+                    <Detail label="TIN" value={req.vendor_tin || "—"} />
+                    <Detail label="Phone / email" value={req.vendor_phone_or_email || "—"} />
+                  </>
+                ) : null}
               </dl>
+              <p className="mt-3 border-t border-gray-100 pt-3 text-xs text-gray-500">
+                Amount in words: <span className="text-gray-700">{req.amount_in_words}</span>
+              </p>
               {req.description ? (
-                <p className="mt-4 border-t border-gray-100 pt-3 text-sm text-gray-700">
+                <p className="mt-3 border-t border-gray-100 pt-3 text-sm text-gray-700">
                   {req.description}
                 </p>
               ) : null}
@@ -477,6 +499,41 @@ export default function RequisitionDetailPage() {
                 </div>
               ) : null}
             </Card>
+
+            {req.budget_lines.length ? (
+              <Card title="Budget breakdown" subtitle="Totals are computed by the server, never typed">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-xs uppercase tracking-wide text-gray-500">
+                      <tr>
+                        <th className="py-1.5 pr-3 font-medium">Description</th>
+                        <th className="py-1.5 pr-3 font-medium">Unit</th>
+                        <th className="py-1.5 pr-3 font-medium">Budget line</th>
+                        <th className="py-1.5 pr-3 font-medium">Qty</th>
+                        <th className="py-1.5 pr-3 font-medium">Freq.</th>
+                        <th className="py-1.5 pr-3 font-medium">Unit cost</th>
+                        <th className="py-1.5 font-medium">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {req.budget_lines.map((bl, i) => (
+                        <tr key={i}>
+                          <td className="py-1.5 pr-3 text-gray-900">{bl.description || "—"}</td>
+                          <td className="py-1.5 pr-3 text-gray-600">{bl.unit || "—"}</td>
+                          <td className="py-1.5 pr-3 text-gray-600">{bl.budget_line || "—"}</td>
+                          <td className="py-1.5 pr-3 text-gray-600">{bl.quantity}</td>
+                          <td className="py-1.5 pr-3 text-gray-600">{bl.frequency}</td>
+                          <td className="py-1.5 pr-3 text-gray-600">{money(bl.unit_cost, req.currency)}</td>
+                          <td className="py-1.5 font-medium text-gray-900">
+                            {money(bl.line_total, req.currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ) : null}
 
             {attachmentsEnabled ? (
               <Card
@@ -585,6 +642,25 @@ export default function RequisitionDetailPage() {
                 ) : (
                   <p className="text-sm text-gray-500">No compliance check has been run yet.</p>
                 )}
+                {rulebooks.length > 0 ? (
+                  <label className="mt-3 block">
+                    <span className="mb-1 block text-xs font-medium text-gray-700">
+                      Check against
+                    </span>
+                    <select
+                      value={selectedRulebookId}
+                      onChange={(e) => setSelectedRulebookId(e.target.value)}
+                      className="w-full max-w-xs rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-900 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                    >
+                      <option value="">Workflow default</option>
+                      {rulebooks.map((rb) => (
+                        <option key={rb.id} value={rb.id}>
+                          {rb.name} ({rb.active_rule_count} rules)
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <button
                   type="button"
                   onClick={runCompliance}

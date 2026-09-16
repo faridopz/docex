@@ -13,12 +13,15 @@
 import { apiFetch, BASE, getToken } from "@/lib/session";
 import type {
   AuditSummary,
+  BudgetLine,
   Decision,
   Payee,
+  PaymentType,
   Requisition,
   RequisitionSummary,
   RequisitionWorkflow,
   ReqStatus,
+  RulebookSummary,
   TransactionRecord,
   TransactionSummaryRow,
 } from "@/types/requisition";
@@ -50,6 +53,16 @@ export interface NewRequisition {
   project_code?: string;
   grant_code?: string;
   vendor_account?: string;
+  /** Payee bank/contact detail for the single-vendor path — matches what a
+   * batch's Payee rows already carry per-payee. */
+  vendor_bank_name?: string;
+  vendor_tin?: string;
+  vendor_phone_or_email?: string;
+  /** "full", "advance", or "balance" — defaults to "full" server-side. */
+  payment_type?: PaymentType;
+  /** The expense breakdown, if any. `line_total` is ignored even if sent —
+   * the server always recomputes it. */
+  budget_lines?: BudgetLine[];
   description?: string;
   /** Field-receipt IDs backing this request. */
   receipt_ids?: string[];
@@ -76,6 +89,11 @@ export async function createRequisition(
       project_code: body.project_code ?? "",
       grant_code: body.grant_code ?? "",
       vendor_account: body.vendor_account ?? "",
+      vendor_bank_name: body.vendor_bank_name ?? "",
+      vendor_tin: body.vendor_tin ?? "",
+      vendor_phone_or_email: body.vendor_phone_or_email ?? "",
+      payment_type: body.payment_type ?? "full",
+      budget_lines: JSON.stringify(body.budget_lines ?? []),
       description: body.description ?? "",
       receipt_ids: (body.receipt_ids ?? []).join(","),
       documents: (body.documents ?? []).join(","),
@@ -226,14 +244,27 @@ export async function downloadRequisitionAttachment(
 
 // ─── compliance check ───────────────────────────────────────────────────────
 
-/** Check this requisition's real attachments against the org's configured
- * compliance rulebook. Requires requisition_compliance_check AND a
- * rulebook_id set on the workflow (Settings → Workflow). Costs a real
- * Claude API call server-side — not something to trigger silently. */
-export async function runComplianceCheck(id: string): Promise<Requisition> {
+/** Check this requisition's real attachments against a compliance rulebook.
+ * Requires requisition_compliance_check enabled. `rulebookId`, when given,
+ * checks against that specific rulebook for this one run instead of the
+ * workflow's configured default (Settings → Workflow) — lets whoever is
+ * running the check pick the policy that actually applies to this request,
+ * rather than always using whatever was set up once, org-wide. Costs a
+ * real Claude API call server-side — not something to trigger silently. */
+export async function runComplianceCheck(
+  id: string, rulebookId?: string,
+): Promise<Requisition> {
   return apiFetch(`/requisitions/${encodeURIComponent(id)}/compliance-check`, {
     method: "POST",
+    body: form({ rulebook_id: rulebookId ?? "" }),
   });
+}
+
+/** Saved compliance rulebooks, summary view — for the picker shown before
+ * running a check. */
+export async function listComplianceRulebooks(): Promise<RulebookSummary[]> {
+  const r = await apiFetch<{ rulebooks: RulebookSummary[] }>("/compliance/rulebooks");
+  return r.rulebooks;
 }
 
 // ─── export ─────────────────────────────────────────────────────────────────
@@ -271,10 +302,19 @@ export async function downloadRequisitionExport(
 }
 
 /** Fetch the weekly/monthly requisition log for a date range (YYYY-MM-DD,
- * inclusive both ends) as a Blob — the audit sweep export. */
+ * inclusive both ends, in the caller's OWN local calendar — "today" means
+ * their today, not UTC's) as a Blob — the audit sweep export.
+ *
+ * Sends the browser's own UTC offset (Date.getTimezoneOffset()) so the
+ * server can shift the day boundary to match. Without this, anything raised
+ * in the gap between local midnight and UTC midnight silently falls out of
+ * "today" for any org east of UTC (NEEM/TA Connect, WAT, are exactly this
+ * case for the first hour of every day). */
 export async function downloadRequisitionLog(start: string, end: string): Promise<Blob> {
   const token = getToken();
-  const q = new URLSearchParams({ start, end });
+  const q = new URLSearchParams({
+    start, end, tz_offset_minutes: String(new Date().getTimezoneOffset()),
+  });
   const res = await fetch(`${BASE}/requisitions/export/log.xlsx?${q.toString()}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
