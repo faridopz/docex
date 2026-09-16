@@ -262,6 +262,47 @@ export async function runComplianceCheck(
   });
 }
 
+// ─── payee import ───────────────────────────────────────────────────────────
+
+export interface ImportedPayeeRow {
+  row_number: number;
+  name: string;
+  account_number: string;
+  bank_name: string;
+  amount: number;
+  purpose: string;
+  tin: string;
+  phone_or_email: string;
+  payee_type: Payee["payee_type"];
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface PayeeImportPreview {
+  filename: string;
+  detected_columns: Record<string, string>;
+  headers_found: string[];
+  total_rows: number;
+  valid_count: number;
+  problem_count: number;
+  total_amount: number;
+  max_payees: number;
+  over_cap: boolean;
+  rows: ImportedPayeeRow[];
+}
+
+/** Read a payee schedule out of a spreadsheet. CREATES NOTHING — it parses
+ * and validates so the rows can be reviewed before anything is raised. The
+ * confirmed rows then go through createRequisition() exactly as typed ones
+ * do, which is what keeps an imported batch on the same policy checks,
+ * approval chain and compliance check as every other requisition. */
+export async function previewPayeeImport(file: File): Promise<PayeeImportPreview> {
+  const fd = new FormData();
+  fd.append("file", file);
+  return apiFetch("/requisitions/payees/preview", { method: "POST", body: fd });
+}
+
 /** Send a requisition up or down the chain — escalate it to a later stage,
  * or hand it back to an earlier one without bouncing it to the submitter and
  * losing the reviews already done. The reason is required and read at audit.

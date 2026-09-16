@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2, Plus, Send, ShieldCheck, Sparkles, Trash2, Users } from "lucide-react";
+import {
+  ArrowRight, Loader2, Plus, Send, ShieldCheck, Sparkles, Trash2, Upload, Users,
+} from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { DropZone } from "@/components/DropZone";
 import { PolicyCheckList } from "@/components/erp/PolicyChecks";
@@ -11,8 +13,10 @@ import {
   getWorkflow,
   listComplianceRulebooks,
   newIdempotencyKey,
+  previewPayeeImport,
   runComplianceCheck,
   uploadRequisitionAttachment,
+  type PayeeImportPreview,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { humanise, money } from "@/lib/requisitionFormat";
@@ -131,6 +135,13 @@ export default function NewRequisitionPage() {
 
   const [payeeRows, setPayeeRows] = useState<PayeeRow[]>([{ ...EMPTY_ROW }]);
   const [bulkPaste, setBulkPaste] = useState("");
+
+  // Spreadsheet import. The schedule already exists in Excel before it
+  // reaches DOCex; retyping it is where the errors come from.
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<PayeeImportPreview | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [budgetLines, setBudgetLines] = useState<BudgetLineRow[]>([]);
 
@@ -287,6 +298,47 @@ export default function NewRequisitionPage() {
 
   function addBudgetRow() {
     setBudgetLines((prev) => [...prev, { ...EMPTY_BUDGET_ROW }]);
+  }
+
+  async function handleImportFile(file: File) {
+    setImporting(true);
+    setImportError(null);
+    setImportPreview(null);
+    try {
+      setImportPreview(await previewPayeeImport(file));
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : "Could not read that file.");
+    } finally {
+      setImporting(false);
+      // Reset so the same file can be re-picked after fixing it.
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }
+
+  /** Take the rows the server accepted. Only the valid ones — a row it could
+   *  not read is a row nobody should be paying, and silently importing it
+   *  blank would be worse than leaving it out. */
+  function acceptImportedRows() {
+    if (!importPreview) return;
+    const rows: PayeeRow[] = importPreview.rows
+      .filter((r) => r.ok)
+      .map((r) => ({
+        name: r.name,
+        account_number: r.account_number,
+        bank_name: r.bank_name,
+        amount: String(r.amount),
+        purpose: r.purpose,
+        tin: r.tin,
+        phone_or_email: r.phone_or_email,
+        payee_type: r.payee_type,
+      }));
+    if (!rows.length) return;
+    setPayeeRows((prev) => {
+      const base =
+        prev.length === 1 && prev[0].name === "" && prev[0].amount === "" ? [] : prev;
+      return [...base, ...rows];
+    });
+    setImportPreview(null);
   }
 
   function addFromPaste() {
@@ -746,19 +798,34 @@ export default function NewRequisitionPage() {
           </div>
 
           {mode === "batch" ? (
-            <PayeeEditor
-              rows={payeeRows}
-              currency={currency}
-              maxPayees={maxPayees}
-              validCount={validPayeeRows.length}
-              overCap={overPayeeCap}
-              bulkPaste={bulkPaste}
-              onBulkPasteChange={setBulkPaste}
-              onAddFromPaste={addFromPaste}
-              onPatchRow={patchPayeeRow}
-              onRemoveRow={removePayeeRow}
-              onAddRow={addPayeeRow}
-            />
+            <>
+              <PayeeImportPanel
+                currency={currency}
+                importing={importing}
+                preview={importPreview}
+                error={importError}
+                inputRef={importInputRef}
+                onPick={handleImportFile}
+                onAccept={acceptImportedRows}
+                onDismiss={() => {
+                  setImportPreview(null);
+                  setImportError(null);
+                }}
+              />
+              <PayeeEditor
+                rows={payeeRows}
+                currency={currency}
+                maxPayees={maxPayees}
+                validCount={validPayeeRows.length}
+                overCap={overPayeeCap}
+                bulkPaste={bulkPaste}
+                onBulkPasteChange={setBulkPaste}
+                onAddFromPaste={addFromPaste}
+                onPatchRow={patchPayeeRow}
+                onRemoveRow={removePayeeRow}
+                onAddRow={addPayeeRow}
+              />
+            </>
           ) : null}
 
           <BudgetLineEditor
@@ -1203,6 +1270,154 @@ function PayeeEditor({
           Add pasted rows
         </button>
       </details>
+    </div>
+  );
+}
+
+/**
+ * Import a payee schedule from the spreadsheet finance already has.
+ *
+ * The preview is the point. Parsing happens on the server and returns every
+ * problem at once — so a hundred-line schedule surfaces all eleven mistakes
+ * in one go, against the row numbers as they appear in Excel, instead of
+ * being discovered one upload at a time.
+ *
+ * Rows that failed are shown but never imported: a row the parser could not
+ * read is a row nobody should be paying, and importing it blank would be
+ * worse than leaving it out. Everything accepted here lands in the same
+ * editable table as a typed row and goes through the same submit, so an
+ * imported batch is not a different kind of requisition.
+ */
+function PayeeImportPanel({
+  currency,
+  importing,
+  preview,
+  error,
+  inputRef,
+  onPick,
+  onAccept,
+  onDismiss,
+}: {
+  currency: string;
+  importing: boolean;
+  preview: PayeeImportPreview | null;
+  error: string | null;
+  inputRef: React.RefObject<HTMLInputElement>;
+  onPick: (file: File) => void;
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50/70 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-gray-700">Import from a spreadsheet</p>
+          <p className="mt-0.5 text-xs text-gray-500">
+            CSV or Excel, columns in any order. Needs at least a name and an amount.
+          </p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".csv,.tsv,.txt,.xlsx,.xlsm"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onPick(f);
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={importing}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+        >
+          {importing ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Upload className="h-3.5 w-3.5" />
+          )}
+          Choose file
+        </button>
+      </div>
+
+      {error ? (
+        <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+          {error}
+        </p>
+      ) : null}
+
+      {preview ? (
+        <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-sm font-semibold text-gray-900">{preview.filename}</span>
+            <span className="text-xs text-gray-600">
+              {preview.valid_count} of {preview.total_rows} rows ready ·{" "}
+              {money(preview.total_amount, currency)}
+            </span>
+            {preview.problem_count > 0 ? (
+              <span className="text-xs font-semibold text-amber-700">
+                {preview.problem_count} need fixing
+              </span>
+            ) : null}
+          </div>
+
+          {preview.over_cap ? (
+            <p className="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700">
+              This file has {preview.valid_count} payees, above the {preview.max_payees}
+              -payee limit for one requisition. Import it and split, or trim the file.
+            </p>
+          ) : null}
+
+          {preview.problem_count > 0 ? (
+            <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gray-100">
+              <table className="w-full text-left text-xs">
+                <tbody className="divide-y divide-gray-50">
+                  {preview.rows
+                    .filter((r) => !r.ok)
+                    .map((r) => (
+                      <tr key={r.row_number} className="bg-amber-50/40">
+                        <td className="w-16 px-2 py-1.5 align-top text-gray-500">
+                          Row {r.row_number}
+                        </td>
+                        <td className="px-2 py-1.5 align-top text-gray-700">
+                          {r.name || <span className="text-gray-400">(no name)</span>}
+                        </td>
+                        <td className="px-2 py-1.5 align-top text-amber-800">
+                          {r.errors.join(" ")}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <p className="mt-2 text-xs text-gray-500">
+            {preview.problem_count > 0
+              ? "Rows that need fixing are not imported. Correct them in the source file and choose it again, or add them by hand below."
+              : "Every row read cleanly."}
+          </p>
+
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={onAccept}
+              disabled={preview.valid_count === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
+            >
+              Add {preview.valid_count} {preview.valid_count === 1 ? "payee" : "payees"}
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 transition hover:text-gray-900"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

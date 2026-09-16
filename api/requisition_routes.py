@@ -44,6 +44,8 @@ import compliance
 import fast_extract
 import idempotency
 import notifications
+import org_config
+import payee_import
 import requisition_export
 import requisitions as rq
 import store
@@ -490,6 +492,82 @@ async def list_requisitions_endpoint(
         department=department, grant_code=grant_code,
     )
     return {"total": len(rows), "requisitions": [_summary_out(r) for r in rows]}
+
+
+@router.post("/requisitions/payees/preview")
+async def preview_payee_import_endpoint(
+    file: Annotated[UploadFile, File(description="CSV, TSV or Excel payee schedule")],
+    ctx: Ctx = Depends(request_context),
+):
+    """Read a payee schedule out of a spreadsheet and say what is in it.
+
+    CREATES NOTHING. It parses, validates and returns rows plus per-row
+    problems, so the person can see all eleven mistakes at once and fix the
+    source file rather than discovering them one upload at a time.
+
+    The rows then go through POST /requisitions exactly as typed ones do, so
+    an imported batch gets the same deterministic policy checks, the same
+    approval chain, the same compliance check and the same audit log. There
+    is deliberately no bulk-create endpoint: a second way to create a payment
+    is a second thing that drifts from the first, and this codebase has just
+    spent a week removing one of those.
+
+    Declared above /requisitions/{req_id} for the same reason
+    /requisitions/pending is — a literal path after the id pattern would
+    never match.
+    """
+    if not org_config.feature_enabled(ctx.org_id, "multi_payee_requisitions"):
+        raise HTTPException(
+            status_code=400,
+            detail="This organisation has not enabled multi-payee requisitions "
+                   "('multi_payee_requisitions' feature flag).",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="That file is empty.")
+
+    try:
+        result = payee_import.parse_payee_file(file.filename or "", content)
+    except payee_import.PayeeImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:                                    # pragma: no cover
+        raise HTTPException(status_code=422, detail=f"Could not read that file: {exc}") from exc
+
+    cap = rq.get_workflow(ctx.org_id).max_payees or 100
+    valid = result.valid_rows
+
+    return {
+        "filename": file.filename,
+        "detected_columns": result.detected_columns,
+        "headers_found": result.headers_found,
+        "total_rows": len(result.rows),
+        "valid_count": len(valid),
+        "problem_count": len(result.problem_rows),
+        "total_amount": result.total_amount,
+        "max_payees": cap,
+        # Reported rather than refused: the person may want to import what
+        # fits and split the rest, and that is their call to make on a screen
+        # showing the numbers, not ours to make behind an error.
+        "over_cap": len(valid) > cap,
+        "rows": [
+            {
+                "row_number": r.row_number,
+                "name": r.name,
+                "account_number": r.account_number,
+                "bank_name": r.bank_name,
+                "amount": r.amount,
+                "purpose": r.purpose,
+                "tin": r.tin,
+                "phone_or_email": r.phone_or_email,
+                "payee_type": r.payee_type,
+                "ok": r.ok,
+                "errors": r.errors,
+                "warnings": r.warnings,
+            }
+            for r in result.rows
+        ],
+    }
 
 
 @router.get("/requisitions/pending")
