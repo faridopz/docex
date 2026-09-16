@@ -40,6 +40,7 @@ from pydantic import BaseModel
 import approval_tokens
 import approval_webhook
 import attachments
+import audit_annexes
 import audit_findings
 import audit_report
 import compliance
@@ -684,6 +685,68 @@ async def audit_report_endpoint(
         content=content,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/audit/annexes.xlsx")
+async def audit_annexes_endpoint(
+    start: str = Query(..., description="Period start, inclusive, YYYY-MM-DD"),
+    end: str = Query(..., description="Period end, inclusive, YYYY-MM-DD"),
+    full_account_numbers: bool = Query(
+        False, description="Show payee account numbers in full. Recorded on the "
+                           "audit trail when used."),
+    ctx: Ctx = Depends(request_context),
+):
+    """The annexes to the period report: every requisition, every compliance
+    check, every approval, every exception and every supporting document, one
+    sheet each, filtered and frozen ready to work with.
+
+    Account numbers are masked to the last four digits unless explicitly
+    asked for. This pack is a personal-data export — beneficiary names,
+    account numbers, phone numbers — and it leaves the system as a file that
+    gets emailed around. The last four digits match a line on a bank
+    statement, which is what an annex is for; the full number is what lets
+    someone pay it.
+    """
+    _export_gate(ctx)
+    import datetime as _dt
+    try:
+        _dt.date.fromisoformat(start)
+        end_d = _dt.date.fromisoformat(end)
+        if end_d < _dt.date.fromisoformat(start):
+            raise HTTPException(status_code=400, detail="'end' cannot be before 'start'.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {exc}") from exc
+
+    if full_account_numbers:
+        # Unmasking is a deliberate act, so it leaves a trace. An auditor
+        # asking "who pulled a full list of beneficiary bank details, and
+        # when" should not have to take anyone's word for it.
+        try:
+            import notification_center as nc
+            nc.create("audit-annexes", "", "export",
+                      "Full account numbers exported",
+                      body=f"{ctx.user_id} exported the {start}–{end} audit annexes "
+                           "with payee account numbers unmasked.",
+                      actor=ctx.user_id, org_id=ctx.org_id)
+        except Exception:
+            pass
+
+    org_name = ""
+    try:
+        org_name = (org_config.describe(ctx.org_id) or {}).get("name", "") or ""
+    except Exception:
+        pass
+
+    content = audit_annexes.build_annexes_xlsx(
+        ctx.org_id, start, end, org_name=org_name,
+        full_account_numbers=full_account_numbers,
+    )
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 f'attachment; filename="audit-annexes_{start}_to_{end}.xlsx"'},
     )
 
 
