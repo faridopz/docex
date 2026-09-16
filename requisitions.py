@@ -1942,6 +1942,34 @@ def record_compliance_result(
     return _save(org, req)
 
 
+def note_event(
+    org_id: str, req_id: str, *, actor: str, event: str,
+    department: str = "", detail: str = "",
+) -> Requisition:
+    """Append one line to a requisition's audit log without changing anything
+    else about it.
+
+    For acts that are part of the record but are not decisions and move no
+    money — "sign-off was requested from this person for that step" being the
+    first of them. Those belong in the chain: an auditor asking why a payment
+    was approved by someone outside the department needs to see that someone
+    inside it delegated the step, by name, before the approval happened.
+
+    Deliberately narrow. It cannot set a status, an approval or a check —
+    only append an attributed line — so it can never become a side door
+    around decide()'s authority rules.
+    """
+    org = store.require_org(org_id)
+    req = get_requisition(org, req_id)
+    if req is None:
+        raise RequisitionError(f"Requisition '{req_id}' not found.")
+    if not (event or "").strip():
+        raise RequisitionError("An audit entry needs an event name.")
+    _audit(req, event.strip(), actor=actor, department=department, detail=detail.strip())
+    req.updated_at = _now_iso()
+    return _save(org, req)
+
+
 def resubmit(org_id: str, req_id: str, *, actor: str, notes: str = "") -> Requisition:
     """Submitter fixed a RETURNED requisition — re-run checks and re-route."""
     org = store.require_org(org_id)

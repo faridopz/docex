@@ -154,6 +154,18 @@ def _check_url(check: ComplianceCheckResult) -> Optional[str]:
     return f"{app_url}/compliance/checks/{check.payment_id}" if app_url else None
 
 
+def send_raw_email(to_address: str, subject: str, body: str) -> bool:
+    """Public wrapper over the low-level sender.
+
+    Every notification type in this module is built on `_send_raw_email`, but
+    each one also builds its own body from a ComplianceCheckResult. The
+    requisition engine needs the transport without that shape, so this exposes
+    it directly rather than tempting a caller to reach for the underscore name
+    or to construct a fake check just to send an email.
+    """
+    return _send_raw_email(to_address, subject, body)
+
+
 def _send_raw_email(to_address: str, subject: str, body: str) -> bool:
     """Low-level send used by every notification type.
 

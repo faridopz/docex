@@ -62,14 +62,38 @@ def _unb64(data: bytes) -> bytes:
 
 
 def make_token(
-    check_id: str, stage: str, email: str, ttl_seconds: int = _DEFAULT_TTL
+    check_id: str,
+    stage: str,
+    email: str,
+    ttl_seconds: int = _DEFAULT_TTL,
+    *,
+    org: str = "",
+    kind: str = "check",
 ) -> str:
-    payload = {
+    """Mint a signed, expiring link bound to one record + one stage + one
+    approver.
+
+    `org` and `kind` were added for requisition sign-off and are written only
+    when set, so tokens already in flight (compliance checks, which predate
+    both and are always single-org) keep verifying unchanged — see
+    verify_token's defaults.
+
+    `org` matters more than it looks: the route that consumes a requisition
+    token is PUBLIC, with no session to resolve the organisation from. Without
+    the org baked into the signed payload, that route would have to guess
+    which tenant's store to read, and guessing which organisation a payment
+    belongs to is not something this codebase should ever do.
+    """
+    payload: dict = {
         "cid": check_id,
         "stage": stage,
         "email": email,
         "exp": int(time.time()) + ttl_seconds,
     }
+    if org:
+        payload["org"] = org
+    if kind and kind != "check":
+        payload["kind"] = kind
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64(hmac.new(_secret(), body, hashlib.sha256).digest())
     return f"{body.decode()}.{sig.decode()}"
@@ -92,4 +116,8 @@ def verify_token(token: str) -> dict:
         raise ValueError("Malformed approval link.") from exc
     if int(payload.get("exp", 0)) < int(time.time()):
         raise ValueError("This approval link has expired.")
+    # Defaults keep pre-existing compliance-check links working: they were
+    # minted before either field existed.
+    payload.setdefault("kind", "check")
+    payload.setdefault("org", "")
     return payload

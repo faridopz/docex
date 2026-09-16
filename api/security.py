@@ -47,6 +47,17 @@ PUBLIC_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/compliance/approve/verify/[^/]+$"),
     re.compile(r"^/compliance/approve/[^/]+$"),
     re.compile(r"^/compliance/approval-callback$"),
+    # The same, for requisitions — an approver who is travelling, an auditor,
+    # or a board member with no DOCex account. The token is HMAC-signed,
+    # expires, and is bound to one org + one requisition + one step + one
+    # email address, so it authorises exactly one decision and nothing else.
+    #
+    # Note the shapes: these have TWO and THREE segments after /requisitions,
+    # where the authenticated detail route is /requisitions/{id} with one. A
+    # token can therefore never be read as a requisition id, and none of the
+    # authenticated /requisitions/{id}/… routes can be reached through here.
+    re.compile(r"^/requisitions/approve/verify/[^/]+$"),
+    re.compile(r"^/requisitions/approve/[^/]+$"),
 )
 
 

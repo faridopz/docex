@@ -14,9 +14,11 @@ import { apiFetch, BASE, getToken } from "@/lib/session";
 import type {
   AuditSummary,
   BudgetLine,
+  ComplianceSummary,
   Decision,
   Payee,
   PaymentType,
+  PolicyCheck,
   Requisition,
   RequisitionSummary,
   RequisitionWorkflow,
@@ -258,6 +260,93 @@ export async function runComplianceCheck(
     method: "POST",
     body: form({ rulebook_id: rulebookId ?? "" }),
   });
+}
+
+// ─── emailed sign-off ───────────────────────────────────────────────────────
+
+export interface SignoffRequestResult {
+  /** True only if SMTP is configured AND the send succeeded. */
+  sent: boolean;
+  webhook: boolean;
+  /** Always returned, so it can be copied and sent by hand when `sent` is
+   * false. A demo where the link is unreachable teaches people the feature
+   * doesn't work. */
+  link: string;
+  step: string;
+  approver_email: string;
+}
+
+/** Email someone a unique, expiring link to sign off this requisition —
+ * for an approver who is travelling, or anyone without a DOCex account.
+ * Minting the link is an authenticated, audited act: it is recorded on the
+ * requisition as a delegation before any email is attempted. */
+export async function requestRequisitionSignoff(
+  id: string,
+  input: { step: string; approver_email: string; note?: string },
+): Promise<SignoffRequestResult> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/request-signoff`, {
+    method: "POST",
+    body: JSON.stringify({
+      step: input.step,
+      approver_email: input.approver_email,
+      note: input.note ?? "",
+    }),
+  });
+}
+
+/** What an emailed approver sees before deciding. Deliberately enough to
+ * decide on — amount, payee, purpose, every policy check — not just a ref. */
+export interface SignoffView {
+  requisition_ref: string;
+  payee: string;
+  amount: number;
+  currency: string;
+  amount_in_words: string;
+  category: string;
+  description: string;
+  payment_type: string;
+  submitted_by: string;
+  submitted_at: string;
+  step: string;
+  step_label: string;
+  approver_email: string;
+  status: ReqStatus;
+  checks: PolicyCheck[];
+  blocking_count: number;
+  attachment_count: number;
+  compliance: ComplianceSummary | null;
+  /** False when this link can no longer be acted on. */
+  actionable: boolean;
+  already_moved: boolean;
+}
+
+/** PUBLIC — no session. The token in the URL is the credential. */
+export async function verifyRequisitionSignoff(token: string): Promise<SignoffView> {
+  const res = await fetch(
+    `${BASE}/requisitions/approve/verify/${encodeURIComponent(token)}`,
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `This approval link could not be opened (${res.status}).`);
+  }
+  return res.json();
+}
+
+/** PUBLIC — records the decision from the approver's link. */
+export async function actOnRequisitionSignoff(
+  token: string,
+  input: { action: "approve" | "return" | "decline"; note?: string },
+): Promise<{ recorded: boolean; requisition_ref: string; status: ReqStatus; current_step: string | null }> {
+  const res = await fetch(`${BASE}/requisitions/approve/${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: input.action, note: input.note ?? "" }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail || `Could not record that decision (${res.status}).`);
+  }
+  return res.json();
 }
 
 /** Saved compliance rulebooks, summary view — for the picker shown before

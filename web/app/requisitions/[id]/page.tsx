@@ -35,9 +35,11 @@ import {
   placeRequisitionOnHold,
   releaseRequisitionHold,
   resubmitRequisition,
+  requestRequisitionSignoff,
   runComplianceCheck,
   triggerBlobDownload,
   uploadRequisitionAttachment,
+  type SignoffRequestResult,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
@@ -87,6 +89,15 @@ export default function RequisitionDetailPage() {
   const [complianceError, setComplianceError] = useState<string | null>(null);
   const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
   const [selectedRulebookId, setSelectedRulebookId] = useState<string>("");
+
+  // Emailed sign-off — escalate, delegate, or send this to someone who has
+  // no DOCex account (a travelling AED, an auditor, a board member).
+  const [signoffEmail, setSignoffEmail] = useState("");
+  const [signoffNote, setSignoffNote] = useState("");
+  const [signoffBusy, setSignoffBusy] = useState(false);
+  const [signoffError, setSignoffError] = useState<string | null>(null);
+  const [signoffResult, setSignoffResult] = useState<SignoffRequestResult | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const [exportEnabled, setExportEnabled] = useState(false);
   const [exportBusy, setExportBusy] = useState<"" | "pdf" | "xlsx">("");
@@ -296,6 +307,30 @@ export default function RequisitionDetailPage() {
       setExportError(e instanceof Error ? e.message : "Could not export this requisition.");
     } finally {
       setExportBusy("");
+    }
+  }
+
+  async function sendForSignoff() {
+    if (!req || !req.current_step) return;
+    setSignoffBusy(true);
+    setSignoffError(null);
+    setSignoffResult(null);
+    setLinkCopied(false);
+    try {
+      const res = await requestRequisitionSignoff(req.id, {
+        step: req.current_step,
+        approver_email: signoffEmail.trim(),
+        note: signoffNote.trim(),
+      });
+      setSignoffResult(res);
+      setSignoffEmail("");
+      setSignoffNote("");
+      // The delegation is now on the audit trail — reload so it shows.
+      setReq(await getRequisition(req.id));
+    } catch (e) {
+      setSignoffError(e instanceof Error ? e.message : "Could not send that request.");
+    } finally {
+      setSignoffBusy(false);
     }
   }
 
@@ -860,6 +895,83 @@ export default function RequisitionDetailPage() {
                 </ol>
               )}
             </Card>
+
+            {/* Escalate / delegate outward. Only offered while the request is
+                actually sitting at a step — there is nothing to sign off
+                otherwise, and offering it would be a dead end. */}
+            {req.status === "in_review" && req.current_step ? (
+              <Card
+                title="Send for sign-off"
+                subtitle="Email a secure link — works for someone with no DOCex account"
+              >
+                <p className="text-xs text-gray-500">
+                  For the {humanise(req.current_step)} step. The link expires in seven days,
+                  works only for that address, and the decision is recorded against their
+                  email with the time and IP. A blocking check still can&rsquo;t be released
+                  this way.
+                </p>
+                <div className="mt-3 space-y-2">
+                  <input
+                    type="email"
+                    value={signoffEmail}
+                    onChange={(e) => setSignoffEmail(e.target.value)}
+                    placeholder="approver@organisation.org"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                  <input
+                    value={signoffNote}
+                    onChange={(e) => setSignoffNote(e.target.value)}
+                    placeholder="Note (optional) — why you're sending it to them"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={sendForSignoff}
+                    disabled={signoffBusy || signoffEmail.trim() === ""}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {signoffBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Send className="h-3.5 w-3.5" />
+                    )}
+                    Send link
+                  </button>
+                </div>
+
+                {signoffError ? (
+                  <p className="mt-2 text-xs text-red-700">{signoffError}</p>
+                ) : null}
+
+                {signoffResult ? (
+                  <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <p className="text-xs font-medium text-gray-900">
+                      {signoffResult.sent
+                        ? `Emailed to ${signoffResult.approver_email}.`
+                        : `Link created for ${signoffResult.approver_email} — email isn't configured on this instance, so send it yourself.`}
+                    </p>
+                    {/* Always shown, not only when the email failed: the
+                        sender may want to paste it into WhatsApp, which is
+                        how a lot of this actually gets chased. */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="min-w-0 flex-1 truncate rounded bg-white px-2 py-1 text-[11px] text-gray-600 ring-1 ring-gray-200">
+                        {signoffResult.link}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(signoffResult.link);
+                          setLinkCopied(true);
+                        }}
+                        className="shrink-0 rounded-md border border-gray-300 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 transition hover:bg-gray-50"
+                      >
+                        {linkCopied ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </Card>
+            ) : null}
 
             <Card title="Comments" subtitle="Anyone who can see this requisition can comment on it">
               {req.comments.length === 0 ? (

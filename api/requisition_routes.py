@@ -27,20 +27,28 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile,
+)
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
+import approval_tokens
+import approval_webhook
 import attachments
 import compliance
 import fast_extract
 import idempotency
+import notifications
 import requisition_export
 import requisitions as rq
 import store
 from models import PolicyRulebook
+from notifications import looks_like_email
 from .context import Ctx, request_context, require_role
 
 router = APIRouter(tags=["requisitions"])
@@ -1124,6 +1132,240 @@ async def run_compliance_check_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return _detail_out(req)
+
+
+# ─── emailed sign-off: escalate, delegate, or send to someone outside ──────
+#
+# Requisitions are approved in-app by signed-in people, and that remains the
+# normal path. This is the other one: the AED is travelling, a board member
+# has to see a large payment, an auditor wants to sign something off, and the
+# chain would otherwise stop dead until someone gets to a laptop.
+#
+# The capability already existed — but only on compliance checks, which are
+# the SEPARATE, parallel system this codebase is consolidating away from. It
+# belongs on the payment spine, so it now lives here.
+#
+# How authority works, since the recipient may have no DOCex account at all:
+# minting the link is itself an authenticated, audited act by someone already
+# in the system, who names the step and the person. That act is the
+# delegation. The recipient then acts FOR that step, and everything the
+# engine already enforces still applies — the request must be at that step,
+# the self-approval rule still bites, and the audit chain records the
+# decision against their email with the time and the IP it came from.
+#
+# One thing emailed sign-off deliberately CANNOT do: release a blocking
+# policy check. An override needs a named authority and an amount inside that
+# step's limit, checked against a real account. A link in an inbox is not
+# that, so overrides stay in-app.
+
+
+class _SignoffRequestIn(BaseModel):
+    step: str
+    approver_email: str
+    note: str = ""
+
+
+@router.post("/requisitions/{req_id}/request-signoff")
+async def request_requisition_signoff(
+    req_id: str, body: _SignoffRequestIn, ctx: Ctx = Depends(request_context),
+):
+    """Email someone a unique, expiring link to sign off this requisition.
+
+    Returns the link as well as whether the email went out — deliberately, so
+    it can be copied and sent by hand when SMTP isn't configured. A demo where
+    the link is unreachable teaches people the feature doesn't work.
+    """
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+
+    email = (body.approver_email or "").strip().lower()
+    if not looks_like_email(email):
+        raise HTTPException(status_code=422, detail="A valid approver email is required.")
+
+    step_key = (body.step or "").strip() or (req.current_step or "")
+    if not step_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.ref} is not sitting at an approval step, so there is "
+                   "nothing to sign off.",
+        )
+    wf = rq.get_workflow(ctx.org_id)
+    step = next((s for s in wf.steps if s.key == step_key), None)
+    if step is None:
+        raise HTTPException(status_code=404, detail=f"No approval step '{step_key}'.")
+
+    token = approval_tokens.make_token(
+        req.id, step_key, email, org=ctx.org_id, kind="requisition",
+    )
+    app_url = os.environ.get("APP_URL", "").rstrip("/")
+    link = f"{app_url}/approve/r/{token}" if app_url else f"/approve/r/{token}"
+
+    # Recorded BEFORE the email goes anywhere: who delegated what, to whom.
+    # If the send then fails, the delegation is still on the record — which is
+    # the right way round for an audit trail.
+    rq.note_event(
+        ctx.org_id, req.id, actor=ctx.user_id, department=ctx.department,
+        event="signoff_requested",
+        detail=f"{step.label or step_key} sign-off requested from {email}"
+               + (f" — {body.note.strip()}" if body.note.strip() else ""),
+    )
+
+    emitted = approval_webhook.emit_approval_request({
+        "requisition_id": req.id, "requisition_ref": req.ref, "org": ctx.org_id,
+        "step": step_key, "approver_email": email,
+        "amount": req.amount, "currency": req.currency, "payee": req.vendor_name,
+        "requested_by": ctx.user_id, "deep_link": link,
+    })
+
+    emailed = False
+    try:
+        emailed = notifications.send_raw_email(
+            email,
+            f"[DOCex] Sign-off needed — {req.ref} ({req.vendor_name})",
+            "\n".join([
+                f"{ctx.user_id} has asked you to sign off a payment request as "
+                f"{step.label or step_key}.",
+                "",
+                f"  Reference : {req.ref}",
+                f"  Payee     : {req.vendor_name}",
+                f"  Amount    : {req.currency} {req.amount:,.2f}",
+                f"  Purpose   : {req.description or '—'}",
+                *( [f"  Note      : {body.note.strip()}"] if body.note.strip() else [] ),
+                "",
+                "Open your unique, secure link to review it in full and approve "
+                "or send it back:",
+                f"  {link}",
+                "",
+                "The link expires in 7 days and only works from this email "
+                "address. Every sign-off is recorded with your email, the time, "
+                "and the address it came from.",
+            ]),
+        )
+    except Exception as exc:                                    # pragma: no cover
+        print(f"[DOCex] Sign-off email to {email} failed: {exc}")
+
+    return {
+        "sent": emailed,
+        "webhook": emitted,
+        "link": link,
+        "step": step_key,
+        "approver_email": email,
+    }
+
+
+def _signoff_token(token: str) -> tuple[dict, rq.Requisition, rq.WorkflowStep]:
+    """Shared by the two PUBLIC routes below. Resolves a token to the exact
+    requisition and step it was minted for, refusing anything stale."""
+    try:
+        payload = approval_tokens.verify_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.get("kind") != "requisition":
+        raise HTTPException(status_code=400, detail="This is not a requisition link.")
+    org = (payload.get("org") or "").strip()
+    if not org:
+        raise HTTPException(status_code=400, detail="This approval link is invalid.")
+
+    req = rq.get_requisition(org, payload["cid"])
+    if req is None:
+        raise HTTPException(status_code=404, detail="This payment request no longer exists.")
+    step_key = payload["stage"]
+    step = next((s for s in rq.get_workflow(org).steps if s.key == step_key), None)
+    if step is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The approval step this link was created for no longer exists "
+                   "in this organisation's workflow.",
+        )
+    return payload, req, step
+
+
+@router.get("/requisitions/approve/verify/{token}")
+async def verify_requisition_signoff(token: str):
+    """PUBLIC. Validate a sign-off link and return enough of the requisition
+    for the approver to actually make a decision — not just its reference.
+    Someone asked to authorise money should see the amount, the payee, the
+    purpose, and every policy check, before they click anything."""
+    payload, req, step = _signoff_token(token)
+    return {
+        "requisition_ref": req.ref,
+        "payee": req.vendor_name,
+        "amount": req.amount,
+        "currency": req.currency,
+        "amount_in_words": rq.amount_in_words(req.amount, req.currency),
+        "category": req.category,
+        "description": req.description,
+        "payment_type": req.payment_type,
+        "submitted_by": req.submitted_by,
+        "submitted_at": req.submitted_at,
+        "step": step.key,
+        "step_label": step.label or step.key,
+        "approver_email": payload["email"],
+        "status": req.status.value,
+        "checks": [_check_out(c) for c in req.checks],
+        "blocking_count": len(rq.blocking_checks(req)),
+        "attachment_count": len(req.attachments),
+        "compliance": _compliance_out(req.compliance) if req.compliance else None,
+        # Whether this link can still be acted on, and if not, why — answered
+        # here so the page can say so plainly instead of failing on submit.
+        "actionable": req.status == rq.ReqStatus.IN_REVIEW and req.current_step == step.key,
+        "already_moved": req.current_step != step.key,
+    }
+
+
+class _SignoffActIn(BaseModel):
+    action: Literal["approve", "return", "decline"]
+    note: str = ""
+
+
+@router.post("/requisitions/approve/{token}")
+async def act_on_requisition_signoff(token: str, body: _SignoffActIn, request: Request):
+    """PUBLIC. Record a decision from the approver's unique link.
+
+    Routed through rq.decide() rather than writing an Approval directly, so an
+    emailed sign-off is held to exactly the same rules as one made in-app: the
+    request must still be at this step, the submitter still cannot approve
+    their own, and the decision still joins the hash-chained audit log.
+    """
+    payload, req, step = _signoff_token(token)
+    org = payload["org"]
+    email = payload["email"]
+
+    if req.current_step != step.key:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{req.ref} has moved on since this link was sent — it is now "
+                   f"{'with ' + req.current_step if req.current_step else req.status.value}. "
+                   "No action was taken.",
+        )
+
+    decision = {
+        "approve": rq.Decision.APPROVED,
+        "return": rq.Decision.RETURNED,
+        "decline": rq.Decision.DECLINED,
+    }[body.action]
+
+    ip = request.client.host if request.client else "unknown"
+    note = (body.note or "").strip()
+    try:
+        updated = rq.decide(
+            org, req.id,
+            decision=decision,
+            actor=email,
+            department=step.department,
+            notes=(f"{note} " if note else "") + f"[signed off by email from {ip}]",
+        )
+    except rq.RequisitionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "recorded": True,
+        "action": body.action,
+        "requisition_ref": updated.ref,
+        "status": updated.status.value,
+        "current_step": updated.current_step,
+    }
 
 
 @router.post("/requisitions/{req_id}/resubmit")
