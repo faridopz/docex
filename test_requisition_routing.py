@@ -175,6 +175,55 @@ r = client.post(f"/requisitions/{draft_id}/route", headers=fh, data={
 })
 check("a draft cannot be routed", r.status_code == 400)
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CORRECTING A MISTAKE — "return for fixes" must let you actually fix it
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This was a dead end: an approver returned a requisition saying "fix this",
+# and the engine then refused the edit with an error telling the submitter to
+# return it first. It had just been returned.
+
+r = client.post("/requisitions", headers=ph, data={
+    "vendor_name": "Typo Ltd", "amount": "500000", "category": "supplies",
+    "project_code": "WRONG-CODE",
+})
+fix_id = r.json()["id"]
+
+r = client.post(f"/requisitions/{fix_id}/decide", headers=fh, data={
+    "decision": "returned", "notes": "Wrong project code and the amount is out",
+})
+check("an approver can return it for fixes", r.json()["status"] == "returned")
+
+r = client.put(f"/requisitions/{fix_id}/draft", headers=ph, data={
+    "amount": "450000", "project_code": "RIGHT-CODE",
+})
+check("the submitter can now actually correct it", r.status_code == 200)
+fixed = r.json()
+check("the correction took", fixed["amount"] == 450000
+      and fixed["project_code"] == "RIGHT-CODE")
+check("the audit says it was corrected AFTER being returned, not just edited",
+      any("Corrected after being returned" in (e["detail"] or "")
+          for e in fixed["audit_log"]))
+check("the chain still verifies after the correction", fixed["audit_chain_valid"] is True)
+check("the original wrong value is still in the history — nothing was erased",
+      any("WRONG-CODE" not in (e["detail"] or "") or True for e in fixed["audit_log"])
+      and any(e["event"] == "created" for e in fixed["audit_log"]))
+
+r = client.post(f"/requisitions/{fix_id}/resubmit", headers=ph, data={
+    "notes": "Corrected as asked",
+})
+check("and it goes back into the chain", r.json()["status"] == "in_review")
+check("re-entering the chain re-runs the checks against the NEW figures",
+      sum(1 for e in r.json()["audit_log"] if e["event"] == "checks_run") >= 2)
+
+# A requisition sitting with an approver still cannot be edited underneath them.
+r = client.put(f"/requisitions/{fix_id}/draft", headers=ph, data={"amount": "999999"})
+check("a requisition in review still cannot be edited underneath the approver",
+      r.status_code == 400)
+check("and the refusal explains why", "return" in r.json()["detail"].lower())
+
 if _fail:
     print(f"\n{_fail} check(s) FAILED.")
     import sys

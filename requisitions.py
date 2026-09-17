@@ -1432,11 +1432,25 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
     req = get_requisition(org, req_id)
     if req is None:
         raise RequisitionError(f"No requisition {req_id}.")
-    if req.status != ReqStatus.DRAFT:
+    # DRAFT or RETURNED. A returned requisition is one an approver has
+    # explicitly handed back saying "fix this and send it again" — and until
+    # now the engine refused to let the submitter change anything, with an
+    # error telling them to return it first. It had just been returned. The
+    # instruction and the capability disagreed, which made "return for fixes"
+    # a dead end rather than a correction path.
+    #
+    # Everything else stays shut. A requisition sitting with an approver
+    # cannot be edited underneath them, and paid or declined records are
+    # never edited at all — those are corrected by a new record that refers
+    # back, not by changing history.
+    if req.status not in (ReqStatus.DRAFT, ReqStatus.RETURNED):
         raise RequisitionError(
-            f"{req.ref} is {req.status.value}, not a draft. Return it first if it "
-            "needs changing — an approver may already have acted on these figures."
+            f"{req.ref} is {req.status.value} and cannot be edited. An approver "
+            "must return it first — changing figures underneath someone who is "
+            "reviewing them is what the audit trail exists to prevent."
         )
+
+    was_returned = req.status == ReqStatus.RETURNED
 
     changed: list[str] = []
     for key, value in fields.items():
@@ -1487,7 +1501,9 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
 
     if changed:
         _audit(req, "draft_edited", actor=actor, department=req.department,
-               detail="Changed: " + ", ".join(sorted(changed)))
+               detail=(("Corrected after being returned: "
+                        if was_returned else "Changed: ")
+                       + ", ".join(sorted(changed))))
         req.checks = run_policy_checks(org, req)
         fails = len([c for c in req.checks if c.result == CheckResult.FAIL])
         warns = len([c for c in req.checks if c.result == CheckResult.WARNING])

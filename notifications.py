@@ -144,6 +144,16 @@ def _build_body(
 # ─── SMTP send ─────────────────────────────────────────────────────────────
 
 
+def is_smtp_configured() -> bool:
+    """Public: whether an email will actually go anywhere.
+
+    Exposed so a screen can tell the truth rather than promising a message
+    that will never arrive. A UI that says "emailed" when no SMTP host is set
+    teaches people the feature is broken.
+    """
+    return _is_smtp_configured()
+
+
 def _is_smtp_configured() -> bool:
     return bool(os.environ.get("SMTP_HOST"))
 

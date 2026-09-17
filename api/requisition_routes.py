@@ -40,6 +40,7 @@ from pydantic import BaseModel
 import approval_tokens
 import approval_webhook
 import attachments
+import auth
 import audit_annexes
 import audit_findings
 import audit_report
@@ -1464,6 +1465,84 @@ async def route_requisition_endpoint(
 # that, so overrides stay in-app.
 
 
+@router.get("/requisitions/{req_id}/send-options")
+async def send_options_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
+    """Who this requisition can be sent to, and how.
+
+    The old screen asked someone to type an email address from memory into a
+    box — for a person the system already knows, at a step whose owning
+    department it also knows. This answers the question properly so the UI
+    can offer names instead of an empty field.
+
+    Three kinds of destination, which the caller should not have to
+    distinguish between up front:
+
+      stage   another stage of this org's own chain — escalate it forward or
+              hand it back, with a reason
+      person  someone with an account in the department that owns a stage.
+              They get it in their queue; no link, no email needed
+      email   anyone else, including people with no account at all
+
+    Deliberately narrower than /auth/users, which is admin-only and returns
+    everything about everyone. This returns a name, an email and a department
+    for people who could actually act on THIS requisition, which is what a
+    submitter legitimately needs to route their own payment.
+    """
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+
+    wf = rq.get_workflow(ctx.org_id)
+    engaged = rq._steps_for(wf, req.amount)
+    engaged_keys = [s.key for s in engaged]
+    current_index = engaged_keys.index(req.current_step) if req.current_step in engaged_keys else -1
+
+    stages = []
+    for i, step in enumerate(engaged):
+        if step.key == req.current_step:
+            continue
+        stages.append({
+            "key": step.key,
+            "label": step.label or step.key,
+            "department": step.department,
+            "direction": ("forward" if current_index >= 0 and i > current_index else "back"),
+        })
+
+    # People who could act, newest-relevant first: the department that owns
+    # the current step, then the departments owning other stages, then anyone
+    # else in the organisation.
+    owning = {s.department for s in engaged if s.department}
+    current_dept = next((s.department for s in engaged if s.key == req.current_step), "")
+    people = []
+    try:
+        for u in auth.list_public(ctx.org_id):
+            if not u.active or u.email == req.submitted_by:
+                continue                   # the submitter cannot approve their own
+            people.append({
+                "email": u.email, "name": u.name, "department": u.department,
+                "role": u.role,
+                "owns_current_step": u.department == current_dept,
+                "in_chain": u.department in owning,
+            })
+    except Exception as exc:                                    # pragma: no cover
+        print(f"[signoff] could not list people ({exc}) — the picker falls back to email.")
+    people.sort(key=lambda p: (not p["owns_current_step"], not p["in_chain"], p["name"]))
+
+    return {
+        "current_step": req.current_step,
+        "current_step_label": next(
+            (s.label or s.key for s in engaged if s.key == req.current_step), ""),
+        "current_department": current_dept,
+        "can_move": req.status == rq.ReqStatus.IN_REVIEW and bool(req.current_step),
+        "stages": stages,
+        "people": people,
+        # So the UI can tell the truth rather than promising an email that
+        # will never arrive. When this is false the link is the product, not
+        # a fallback, and the screen should say so.
+        "email_configured": notifications.is_smtp_configured(),
+    }
+
+
 class _SignoffRequestIn(BaseModel):
     step: str
     approver_email: str
@@ -1503,8 +1582,9 @@ async def request_requisition_signoff(
     token = approval_tokens.make_token(
         req.id, step_key, email, org=ctx.org_id, kind="requisition",
     )
+    code = _short_code(token, org=ctx.org_id, req_id=req.id, created_by=ctx.user_id)
     app_url = os.environ.get("APP_URL", "").rstrip("/")
-    link = f"{app_url}/approve/r/{token}" if app_url else f"/approve/r/{token}"
+    link = f"{app_url}/approve/r/{code}" if app_url else f"/approve/r/{code}"
 
     # Recorded BEFORE the email goes anywhere: who delegated what, to whom.
     # If the send then fails, the delegation is still on the record — which is
@@ -1559,6 +1639,62 @@ async def request_requisition_signoff(
     }
 
 
+_SIGNOFF_LINKS = "signoff_links"
+
+
+def _short_code(token: str, *, org: str, req_id: str, created_by: str) -> str:
+    """Store the signed token behind a short code, and hand back the code.
+
+    The token itself is ~400 characters of base64. It is correct, it is
+    unforgeable, and nobody is pasting it into WhatsApp — which is how an
+    approval actually gets chased here. The code is eight url-safe characters
+    in front of the same token, so the link is short enough to read out over
+    the phone.
+
+    The code is a lookup key, never the credential: it resolves to the signed
+    token, and that token is still verified, still bound to one org, one
+    requisition, one step and one email, and still expires. A guessed code
+    gets someone a token they cannot use for anything they were not already
+    the named approver of.
+    """
+    import secrets
+    # The code carries its own organisation, separated by "~" — a character
+    # base64url never produces, so a code can never be mistaken for a token.
+    # Without it, resolving a code would mean scanning every tenant's store
+    # for a match, and "search all organisations" is not a thing this
+    # codebase should ever learn to do.
+    suffix = secrets.token_urlsafe(6)[:8]
+    try:
+        store.get_store().put(org, _SIGNOFF_LINKS, suffix, {
+            "token": token, "requisition_id": req_id,
+            "created_by": created_by, "created_at": rq._now_iso(),
+        })
+    except Exception as exc:                                    # pragma: no cover
+        print(f"[signoff] could not store the short link ({exc}) — using the raw token.")
+        return token
+    return f"{org}~{suffix}"
+
+
+def _resolve_token(token_or_code: str) -> str:
+    """Accept either a short code or a raw signed token.
+
+    Raw tokens still work. Links sent before short codes existed are sitting
+    in people's inboxes, and an approval link that stops working because the
+    product improved is an approval that does not happen.
+    """
+    value = (token_or_code or "").strip()
+    if "~" not in value:
+        return value                       # a raw signed token
+    org, _, suffix = value.partition("~")
+    try:
+        record = store.get_store().get(org, _SIGNOFF_LINKS, suffix)
+    except Exception:
+        return value
+    if record and record.get("token"):
+        return record["token"]
+    return value                           # let verify_token produce the error
+
+
 def _signoff_token(token: str) -> tuple[dict, rq.Requisition, rq.WorkflowStep]:
     """Shared by the two PUBLIC routes below. Resolves a token to the exact
     requisition and step it was minted for, refusing anything stale."""
@@ -1592,7 +1728,7 @@ async def verify_requisition_signoff(token: str):
     for the approver to actually make a decision — not just its reference.
     Someone asked to authorise money should see the amount, the payee, the
     purpose, and every policy check, before they click anything."""
-    payload, req, step = _signoff_token(token)
+    payload, req, step = _signoff_token(_resolve_token(token))
     return {
         "requisition_ref": req.ref,
         "payee": req.vendor_name,
@@ -1633,7 +1769,7 @@ async def act_on_requisition_signoff(token: str, body: _SignoffActIn, request: R
     request must still be at this step, the submitter still cannot approve
     their own, and the decision still joins the hash-chained audit log.
     """
-    payload, req, step = _signoff_token(token)
+    payload, req, step = _signoff_token(_resolve_token(token))
     org = payload["org"]
     email = payload["email"]
 
