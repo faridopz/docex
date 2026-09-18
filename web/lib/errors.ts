@@ -109,7 +109,7 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
   if (status === 422) {
     // Validation errors carry useful info — try to extract the FastAPI
     // "detail" field if it's a string, else give a generic hint.
-    const detail = extractDetail(raw);
+    const detail = presentableDetail(raw);
     if (detail) {
       return {
         status,
@@ -146,12 +146,23 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
   }
 
   if (status >= 400 && status < 500) {
+    // 400 and 409 are how the ENGINE refuses — a reason is missing, the
+    // requisition is with another department, that step doesn't engage at
+    // this amount, this stage is already signed off. Those sentences are
+    // written for the person reading them and they are the most useful
+    // thing the product says. Replacing them with "check the dev console"
+    // told a finance officer to open developer tools to find out why their
+    // payment was refused, which is no answer at all.
+    const detail = presentableDetail(raw);
+    if (detail) {
+      return { status, reason: "validation", raw, message: detail };
+    }
     return {
       status,
       reason: "validation",
       raw,
       message:
-        "DOCex rejected the request. Check the inputs and try again — the details are in the dev console.",
+        "DOCex couldn't accept that. Check the details you entered and try again.",
     };
   }
 
@@ -205,6 +216,38 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
  * We handle the first two; fall through to null for the third (caller
  * uses a generic message).
  */
+/**
+ * `extractDetail`, but only when the result is fit to show a user.
+ *
+ * The engine's refusals are written for humans and should be shown verbatim.
+ * Not everything that arrives with a 4xx is one of those: a reverse proxy can
+ * return HTML, an unhandled exception can carry a traceback, and an upstream
+ * can echo a key. So a detail is shown only when it reads like a sentence
+ * somebody wrote — otherwise the caller falls back to its generic message and
+ * the full body still reaches `.raw` for the diagnostics page.
+ */
+const _LEAKY = [
+  "traceback", "sk-ant", "bearer ", "password", "secret",
+  'file "', "at object.", "<!doctype", "<html",
+];
+
+function presentableDetail(raw: string): string | null {
+  const detail = extractDetail(raw);
+  if (!detail) return null;
+
+  const text = detail.trim();
+  // A sentence, not a document. 400 chars is longer than any message the
+  // engine writes and shorter than anything that got here by accident.
+  if (!text || text.length > 400) return null;
+  // Multi-line almost always means a trace or a dump, not a message.
+  if (text.split("\n").length > 3) return null;
+
+  const lower = text.toLowerCase();
+  if (_LEAKY.some((needle) => lower.includes(needle))) return null;
+
+  return text;
+}
+
 function extractDetail(raw: string): string | null {
   try {
     const parsed = JSON.parse(raw);
