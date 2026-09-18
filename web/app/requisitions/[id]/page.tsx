@@ -740,10 +740,20 @@ export default function RequisitionDetailPage() {
                     </select>
                   </label>
                 ) : null}
+                {/* A compliance check READS the attached files. With nothing
+                    attached there is nothing to read, and the server correctly
+                    refuses — so offering a live button here only produces an
+                    error the person could not have avoided. Say what is
+                    missing instead, next to the thing that is missing. */}
                 <button
                   type="button"
                   onClick={runCompliance}
-                  disabled={complianceBusy}
+                  disabled={complianceBusy || req.attachments.length === 0}
+                  title={
+                    req.attachments.length === 0
+                      ? "Attach a file first — a compliance check reads the attached documents."
+                      : undefined
+                  }
                   className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {complianceBusy ? (
@@ -753,6 +763,12 @@ export default function RequisitionDetailPage() {
                   )}
                   {req.compliance ? "Re-run compliance check" : "Run compliance check"}
                 </button>
+                {req.attachments.length === 0 ? (
+                  <p className="mt-2 text-xs text-gray-500">
+                    Attach at least one file above — this check reads the
+                    documents, not the form.
+                  </p>
+                ) : null}
                 {complianceError ? (
                   <p className="mt-2 text-xs text-red-700">{complianceError}</p>
                 ) : null}
