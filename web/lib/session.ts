@@ -82,19 +82,28 @@ export async function apiFetch<T>(
   if (res.status === 401) {
     clearSession();
   }
-  // A one-time password is still a valid session — it just cannot reach
-  // anything except the change-password screen. Signing the user out here
-  // would throw away the credential they are in the middle of replacing, so
-  // this redirects instead of clearing.
+  // Two server-side gates return 403 on a session that is otherwise perfectly
+  // valid: a one-time password that has to be replaced, and a required second
+  // factor whose grace period has run out. In both cases signing the user out
+  // would be wrong — they hold a good credential and simply have one thing to
+  // do first — so this redirects to the screen that lets them do it.
+  //
+  // This matters most mid-session: a grace period that expires while somebody
+  // is working would otherwise turn every page into an unexplained error.
   if (res.status === 403) {
     const raw = await res.clone().text().catch(() => "");
-    if (raw.includes("must_change_password")) {
+    const destination = raw.includes("must_change_password")
+      ? "/change-password"
+      : raw.includes("mfa_setup_required")
+        ? "/settings/security?setup=1"
+        : null;
+    if (destination) {
       try {
         if (
           typeof window !== "undefined" &&
-          window.location.pathname !== "/change-password"
+          window.location.pathname !== destination.split("?")[0]
         ) {
-          window.location.href = "/change-password";
+          window.location.href = destination;
         }
       } catch {
         /* non-browser context — fall through to the thrown error */

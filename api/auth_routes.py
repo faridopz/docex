@@ -105,6 +105,12 @@ class LoginResponse(BaseModel):
     # This account's role requires a second factor and it is not set up yet.
     # They ARE signed in — the client routes them to enrolment.
     mfa_setup_required: bool = False
+    # By when. Inside the grace period the client may prompt and let them
+    # continue; once `mfa_overdue` is true every other request is refused by
+    # api/security.py until they enrol, so the client should route straight
+    # to setup and say why.
+    mfa_deadline: Optional[str] = None
+    mfa_overdue: bool = False
 
 
 class InviteRequest(BaseModel):
@@ -210,11 +216,13 @@ def login(body: LoginRequest) -> LoginResponse:
 
     token = auth_mod.issue_token(user)
     auth_mod.record_login(user)
+    enforcement = mfa_mod.enforcement(user.id, user.role, user.created_at)
     return LoginResponse(
         token=token, user=auth_mod.public(user),
         must_change_password=user.must_change_password,
-        mfa_setup_required=(mfa_mod.is_required_for(user.role)
-                            and not mfa_mod.is_enrolled(user.id)),
+        mfa_setup_required=enforcement["required"] and not enforcement["enrolled"],
+        mfa_deadline=enforcement["deadline"],
+        mfa_overdue=enforcement["overdue"],
     )
 
 
@@ -344,7 +352,10 @@ class MfaPolicyRequest(BaseModel):
 def mfa_status(user: User = Depends(current_user)) -> dict:
     import mfa as mfa_mod
     st = mfa_mod.status(user.id)
-    st["required_for_you"] = mfa_mod.is_required_for(user.role)
+    enforcement = mfa_mod.enforcement(user.id, user.role, user.created_at)
+    st["required_for_you"] = enforcement["required"]
+    st["deadline"] = enforcement["deadline"]
+    st["overdue"] = enforcement["overdue"]
     st["policy"] = mfa_mod.get_policy()
     return st
 

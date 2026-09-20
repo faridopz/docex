@@ -88,6 +88,25 @@ PASSWORD_CHANGE_ALLOWED: frozenset[str] = frozenset({
 })
 
 
+# ─── the overdue second factor ──────────────────────────────────────────────
+#
+# An organisation that switches on two-factor for its approvers is buying one
+# specific promise: a leaked password alone can no longer release money. The
+# grace period exists so a payment run is not missed the day the rule lands;
+# it is not a suggestion. Once it has passed, an unenrolled approver's session
+# can reach only what it takes to enrol — and sign out. Same mechanism as the
+# forced password change, enforced in the same place, for the same reason.
+
+MFA_SETUP_ALLOWED: frozenset[str] = frozenset({
+    "/auth/me",
+    "/auth/logout",
+    "/auth/mfa",
+    "/auth/mfa/begin",
+    "/auth/mfa/confirm",
+    "/auth/password",
+})
+
+
 # ─── middleware ─────────────────────────────────────────────────────────────
 
 
@@ -194,5 +213,31 @@ class AuthMiddleware:
                 extra={"must_change_password": True},
             )
             return
+
+        # The grace period for a required second factor has run out. The
+        # session is still valid — the person proved their password — so this
+        # is a 403 with a flag, and the frontend sends them to the setup
+        # screen rather than signing them out. Viewers, and anyone still
+        # inside their grace period, never reach the enrolment lookup.
+        if scope.get("path", "") not in MFA_SETUP_ALLOWED:
+            try:
+                import mfa
+                overdue = mfa.is_overdue(
+                    user.id, user.role, getattr(user, "created_at", None),
+                    getattr(user, "org_id", None))
+            except Exception:
+                # A broken policy record must not lock the whole organisation
+                # out of a finance system. Log-worthy, but fail open here:
+                # the password check above has already run.
+                overdue = False
+            if overdue:
+                await self._reject(
+                    scope, send,
+                    "Two-factor authentication is required for your role and "
+                    "the setup period has ended. Set it up to continue.",
+                    status=403,
+                    extra={"mfa_setup_required": True},
+                )
+                return
 
         await self.app(scope, receive, send)

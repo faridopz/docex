@@ -25,6 +25,10 @@ export async function login(
   user: AuthUser;
   must_change_password?: boolean;
   mfa_setup_required?: boolean;
+  /** ISO timestamp by which this role must have enrolled, or null. */
+  mfa_deadline?: string | null;
+  /** The deadline has passed: every other route is refused until they enrol. */
+  mfa_overdue?: boolean;
 }> {
   return apiFetch("/auth/login", {
     method: "POST",

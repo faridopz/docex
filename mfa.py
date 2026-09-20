@@ -327,11 +327,26 @@ _DEFAULT_REQUIRED_ROLES = ("approver", "admin")
 
 def get_policy(org_id: Optional[str] = None) -> dict:
     raw = store.get_store().get(_org(org_id), _CONFIG, _POLICY_ID) or {}
+    # Every field is coerced defensively. This is read on the login path and
+    # on every authenticated request, so a policy record that was hand-edited,
+    # migrated badly, or written by an older version must not be able to take
+    # an organisation's finance system offline. A bad value falls back to the
+    # default rather than raising.
+    try:
+        grace = max(0, int(raw.get("grace_days", 7)))
+    except (TypeError, ValueError):
+        grace = 7
+    roles = raw.get("required_roles")
+    if not isinstance(roles, (list, tuple)) or not roles:
+        roles = _DEFAULT_REQUIRED_ROLES
     return {
         "enabled": bool(raw.get("enabled", False)),
-        "required_roles": list(raw.get("required_roles")
-                               or _DEFAULT_REQUIRED_ROLES),
-        "grace_days": int(raw.get("grace_days", 7)),
+        "required_roles": [str(r) for r in roles],
+        "grace_days": grace,
+        # When the requirement was switched on. The grace clock starts here
+        # for people who already had accounts; None means it has never been
+        # set, in which case nobody is overdue.
+        "updated_at": raw.get("updated_at"),
     }
 
 
@@ -358,3 +373,86 @@ def set_policy(org_id: Optional[str] = None, *, enabled: bool = True,
 def is_required_for(role: str, org_id: Optional[str] = None) -> bool:
     policy = get_policy(org_id)
     return policy["enabled"] and role in policy["required_roles"]
+
+
+# ─── enforcement ─────────────────────────────────────────────────────────────
+#
+# Until this existed, "required" was a word on the security page. The policy
+# was stored, the grace period was stored, and nothing ever read the clock —
+# an approver who never enrolled could keep releasing payments indefinitely.
+# A control the UI claims and the backend does not have is worse than no
+# control: the organisation believes it is protected.
+#
+# The grace clock starts at whichever is later — the moment the requirement
+# was switched on, or the moment the account was created. Someone invited
+# after the policy is already on still gets the full grace period from their
+# first day, and someone who had an account for a year gets it from the day
+# the rule changed, not retroactively.
+#
+# Once overdue, api/security.py restricts the session to the handful of paths
+# needed to enrol (see MFA_SETUP_ALLOWED there) — the same shape as the forced
+# password change, and for the same reason: a rule enforced in one middleware
+# covers every route that exists and every route anyone adds later.
+
+
+def _parse_iso(value: Optional[str]) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def enrolment_deadline(role: str, created_at: Optional[str],
+                       org_id: Optional[str] = None) -> Optional[dt.datetime]:
+    """When this person must have enrolled by, or None if never required."""
+    policy = get_policy(org_id)
+    if not (policy["enabled"] and role in policy["required_roles"]):
+        return None
+    starts = [d for d in (_parse_iso(policy["updated_at"]),
+                          _parse_iso(created_at)) if d is not None]
+    if not starts:
+        # A policy stored without a timestamp (hand-edited, or from before
+        # this field existed) and a user with no creation date: there is
+        # nothing to count from, so treat the requirement as starting now.
+        starts = [dt.datetime.now(dt.timezone.utc)]
+    return max(starts) + dt.timedelta(days=policy["grace_days"])
+
+
+def enforcement(user_id: str, role: str, created_at: Optional[str],
+                org_id: Optional[str] = None,
+                at: Optional[dt.datetime] = None) -> dict:
+    """The full picture for one person, for the login response and the UI.
+
+    required   the policy names their role
+    enrolled   they have a confirmed second factor
+    deadline   ISO timestamp by which they must enrol, or None
+    overdue    required, not enrolled, and the deadline has passed —
+               the one combination that locks the session to setup
+    """
+    deadline = enrolment_deadline(role, created_at, org_id)
+    required = deadline is not None
+    enrolled = is_enrolled(user_id, org_id) if required else False
+    now = at or dt.datetime.now(dt.timezone.utc)
+    overdue = required and not enrolled and now > deadline
+    return {
+        "required": required,
+        "enrolled": enrolled,
+        "deadline": deadline.isoformat(timespec="seconds") if deadline else None,
+        "overdue": overdue,
+    }
+
+
+def is_overdue(user_id: str, role: str, created_at: Optional[str],
+               org_id: Optional[str] = None) -> bool:
+    """Cheap form for the middleware: no enrolment lookup unless the clock
+    says one is needed, so viewers and people inside their grace period cost
+    nothing beyond the policy read."""
+    deadline = enrolment_deadline(role, created_at, org_id)
+    if deadline is None or dt.datetime.now(dt.timezone.utc) <= deadline:
+        return False
+    return not is_enrolled(user_id, org_id)
