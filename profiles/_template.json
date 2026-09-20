@@ -109,6 +109,7 @@
     "withholding_tax": false,
     "advance_retirement": false,
     "multi_payee_requisitions": false,
+    "compliance_payment_record": false,
     "requisition_hold": false,
     "requisition_attachments": false,
     "requisition_compliance_check": false,

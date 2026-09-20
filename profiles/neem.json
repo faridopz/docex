@@ -250,6 +250,7 @@
     "withholding_tax": true,
     "advance_retirement": true,
     "multi_payee_requisitions": true,
+    "compliance_payment_record": true,
     "requisition_hold": true,
     "requisition_export": true,
     "requisition_attachments": true,

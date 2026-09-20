@@ -1269,6 +1269,52 @@ async def download_attachment_endpoint(
 # ─── compliance check ───────────────────────────────────────────────────────
 
 
+def _requisition_payment_record(req) -> dict:
+    """The requisition's own facts, shaped for compliance.build_payment_record_block.
+
+    Read straight off the stored record — nothing recomputed, nothing inferred.
+    Money is rendered WITH its currency so the model compares like with like;
+    an invoice in USD against a request in NGN is a finding, and it can only
+    be one if the model knows which is which.
+
+    Bank account and tax ID are included deliberately. A redirected payment —
+    real payee, real work, substituted account — is the highest-frequency
+    fraud in accounts payable, and the account number printed on the vendor's
+    own invoice is the evidence against it.
+    """
+    cur = (getattr(req, "currency", "") or "NGN").strip()
+
+    def money(value) -> str:
+        return f"{cur} {float(value or 0):,.2f}"
+
+    record: dict = {
+        "reference": req.ref,
+        "date": (getattr(req, "created_at", "") or "")[:10],
+        "payment_type": getattr(req, "payment_type", "") or "",
+        "category": req.category or "",
+        "amount": money(req.amount) if req.amount else "",
+        "payee": req.vendor_name or "",
+        "payee_account": getattr(req, "vendor_account", "") or "",
+        "payee_bank": getattr(req, "vendor_bank_name", "") or "",
+        "payee_tin": getattr(req, "vendor_tin", "") or "",
+        "project_code": getattr(req, "project_code", "") or "",
+        "grant_code": getattr(req, "grant_code", "") or "",
+        "purpose": (getattr(req, "description", "") or "").strip(),
+        "payee_count": len(getattr(req, "payees", []) or []),
+    }
+
+    record["budget_lines"] = [
+        {
+            "description": bl.description,
+            "quantity": bl.quantity or "",
+            "unit_cost": money(bl.unit_cost) if bl.unit_cost else "",
+            "line_total": money(bl.line_total) if bl.line_total else "",
+        }
+        for bl in (getattr(req, "budget_lines", []) or [])
+    ]
+    return record
+
+
 @router.post("/requisitions/{req_id}/compliance-check")
 async def run_compliance_check_endpoint(
     req_id: str,
@@ -1379,7 +1425,19 @@ async def run_compliance_check_endpoint(
                    "need OCR before a compliance check can read them.",
         )
 
-    result = compliance.check_payment_safe(docs, rulebook, payment_label=req.ref)
+    # WO-40. The model is about to be asked to reconcile these documents
+    # against the payment voucher. In DOCex the voucher is this requisition,
+    # so unless we hand it over the check can only judge the documents against
+    # each other — it cannot see that a ₦620,000 invoice is attached to a
+    # ₦562,500 request. Gated, because it adds tokens to every check and an
+    # org should be able to decline that cost.
+    payment_record = None
+    if org_config.feature_enabled(ctx.org_id, "compliance_payment_record"):
+        payment_record = _requisition_payment_record(req)
+
+    result = compliance.check_payment_safe(
+        docs, rulebook, payment_label=req.ref, payment_record=payment_record,
+    )
 
     summary = rq.ComplianceSummary(
         rulebook_id=rulebook.id,

@@ -49,6 +49,7 @@ KNOWN_FEATURES = [
     "vendor_register", "timesheets", "payroll", "advance_retirement",
     "accounting_export", "multi_payee_requisitions", "requisition_hold",
     "requisition_attachments", "requisition_compliance_check", "requisition_export",
+    "compliance_payment_record",
 ]
 
 

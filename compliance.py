@@ -508,6 +508,95 @@ Note any ambiguous clauses in interpretation_notes."""
     )
 
 
+# ─── The payment record ─────────────────────────────────────────────────────
+#
+# The system prompt tells the model to reconcile the bundle against the payment
+# voucher — amounts against the invoice, payee against the PO, quantities
+# against the GRN. In DOCex the voucher is not one of the attached files: it is
+# the requisition record itself, held as structured data. Until this block
+# existed we asked the model to reconcile against a document we never gave it,
+# so it could only judge the documents for internal consistency. It could not
+# notice that an invoice for ₦620,000 was attached to a request to pay
+# ₦562,500, because it never learned what was being paid.
+#
+# This renders that record. It is a pure function over a dict the CALLER
+# builds: compliance.py must not know what a requisition is, and an org's
+# feature flags are read in the route layer, never here.
+
+# Order matters — a reader (and the model) should meet the money and the payee
+# before the codes. Keys absent from the dict are omitted entirely.
+_RECORD_FIELDS: list[tuple[str, str]] = [
+    ("reference", "Reference"),
+    ("date", "Date raised"),
+    ("payment_type", "Payment type"),
+    ("category", "Category"),
+    ("amount", "Amount being paid"),
+    ("payee", "Payee"),
+    ("payee_account", "Payee account"),
+    ("payee_bank", "Payee bank"),
+    ("payee_tin", "Payee tax ID"),
+    ("project_code", "Project code"),
+    ("grant_code", "Grant code"),
+    ("purpose", "Stated purpose"),
+]
+
+
+def build_payment_record_block(record: dict) -> str:
+    """Render a payment record as the prompt block the model reconciles against.
+
+    Empty, zero and missing values are LEFT OUT rather than rendered as "n/a"
+    or "0". A field the model does not see is a field it cannot reason from;
+    a field rendered as "n/a" invites it to conclude something is missing when
+    the truth is only that we did not capture it.
+
+    Returns "" for a record with nothing in it, so the caller can decide to
+    send no block at all rather than an empty heading.
+    """
+    lines: list[str] = []
+    for key, label in _RECORD_FIELDS:
+        value = record.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in {"0", "0.0", "0.00"}:
+            continue
+        lines.append(f"- {label}: {text}")
+
+    # Budget lines are what the request says it is buying. An invoice that
+    # bills for something not on this list is exactly the kind of mismatch a
+    # human reviewer catches and a document-only check cannot.
+    for line in record.get("budget_lines") or []:
+        desc = str(line.get("description", "")).strip()
+        if not desc:
+            continue
+        bits = [desc]
+        qty, unit_cost, total = line.get("quantity"), line.get("unit_cost"), line.get("line_total")
+        if qty:
+            bits.append(f"qty {qty}")
+        if unit_cost:
+            bits.append(f"unit {unit_cost}")
+        if total:
+            bits.append(f"total {total}")
+        lines.append(f"  - {' · '.join(bits)}")
+
+    # Many payees (a stipend run) are summarised, never listed: a hundred names
+    # would swamp the documents they are supposed to be checked against, and
+    # the per-payee arithmetic is code's job, not the model's.
+    payee_count = record.get("payee_count") or 0
+    if payee_count and int(payee_count) > 1:
+        lines.append(f"- Payees: {payee_count} separate payees on this request")
+
+    if not lines:
+        return ""
+
+    return (
+        "PAYMENT RECORD — what this organisation's system says is being paid.\n"
+        "This is the payment voucher of record. It was entered into the finance\n"
+        "system, not extracted from the documents below.\n\n"
+        + "\n".join(lines)
+    )
+
+
 # ─── Pass 2: Payment Check ──────────────────────────────────────────────────
 
 def check_payment(
@@ -518,6 +607,7 @@ def check_payment(
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
     document_findings: Optional[list[RuleResult]] = None,
+    payment_record: Optional[dict] = None,
     metrics: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
@@ -637,7 +727,28 @@ def check_payment(
     rulebook_block = _rulebook_to_prompt(rulebook.name, llm_rules)
     doc_block = _build_document_block(payment_documents)
 
-    user_message = f"""PAYMENT REQUEST BUNDLE — {payment_label}:
+    # The record rides in the USER message, not the system prompt. Two reasons:
+    # the system prompt is cached across a batch and must stay byte-identical
+    # for that cache to hit, and an instruction belongs next to the data it is
+    # about. A caller that passes no record produces exactly the prompt this
+    # function produced before the record existed.
+    record_block = build_payment_record_block(payment_record or {})
+    record_section = f"""{record_block}
+
+RECONCILE THE DOCUMENTS AGAINST THAT RECORD. The record is what will actually
+be paid; the documents are the evidence for it. Report any disagreement
+between them, and say which side says what:
+  - an invoice or quote total that differs from the amount being paid
+  - a payee, account number or tax ID on a document that differs from the record
+  - documents describing goods or services the request does not mention
+  - a document date outside the period the request belongs to
+A disagreement is a finding even when every individual rule passes. Do not
+resolve one by assuming the record is right — report it and let a person
+decide.
+
+""" if record_block else ""
+
+    user_message = f"""{record_section}PAYMENT REQUEST BUNDLE — {payment_label}:
 {doc_block}
 
 Evaluate this payment against every active rule in the rulebook (provided in the
@@ -729,6 +840,7 @@ def check_payment_safe(
     prior_open_submissions: Optional[list[dict]] = None,
     referenced_submission: Optional[dict] = None,
     document_findings: Optional[list[RuleResult]] = None,
+    payment_record: Optional[dict] = None,
     metrics: Optional[dict] = None,
 ) -> ComplianceCheckResult:
     """
@@ -744,6 +856,7 @@ def check_payment_safe(
             form_data=form_data, prior_open_submissions=prior_open_submissions,
             referenced_submission=referenced_submission,
             document_findings=document_findings,
+            payment_record=payment_record,
             metrics=metrics,
         )
     except Exception as exc:
