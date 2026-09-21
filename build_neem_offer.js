@@ -146,11 +146,9 @@ const gap = (after = 160) => new Paragraph({ spacing: { after }, children: [new 
 
 // ── content ────────────────────────────────────────────────────────────────
 
-const COMPANY = "LIMA TECH";
+const COMPANY = "MICHIKA LABS LIMITED";
 const body = [];
 
-// Header — deliberately not a full cover page. This is an offer to read and
-// sign, not a brochure.
 body.push(new Paragraph({
   spacing: { before: 200, after: 100 },
   children: [new TextRun({ text: COMPANY, size: 24, bold: true, color: GREY, font: "Calibri" })],
@@ -160,11 +158,10 @@ body.push(new Paragraph({
   children: [new TextRun({ text: "Offer for Neem Foundation", size: 46, bold: true, color: NAVY, font: "Calibri" })],
 }));
 body.push(new Paragraph({
-  spacing: { after: 320 },
+  spacing: { after: 300 },
   children: [new TextRun({
-    text: "DOCex — every payment checked against your own policy, with the audit trail written as you go",
-    size: 24, color: "374151", font: "Calibri",
-  })],
+    text: "DOCex — payment requisition, compliance and approval workflow",
+    size: 24, color: "374151", font: "Calibri" })],
 }));
 body.push(table(null, [
   ["Prepared for", "Neem Foundation"],
@@ -174,93 +171,88 @@ body.push(table(null, [
 ], [2400, 6000]));
 body.push(gap(280));
 
-// 1 — the problem
-body.push(h1("1.  What this fixes"));
-body.push(p("Neem's finance process is unusually well documented. The approval chain is real, the thresholds are written down, and the document packs are specified. The problem is not the policy — it is that running a good policy by hand costs your team days a month and still drifts."));
-body.push(rich([["Compliance is checked by memory. ", true], ["Roughly a hundred payments a month pass through six departments and four approval stages. Whether a payment carries the right documents for its category, and whether it crossed a threshold that needed another signature, depends on somebody remembering at the moment they look at it."], ]));
-body.push(rich([["Month-end is twenty reconciliations by hand. ", true], ["Twenty project accounts across GTBank, Zenith and Lotus, each reconciled in Excel, with withholding tax putting a second debit on the statement for nearly every vendor payment."], ]));
-body.push(gap(60));
-body.push(callout([
-  ["Two things we found in your own documents. ", true],
-  ["Your signed Procurement Policy requires three quotes from ₦200,001. The Finance Processes material your staff are trained on says a direct memo is sufficient to ₦499,999. Those disagree across a ₦300,000 band — and it is the band most of your spending sits in. Separately, we read six months of your CARE/FCDO reconciliation workbook: in two of those months the reconciliation completed without a figure it needed and the maths still balanced, because both sides were drawn from the cashbook. Neither is a criticism. They are the clearest evidence we have that manual control drifts quietly, and that nothing tells you when it has."],
-]));
+// 1 — the shape of the offer
+body.push(h1("1.  The offer in one page"));
+body.push(p("Neem asked to begin using the system in January. This offer is built around that date, in two phases."));
+body.push(table(["", "Deployment", "Service"], [
+  ["When", "November – December 2026", "From 1 January 2027"],
+  ["What", "We deploy, configure against your policies, run it alongside your team, and train your staff", "Neem runs its payments on DOCex; we operate and support it"],
+  ["Cost", "₦300,000 per month", "₦450,000 per month"],
+], [1300, 3550, 3550]));
 body.push(gap(200));
+body.push(rich([
+  ["Why two phases rather than a long unpaid setup. ", true],
+  ["Configuring a finance system against a real organisation is the work, not the preparation for it. During deployment your policies are translated into the system, your people are trained on it, and your first payments run through it with us sitting alongside. Charging for that period keeps it short and keeps it finished — an open-ended setup has no date on which anybody has to be ready."],
+]));
+body.push(gap(140));
 
-// 2 — what they get
-body.push(h1("2.  What Neem gets"));
-body.push(p("The system is already configured from your signed Procurement Policy, Finance Processes material, voucher, memo and advance forms, and your CARE/FCDO cashbook. Not a generic template — your six departments, four approval stages, five spend bands, nineteen document packs, your chart of accounts, project codes and reference format."));
+// 2 — deployment
+body.push(h1("2.  Deployment — November and December"));
+body.push(p("₦300,000 per month, invoiced monthly. This is a reduced rate for the period in which Neem is not yet relying on the system."));
 [
-  ["Problems surface before an approver sees them. ", "Every request is checked the moment it is raised — amount ceiling, category, required documents for that category, duplicates against the last thirty days, overdue advances. The person raising it fixes the problem while the invoice is still in front of them."],
-  ["Your chain, in your order. ", "Line manager, Finance/Audit, Admin, AED — the same people, the same sequence as today. Approvers who are travelling can sign by secure link without an account."],
-  ["Policy can be overridden; the override is the record. ", "Releasing a blocked payment requires a written reason and someone with the authority to give it. Both are recorded permanently, so six months later the answer to “why did this go through” is written down rather than remembered."],
-  ["An audit trail that cannot be quietly edited. ", "Every step is written to an append-only log, each entry cryptographically linked to the one before it. Alter any historical entry and the chain fails to verify and says so."],
-  ["Month-end produced, not assembled. ", "Per-account bank reconciliation that compares individual lines rather than balances — which is what finds the payment nobody entered. Evidence for any month or quarter is a download."],
-  ["Advance retirement on your own clock. ", "Your policy gives five working days and escalates from there. The system runs that clock and shows what is overdue before it becomes an audit finding."],
-  ["Payment lists import straight from Excel. ", "A stipend or beneficiary schedule of up to a hundred payees, columns in any order, through the same checks and the same chain as a single payment."],
+  ["Your policies become the system's rules. ", "Your approval chain, spend bands, the nineteen document packs from your Finance Processes deck, your chart of accounts, project codes and reference format. Much of this is already built from the documents you have given us."],
+  ["We test it against payments you have already made. ", "We run historical payments through the configuration and confirm the system reaches the same answers your team did. You see that comparison before you rely on it."],
+  ["Your people are trained on it. ", "Two sessions plus a written guide reflecting your own configuration, not a generic manual. Further sessions during the period at no charge."],
+  ["We run your first cycles with you. ", "Your first weekly payment run and your first month-end, alongside your team rather than handed over with a phone number."],
+  ["Adjustments during this period are included. ", "Thresholds, categories, document packs, approval stages, users, new accounts and new grant codes. This is what the deployment period is for."],
 ].forEach(([b, rest]) => body.push(rich([[b, true], [rest, false]])));
-body.push(gap(140));
-
-// 3 — cost
-body.push(h1("3.  What it costs"));
-body.push(p("What you are buying is one disallowed cost not happening. A single unsupported expenditure on a donor grant runs into millions of naira, and unretired advances are the most common source of one."));
-body.push(table(null, [
-  ["Implementation and onboarding — one-off", "₦450,000"],
-  ["Subscription — per month", "₦450,000"],
-], [5600, 2800]));
-body.push(gap(180));
-body.push(rich([["The implementation fee covers work done once: ", true], ["translating your policies into system configuration, your departments, stages, spend bands, document packs, account and project codes, reference format, registers and user accounts; testing everything against your real payments; two training sessions; and attended support through your first full payment cycle and first month-end."]]));
-body.push(rich([["The monthly fee covers everything ongoing: ", true], ["the platform, unlimited users, all configuration changes, support, further training, and platform improvements as they are released. We do not charge per user — you should be able to give visibility to everyone who needs it without that decision costing anything."]]));
-body.push(p("Implementation is invoiced on signature. The subscription is invoiced monthly in advance, payable within 14 days."));
-body.push(rich([["Initial term: three months from go-live", true], [", with a review at the end covering how the system performed and what Neem wants next. After that it continues monthly, and either party can end it on 30 days' notice."]]));
 body.push(gap(60));
 body.push(callout([
-  ["Three commitments, so the risk is ours. ", true],
-  ["We do not invoice a subscription month until you are live. If go-live slips past four weeks from the date we receive the items in section 5, that month is not billed. And whenever you leave, you take a complete readable export of everything — we send you one every month anyway, so the copy is routine rather than an emergency."],
+  ["At the end of December, Neem decides. ", true],
+  ["If the system has done what this document says it will, it converts to the service in section 3 from 1 January. If it has not, Neem owes nothing further and walks away with a complete export of everything in it. There is no penalty and no notice period to serve."],
 ]));
 body.push(gap(200));
 
-// 4 — already done
-body.push(h1("4.  Most of week one is already done"));
-body.push(p("Five working sessions with your team have already gone into this — reading your documents, building your configuration, and demonstrating it back to you on your own policies rather than on a demo dataset. That work is not re-charged and it is not repeated. It is why the timeline below is four weeks and not three months."));
+// 3 — service
+body.push(h1("3.  Service — from January"));
+body.push(p("₦450,000 per month, invoiced monthly in advance, payable within 14 days. No charge per user — everyone at Neem who needs visibility should have it without that decision costing anything."));
+body.push(rich([["Included: ", true], ["the platform, unlimited users, hosting, all configuration changes, support with a named contact, further training, monthly data exports, and platform improvements as they are released."]]));
+body.push(rich([["Initial term: six months from 1 January", true], [", reviewed at the end. After that it continues monthly and either party may end it on 30 days' notice."]]));
 body.push(gap(140));
 
-// 5 — what we need
-body.push(h1("5.  What we need from Neem"));
+// 4 — what is core and what is extra
+body.push(h1("4.  What is the system, and what is extra"));
+body.push(p("The core system is payment requisition, compliance checking and the approval workflow — everything a payment passes through from memo to bank, and the audit trail it leaves behind. That is what the monthly fee buys."));
+body.push(p("Other capabilities are built and available, and are priced separately because not every organisation needs them:"));
+body.push(table(["Module", "What it does", "Monthly"], [
+  ["Timesheets & grant allocation", "Approved staff effort decides what each grant is charged for a salary, instead of a budgeted percentage nobody revisits. Answers the donor question “can you prove this person's time on this project”", "₦100,000"],
+  ["Bank account verification", "Confirms an account number resolves to the name on the invoice before money moves — the check that catches a redirected payment", "₦60,000"],
+  ["Document screening", "Ask plain-language questions across a stack of documents — sub-award applications, partner due diligence — and get answers with the source, the quote and a confidence level", "Quoted on scope"],
+], [2100, 4500, 1800]));
+body.push(gap(180));
+body.push(rich([["Configuration is included; new systems are quoted. ", true], ["Moving a threshold, adding a category, changing the approval chain or opening a new grant account is a setting, and it is part of the service. Building something that does not exist today — a different workflow, another department's process, an integration with a system you already run — is separate work, scoped and priced before anything begins. We would rather say which is which at the start than discover the disagreement later."]]));
+body.push(gap(140));
+
+// 5 — consultation
+body.push(h1("5.  Other systems at Neem"));
+body.push(p("Through deployment we will see how Neem's other processes work — procurement, grant reporting, programme data. Where we can help, we will say so and quote it separately. Nothing in this offer commits Neem to any of it, and nothing in it is contingent on Neem buying any of it."));
+body.push(gap(140));
+
+// 6 — what we need
+body.push(h1("6.  What we need from Neem"));
 body.push(p("Short, and mostly things you already hold."));
 [
   "A named contact who can confirm configuration decisions.",
-  "Which governs in the ₦200,001–₦499,999 band — the signed Procurement Policy or the Finance Processes material. We will enforce whichever you confirm.",
+  "Which governs in the ₦200,001–₦499,999 band — the signed Procurement Policy requires three quotes; the Finance Processes material allows a direct memo. We will enforce whichever you confirm.",
   "Your withholding tax rates, and whether the GAPS statement shows one debit per payee or one per weekly batch.",
   "One representative bank statement per bank — GTBank, Zenith and Lotus.",
   "A set of recent payments we can test the configuration against.",
   "How many overdue advances make a collective default. Your policy does not say; we have assumed two.",
+  "Attendance at the two training sessions.",
 ].forEach((t) => body.push(numbered(t, "nums1")));
-body.push(gap(140));
-
-// 6 — timeline
-body.push(h1("6.  Timeline"));
-body.push(table(["Week", "What happens"], [
-  ["1", "Kick-off. We collect the outstanding items above and confirm the configuration already built from your documents."],
-  ["2", "We finish your workflow, thresholds, categories, document packs, account codes, references, registers and users."],
-  ["3", "We test the configuration against your real payments and give you a written configuration document to sign off."],
-  ["4", "Training, then go-live."],
-  ["5–8", "We run your first full weekly payment cycle and your first month-end alongside your team."],
-], [1100, 7300]));
-body.push(gap(180));
-body.push(p("We will not go live until Neem has signed off the configuration."));
 body.push(gap(140));
 
 // 7 — not included
 body.push(h1("7.  What is deliberately not included"));
 body.push(p("We would rather tell you now than have you find it later."));
-body.push(rich([["Payroll is switched off ", true], ["until Neem confirms PAYE bands and pension rates. A payroll run on assumed rates produces payslips that look right and are wrong — the kind of error an accountant finds months later. Send us your tax schedule and it becomes one setting."]]));
+body.push(rich([["Payroll is switched off ", true], ["until Neem confirms PAYE bands and pension rates. A payroll run on assumed rates produces payslips that look right and are wrong."]]));
 body.push(rich([["Tax-ID checking confirms a TIN is well formed. ", true], ["Confirming it is registered to that company needs a paid provider, and we would rather say so than imply a check we are not making."]]));
-body.push(rich([["Direct bank integration is not in this deployment. ", true], ["Payments are prepared and evidenced here, then uploaded to GAPS as they are today."]]));
+body.push(rich([["There is no direct bank integration. ", true], ["Payments are prepared, checked and evidenced in DOCex, then uploaded to GAPS as they are today."]]));
 body.push(gap(140));
 
 // 8 — data
 body.push(h1("8.  Your data"));
-body.push(p("Named accounts with role-based permissions, approval actions restricted to the department that owns each stage, all traffic encrypted, and records in a managed database with nightly backups — each one verified by an actual restore. Multi-factor authentication is available and switched on in agreement with Neem once your team has settled."));
+body.push(p("Named accounts with role-based permissions, approval actions restricted to the department that owns each stage, all traffic encrypted, and records held in a managed database with nightly backups — each one verified by an actual restore."));
 body.push(rich([["Neem's data belongs to Neem. ", true], ["Exportable in full at any time including on exit. It is not used for any purpose other than providing this service, and it is not used to train any model."]]));
 body.push(rich([["We can read your database; we cannot approve anything in it. ", true], ["Somebody has to be able to operate and repair the system, and we would rather say so. Every approval is recorded against a named Neem account in a tamper-evident chain, so no payment can be authorised without one of your people doing it."]]));
 body.push(p("A Data Processing Agreement is signed alongside the service agreement. Real payment data enters the system only once that is executed."));
@@ -269,9 +261,9 @@ body.push(gap(140));
 // 9 — next steps
 body.push(h1("9.  Next steps"));
 [
-  "Neem confirms the items in section 5.",
+  "Neem confirms the items in section 6.",
   "Service agreement and Data Processing Agreement issued.",
-  "Signature, and we begin within a week.",
+  "Signature, and deployment begins within a week.",
 ].forEach((t) => body.push(numbered(t, "nums2")));
 body.push(gap(200));
 
