@@ -153,6 +153,18 @@ export default function LandingPage() {
             >
               Compliance
             </Link>
+            {/* There was no way to reach the sign-in screen from the public
+                site. An existing client landing on the root URL — which is
+                the link people actually keep — had nowhere to go. Deliberately
+                a plain link rather than a button: it is for people who already
+                have an account, not a call to action competing with the one
+                beside it. */}
+            <Link
+              href="/login"
+              className="text-sm font-medium text-gray-600 transition hover:text-gray-900"
+            >
+              Sign in
+            </Link>
             <Link href="/app">
               <Button size="sm" className="rounded-full">
                 Try DOCex
