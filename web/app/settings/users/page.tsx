@@ -348,30 +348,42 @@ export default function UsersSettingsPage() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
+                        {/* Labelled, not icon-only. These were two unlabelled
+                            grey icons, and the result was an administrator who
+                            believed the product could not reset a password at
+                            all — the feature existed and shipped with tests,
+                            and was simply invisible. An action nobody can find
+                            is an action the product does not have. */}
+                        <div className="flex items-center justify-end gap-2">
                           {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />}
                           {!disabled && (
                             <button
                               onClick={() => doReset(u)}
                               disabled={busy}
-                              title="Issue a new one-time password"
-                              className="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                              title="Issues a new one-time password. Their current password stops working immediately."
+                              className="inline-flex items-center gap-1.5 rounded border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:border-gray-400 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              <KeyRound className="h-4 w-4" />
+                              <KeyRound className="h-3.5 w-3.5" />
+                              Reset password
                             </button>
                           )}
                           {u.id !== user?.id && (
                             <button
                               onClick={() => toggleActive(u)}
                               disabled={busy}
-                              title={disabled ? "Restore access" : "End access"}
-                              className={`rounded p-1.5 transition hover:bg-gray-100 ${
+                              title={
                                 disabled
-                                  ? "text-emerald-600 hover:text-emerald-700"
-                                  : "text-gray-400 hover:text-red-600"
+                                  ? "Restores this person's access. Their history is unchanged."
+                                  : "Ends access immediately. The account and its approval history are kept."
+                              }
+                              className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                                disabled
+                                  ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                                  : "border-gray-300 text-gray-700 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
                               }`}
                             >
-                              {disabled ? <Check className="h-4 w-4" /> : <ShieldOff className="h-4 w-4" />}
+                              {disabled ? <Check className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
+                              {disabled ? "Restore access" : "End access"}
                             </button>
                           )}
                         </div>

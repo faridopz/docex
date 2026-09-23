@@ -120,17 +120,23 @@ def _check_anthropic_key() -> CheckResult:
 def _check_paystack_key() -> CheckResult:
     key = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
     if not key:
+        # NOT a failure. Bank Verify is an optional module that many
+        # instances deliberately do not run, and the route already answers
+        # 503 with an explanation rather than erroring. Reporting an absent
+        # optional integration as a red FAIL is how this page ended up
+        # telling a healthy organisation its system was broken — and a
+        # diagnostic nobody trusts is worse than no diagnostic.
         return CheckResult(
             id="env-paystack-key",
             category="environment",
-            title="Paystack secret key",
-            status="fail",
-            summary="PAYSTACK_SECRET_KEY is not set — Bank Verify will not function",
-            evidence="env var empty",
+            title="Bank account verification",
+            status="skip",
+            summary="Not enabled on this instance — bank verification is switched off",
+            evidence="PAYSTACK_SECRET_KEY not set",
             fix_hint=(
-                "Add PAYSTACK_SECRET_KEY=sk_test_... (or sk_live_...) to "
-                ".env at the project root. Get one at "
-                "https://dashboard.paystack.com/#/settings/developers."
+                "Only needed if this client has bought bank account "
+                "verification. Add PAYSTACK_SECRET_KEY to the instance "
+                "environment to switch it on."
             ),
         )
     if key.startswith("sk_test_"):
@@ -367,18 +373,32 @@ def _check_api_routes() -> CheckResult:
             missing.append(prefix)
 
     if missing:
+        # A WARNING, not a failure, and the wording matters.
+        #
+        # This list is a hardcoded inventory of paths, which drifts every
+        # time a route is renamed or a module is retired. When it drifted it
+        # announced "the API cannot serve requests" on an instance that was
+        # serving requests perfectly well, next to a red "System Is Broken"
+        # banner. An administrator reading that reasonably concludes their
+        # finance system is down.
+        #
+        # The honest statement is narrower: some endpoints this build expects
+        # are not mounted. If the app booted and the store works, the system
+        # is running; what this flags is a build or configuration mismatch
+        # worth investigating, not an outage.
         return CheckResult(
             id="api-mount",
             category="api",
             title="API route inventory",
-            status="fail",
-            summary=f"{len(missing)} expected route(s) not registered",
-            evidence=f"missing: {missing}",
+            status="warn",
+            summary=(f"{len(missing)} expected endpoint(s) not mounted; "
+                     f"{len(found_paths)} routes are live"),
+            evidence=f"not mounted: {missing}",
             fix_hint=(
-                "Check api/main.py — each router (compliance, bank verify, "
-                "attendance agent, rate cards) must be included with "
-                "app.include_router(...). Verify the relevant *_routes.py "
-                "imports cleanly."
+                "Either a router is genuinely missing from api/main.py, or "
+                "this inventory is stale because a route was renamed or a "
+                "module retired. Compare against the include_router calls in "
+                "api/main.py before changing anything."
             ),
         )
 
@@ -613,6 +633,67 @@ def _check_attendance_e2e_smoke() -> CheckResult:
 # ─── Data integrity checks ──────────────────────────────────────────────────
 
 
+def _local_files_are_the_store() -> bool:
+    """True when this instance really does keep records as local files.
+
+    A production instance has DOCEX_DATABASE_URL (Postgres) or DOCEX_DB
+    (SQLite) set, and the directories below are vestigial.
+    """
+    return not (os.environ.get("DOCEX_DATABASE_URL", "").strip()
+                or os.environ.get("DOCEX_DB", "").strip())
+
+
+def _check_durable_store() -> CheckResult:
+    """The question that actually matters on a live instance: can we read and
+    write the store the app is configured to use?
+
+    This replaces five directory walks that were meaningless under Postgres.
+    It is deliberately a round trip rather than a connection test, because a
+    reachable database that refuses writes is the failure that loses records.
+    """
+    import uuid as _uuid
+    backend = ("Postgres" if os.environ.get("DOCEX_DATABASE_URL", "").strip()
+               else "SQLite")
+    try:
+        import store
+        st = store.get_store()
+        org = os.environ.get("DOCEX_ORG", "default")
+        # Collection names are validated by the store; a leading underscore
+        # is rejected. The probe record is deleted immediately either way.
+        probe_id = f"selfcheck-{_uuid.uuid4().hex[:12]}"
+        st.put(org, "selfcheck", probe_id, {"ok": True})
+        read_back = st.get(org, "selfcheck", probe_id)
+        st.delete(org, "selfcheck", probe_id)
+        if not read_back or read_back.get("ok") is not True:
+            return CheckResult(
+                id="data-store", category="data",
+                title="Durable storage",
+                status="fail",
+                summary=f"{backend} accepted a write but did not return it",
+                evidence=f"wrote {probe_id}, read back {read_back!r}",
+                fix_hint=("The store is reachable but not persisting. Check "
+                          "the connection string points at the right database "
+                          "and the role has write permission."),
+            )
+        return CheckResult(
+            id="data-store", category="data",
+            title="Durable storage",
+            status="pass",
+            summary=f"{backend} write, read and delete all succeeded",
+        )
+    except Exception as exc:
+        return CheckResult(
+            id="data-store", category="data",
+            title="Durable storage",
+            status="fail",
+            summary=f"{backend} is not usable — records cannot be saved",
+            evidence=f"{type(exc).__name__}: {exc}",
+            fix_hint=("This is the most serious thing this page can report. "
+                      "Check DOCEX_DATABASE_URL and that the database is "
+                      "reachable from this instance."),
+        )
+
+
 def _check_data_integrity_for(dir_name: str, model_name: str) -> CheckResult:
     """Walk a persistence directory and confirm every record parses
     cleanly under its Pydantic model. Surfaces orphans from old schemas."""
@@ -723,16 +804,26 @@ def run_full_check() -> DiagnosticReport:
     checks.append(_time_check(_check_bank_code_lookup))
     checks.append(_time_check(_check_attendance_e2e_smoke))
 
-    # Data integrity
-    data_dirs = [
-        ("rulebooks", "PolicyRulebook"),
-        ("checks", "ComplianceCheckResult"),
-        ("verifications", "BankVerifyBatchResult"),
-        ("rate_cards", "RateCard"),
-        ("attendance_runs", "AttendancePaymentRun"),
-    ]
-    for d, model_name in data_dirs:
-        checks.append(_time_check(lambda d=d, m=model_name: _check_data_integrity_for(d, m)))
+    # Data integrity.
+    #
+    # These walk LOCAL DIRECTORIES, which is how records were stored before
+    # the move to a durable store. On a production instance backed by
+    # Postgres those directories are empty by design, so every one of these
+    # reported "rulebooks/ is empty" — technically true, completely
+    # misleading, and five of the eight lines on the page. Run them only
+    # when the local files are actually the store.
+    if _local_files_are_the_store():
+        data_dirs = [
+            ("rulebooks", "PolicyRulebook"),
+            ("checks", "ComplianceCheckResult"),
+            ("verifications", "BankVerifyBatchResult"),
+            ("rate_cards", "RateCard"),
+            ("attendance_runs", "AttendancePaymentRun"),
+        ]
+        for d, model_name in data_dirs:
+            checks.append(_time_check(lambda d=d, m=model_name: _check_data_integrity_for(d, m)))
+    else:
+        checks.append(_time_check(_check_durable_store))
 
     # Aggregate
     finished_at = _now_iso()
