@@ -254,7 +254,8 @@
     "requisition_hold": true,
     "requisition_export": true,
     "requisition_attachments": true,
-    "requisition_compliance_check": true
+    "requisition_compliance_check": true,
+    "voucher_export": true
   },
   "_cc_rules_note": "Provisional — confirm the real thresholds with Farid. AED already sits in the approval chain on every requisition (see workflow.steps), so this only copies the ED early, well before her formal joint-approval trigger at ₦7,000,001.",
   "_confirm_before_go_live": [
@@ -329,5 +330,44 @@
     "recover_at_month_end": true,
     "_dsa_note": "DSA runs the same clock but from the END of the trip — 'retired within 5 working days or 7 days after the event/trip has been concluded'. A travel approval form must exist BEFORE the trip.",
     "_confirm": "collective_default_count is set to 2 as a working assumption. Their policy says 'a collective default' without defining how many. Ask."
+  },
+  "voucher_template": {
+    "title": "Payment Voucher",
+    "letterhead": {
+      "org_name": "Neem Foundation",
+      "rc_number": "83813",
+      "address_lines": [
+        "2 Kwa Falls Street,",
+        "Maitama, Abuja"
+      ]
+    },
+    "certification": "I certify that the above account is correct, that the services have been duly performed or that the goods have been correctly received and that the expenditure was incurred in the interest of Neem Foundation's works.",
+    "signature_roles": [
+      {
+        "label": "Prepared by",
+        "source": "submitter"
+      },
+      {
+        "label": "Checked by",
+        "source": "finance"
+      },
+      {
+        "label": "Review & Authorised by",
+        "source": "admin"
+      },
+      {
+        "label": "Approved by",
+        "source": "aed"
+      },
+      {
+        "label": "Received by",
+        "source": ""
+      }
+    ],
+    "pv_number_format": "{org}/{location}/{project_code}/{donor}/{MONYY}/PV/{seq}",
+    "pv_org_prefix": "NF",
+    "pv_location": "HQ",
+    "_account_codes_note": "Populate `account_codes` (DOCex category -> their ledger code) from NEEM's chart of accounts. Until then the TRANSACTION CODE column prints blank, which is deliberate: a guessed code posts to the wrong ledger account and nothing crashes.",
+    "account_codes": {}
   }
 }

@@ -113,6 +113,7 @@
     "requisition_hold": false,
     "requisition_attachments": false,
     "requisition_compliance_check": false,
-    "requisition_export": false
+    "requisition_export": false,
+    "voucher_export": false
   }
 }

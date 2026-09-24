@@ -925,6 +925,47 @@ async def export_requisition_pdf_endpoint(req_id: str, ctx: Ctx = Depends(reques
     )
 
 
+@router.get("/requisitions/{req_id}/voucher.pdf")
+async def export_requisition_voucher_endpoint(req_id: str,
+                                              ctx: Ctx = Depends(request_context)):
+    """The organisation's OWN payment voucher, not our audit packet.
+
+    Distinct from export.pdf on purpose. That one is the evidence packet an
+    auditor reads: checks, approvals, the hash-chained log. This is the
+    document the finance team files and signs, in their own format, so what
+    comes out of DOCex drops into their existing records without anyone
+    re-typing it.
+
+    Gated on `voucher_export` rather than the general export gate: an
+    organisation that has not configured a voucher template should not be
+    offered a half-filled form with somebody else's layout.
+    """
+    # Deliberately NOT behind _export_gate(). That gate guards the audit
+    # packet via `requisition_export`, and the two are separate capabilities
+    # an organisation can buy independently. Chaining them means a client who
+    # has the voucher but not the packet gets a 400 complaining about a
+    # feature they never asked for, which reads as a bug rather than a
+    # boundary.
+    if not org_config.feature_enabled(ctx.org_id, "voucher_export"):
+        raise HTTPException(
+            status_code=404,
+            detail="Payment voucher export is not enabled for this organisation.")
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+
+    import payment_voucher
+
+    content = payment_voucher.voucher_pdf(req, ctx.org_id)
+    # The PV number, not our reference, is what their filing keys on.
+    number = payment_voucher.pv_number_for(req, ctx.org_id) or req.ref
+    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in number)
+    return Response(
+        content=content, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="voucher-{safe}.pdf"'},
+    )
+
+
 @router.get("/requisitions/{req_id}/export.xlsx")
 async def export_requisition_xlsx_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
     """The same content as the PDF, one sheet per section — for pasting

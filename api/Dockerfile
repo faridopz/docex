@@ -16,11 +16,18 @@ FROM python:3.12-slim
 # this binary the OCR path silently returns nothing and every field receipt
 # arrives blank for manual entry. pytesseract is only a wrapper — installing
 # the Python package without the binary does nothing at all.
+# fonts-dejavu-core carries U+20A6, the naira sign. Reportlab's built-in
+# Helvetica does not, and a PDF asking for a glyph the font lacks draws a
+# filled black box instead. Every payment voucher prints that symbol twice,
+# so without this the client's own voucher comes out defaced — and it would
+# look correct on any developer machine, because desktop Linux and macOS both
+# ship DejaVu. The package is under 2 MB.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         poppler-utils \
         tesseract-ocr \
         tesseract-ocr-eng \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
