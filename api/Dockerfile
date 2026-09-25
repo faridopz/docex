@@ -52,4 +52,10 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Use sh -c so ${PORT} expands at runtime, not build time.
+#
+# ONE worker, deliberately. REQ numbers (requisitions.py) and PV numbers
+# (payment_voucher.py) are issued under an in-process lock. Adding
+# --workers or a second instance gives each process its own lock, and two
+# payments can then be issued the same number. Move those counters into the
+# database before scaling this out.
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

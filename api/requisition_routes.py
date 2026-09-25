@@ -956,6 +956,11 @@ async def export_requisition_voucher_endpoint(req_id: str,
 
     import payment_voucher
 
+    # Checked BEFORE a number is allocated, so a refused export burns nothing.
+    refusal = payment_voucher.export_refusal(req)
+    if refusal:
+        raise HTTPException(status_code=409, detail=f"No voucher for {req.ref}: {refusal}")
+
     content = payment_voucher.voucher_pdf(req, ctx.org_id)
     # The PV number, not our reference, is what their filing keys on.
     number = payment_voucher.pv_number_for(req, ctx.org_id) or req.ref
@@ -963,6 +968,58 @@ async def export_requisition_voucher_endpoint(req_id: str,
     return Response(
         content=content, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="voucher-{safe}.pdf"'},
+    )
+
+
+@router.get("/requisitions/{req_id}/payees.xlsx")
+async def export_payee_schedule_endpoint(req_id: str,
+                                         ctx: Ctx = Depends(request_context)):
+    """The list Finance pays from: every payee with FULL bank details.
+
+    The most sensitive file DOCex produces, so every gate is server-side and
+    checked before anything is built: the feature flag, then who is asking
+    (the org's finance department(s) or an admin), then that the payment is
+    fully approved. Only then is the download written to the requisition's
+    hash-chained trail — BEFORE the file is returned, so there is no way to
+    get the file without leaving the record.
+    """
+    if not org_config.feature_enabled(ctx.org_id, "payee_schedule_export"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    import payment_voucher
+
+    allowed = payment_voucher.schedule_departments(ctx.org_id)
+    if ctx.role != "admin" and (ctx.department or "").lower() not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="The payee schedule contains full bank account numbers, so only "
+                   f"{', '.join(allowed)} or an administrator can download it.")
+
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    refusal = payment_voucher.schedule_refusal(req)
+    if refusal:
+        raise HTTPException(status_code=409, detail=f"No payee schedule for {req.ref}: {refusal}")
+
+    try:
+        content = payment_voucher.payee_schedule_xlsx(req, ctx.org_id, generated_by=ctx.user_id)
+    except payment_voucher.ScheduleError as exc:
+        raise HTTPException(status_code=409, detail=f"No payee schedule for {req.ref}: {exc}") from exc
+
+    count = len(req.payees) or 1
+    number = payment_voucher.pv_number_for(req, ctx.org_id)
+    rq.note_event(
+        ctx.org_id, req.id, actor=ctx.user_id, department=ctx.department,
+        event="payee_schedule_downloaded",
+        detail=(f"{count} payee{'s' if count != 1 else ''}, {req.currency} {req.amount:,.2f}, "
+                f"full account numbers, voucher {number or 'unnumbered'}"))
+
+    safe = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (number or req.ref))
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="payees-{safe}.xlsx"'},
     )
 
 

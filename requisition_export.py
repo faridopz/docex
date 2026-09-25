@@ -145,6 +145,23 @@ def requisition_pdf(req: rq.Requisition) -> bytes:
             ["Account number", "Bank", "TIN", "Phone / email"], rows, [100, 100, 90, 130],
         ))
 
+    # Every payee of a bulk payment. The comment above always said these rows
+    # were here; they were not, so the packet for a 100-person payment showed
+    # the auditor a total and nobody it was paid to. Accounts are masked to
+    # the last four digits: enough to match a bank-statement line, which is
+    # what an auditor does with them, and not enough to pay from. The full
+    # numbers exist in one place only, the finance-only payee schedule.
+    if req.payees:
+        from audit_annexes import mask_account
+        story.append(Paragraph(f"Payees ({len(req.payees)})", h2))
+        rows = [[str(i), p.name, p.bank_name, mask_account(p.account_number),
+                 _money(p.amount, req.currency), p.purpose]
+                for i, p in enumerate(req.payees, start=1)]
+        rows.append(["", "Total", "", "",
+                     _money(sum(p.amount for p in req.payees), req.currency), ""])
+        story.append(table(["#", "Name", "Bank", "Account", "Amount", "Purpose"],
+                           rows, [22, 120, 70, 62, 80, 150]))
+
     # Budget line breakdown — mirrors NEEM's own memo item table. Totals are
     # always server-computed (see requisitions.BudgetLine).
     if req.budget_lines:
@@ -363,6 +380,20 @@ def requisition_xlsx(req: rq.Requisition) -> bytes:
         ])
         for col, w in zip("ABCDEFG", [32, 12, 18, 10, 10, 14, 14]):
             wsb.column_dimensions[col].width = w
+
+    # Payees sheet — same rows and the same masking as the PDF packet.
+    if req.payees:
+        from audit_annexes import mask_account
+        wsp = wb.create_sheet("Payees")
+        banner_row(wsp, f"Payees ({len(req.payees)})",
+                   f"{req.ref} · account numbers masked to the last four digits", 6)
+        header_row(wsp, ["#", "Name", "Bank", "Account", "Amount", "Purpose"])
+        write_rows(wsp, [
+            [i, p.name, p.bank_name, mask_account(p.account_number), p.amount, p.purpose]
+            for i, p in enumerate(req.payees, start=1)
+        ] + [["", "Total", "", "", sum(p.amount for p in req.payees), ""]])
+        for col, w in zip("ABCDEF", [5, 32, 18, 14, 14, 40]):
+            wsp.column_dimensions[col].width = w
 
     # Approvals sheet
     if req.approvals:

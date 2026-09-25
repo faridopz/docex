@@ -43,6 +43,7 @@ account, which is exactly the class of error CLAUDE.md puts in code's hands.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -130,6 +131,43 @@ def _next_sequence(org_id: str, period: str) -> int:
     return nxt
 
 
+# One lock for "look up the number, and allocate one if there is none".
+#
+# Without it, two exports at the same moment both read the counter before
+# either writes it back. Tested, not theorised: two different requisitions
+# exported together both came out as .../PV/01. A duplicate PV number is two
+# payments filed under one voucher, which is the first thing a finance
+# officer or an auditor would query. A double-click on Download does the
+# same thing to ONE requisition, printing a number that is then not the one
+# stored.
+#
+# A process lock is enough because each client runs one API process (one
+# uvicorn worker). It is the same protection requisitions.py uses for REQ
+# numbers. If an instance ever runs several workers, this and those both have
+# to move into the database — see the note in api/Dockerfile.
+_pv_lock = threading.Lock()
+
+
+# Where a requisition must be before it can become a voucher. A DRAFT has not
+# been submitted, and a DECLINED payment will never be made; giving either a
+# permanent PV number leaves a gap in the sequence that Finance reads as a
+# missing document. Everything from submission onward is allowed, because
+# vouchers often circulate for wet signatures WHILE approval is in progress.
+_NOT_EXPORTABLE = {
+    "draft": "It is still a draft. Submit it first; a voucher number is only "
+             "issued for a payment that has been submitted.",
+    "declined": "It was declined, so it will not be paid. A declined payment "
+                "does not get a voucher number.",
+}
+
+
+def export_refusal(req) -> Optional[str]:
+    """Why this requisition cannot be exported as a voucher, or None if it can."""
+    status = getattr(req, "status", None)
+    status = str(getattr(status, "value", status) or "").lower()
+    return _NOT_EXPORTABLE.get(status)
+
+
 def pv_number_for(req, org_id: str, *, when: Optional[dt.datetime] = None) -> str:
     """The voucher number for this requisition, allocated once and reused.
 
@@ -137,6 +175,11 @@ def pv_number_for(req, org_id: str, *, when: Optional[dt.datetime] = None) -> st
     choice: some finance teams keep the numbering in their own register and
     want the field left blank to write in by hand.
     """
+    with _pv_lock:
+        return _pv_number_locked(req, org_id, when=when)
+
+
+def _pv_number_locked(req, org_id: str, *, when: Optional[dt.datetime] = None) -> str:
     org = store.require_org(org_id)
     st = store.get_store()
 
@@ -554,5 +597,178 @@ def voucher_pdf(req, org_id: str, *, when: Optional[dt.datetime] = None) -> byte
         f"Generated from {v.source_ref} · "
         f"{(when or dt.datetime.now(dt.timezone.utc)).strftime('%d %b %Y')}", small))
 
-    doc.build(flow)
+    # Every page names its voucher. A 100-payee voucher runs to four pages,
+    # and a page that falls out of the file had nothing to say which payment
+    # it belonged to. The count needs the finished document, so the footer is
+    # drawn once all pages are laid out.
+    doc.build(flow, canvasmaker=_numbered_canvas(v.pv_number or v.source_ref))
+    return buf.getvalue()
+
+
+def _numbered_canvas(label: str):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas as _canvas
+
+    class _Numbered(_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._pages: list[dict] = []
+
+        def showPage(self):                      # noqa: N802 — reportlab API
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self.setFont("Helvetica", 7.5)
+                self.setFillGray(0.35)
+                self.drawRightString(A4[0] - 18 * mm, 8 * mm,
+                                     f"{label} · Page {self._pageNumber} of {total}")
+                super().showPage()
+            super().save()
+
+    return _Numbered
+
+
+# ─── the payee schedule ──────────────────────────────────────────────────────
+#
+# The voucher is what Finance files and signs. It cannot carry a hundred bank
+# account numbers, so for a bulk payment Finance had nothing to pay FROM:
+# every account number would be copied off the screen by hand, which is slow
+# and exactly where a wrong account gets paid. The schedule is that list.
+#
+# It is the most sensitive file DOCex produces — a hundred people's full bank
+# details — so it is deliberately narrower than anything else:
+#   * only once the payment is APPROVED (a schedule is what money is sent
+#     from; one that exists before approval is a way to pay without it);
+#   * only to the org's finance department(s) and admins;
+#   * every download is written to the requisition's hash-chained trail;
+#   * refused outright if the lines no longer add up to the approved amount.
+
+
+class ScheduleError(ValueError):
+    """The schedule cannot be produced, and the message says why."""
+
+
+_SCHEDULE_STATUSES = {"approved", "paid"}
+
+
+def schedule_refusal(req) -> Optional[str]:
+    """Why no schedule may be produced for this requisition yet, or None."""
+    status = getattr(req, "status", None)
+    status = str(getattr(status, "value", status) or "").lower()
+    if status in _SCHEDULE_STATUSES:
+        return None
+    return ("It has not been fully approved. The payee schedule is what money "
+            "is sent from, so it only exists once every approver has signed.")
+
+
+def schedule_departments(org_id: str) -> list[str]:
+    """Departments allowed to download full bank details (admins always may).
+
+    Configured per org in the voucher template as `schedule_departments`,
+    because not every organisation calls it Finance.
+    """
+    tpl = get_template(store.require_org(org_id))
+    depts = tpl.get("schedule_departments") or ["finance"]
+    return [str(d).strip().lower() for d in depts if str(d).strip()]
+
+
+def _schedule_lines(req) -> list[tuple[str, str, str, float, str]]:
+    payees = list(getattr(req, "payees", None) or [])
+    if payees:
+        return [(p.name or "", getattr(p, "bank_name", "") or "",
+                 getattr(p, "account_number", "") or "",
+                 float(getattr(p, "amount", 0.0) or 0.0),
+                 getattr(p, "purpose", "") or "")
+                for p in payees]
+    return [(str(getattr(req, "vendor_name", "") or ""),
+             str(getattr(req, "vendor_bank_name", "") or ""),
+             str(getattr(req, "vendor_account", "") or ""),
+             float(getattr(req, "amount", 0.0) or 0.0),
+             str(getattr(req, "description", "") or ""))]
+
+
+def payee_schedule_xlsx(req, org_id: str, *, generated_by: str,
+                        when: Optional[dt.datetime] = None) -> bytes:
+    """Every payee with their FULL bank details and the total, as a spreadsheet.
+
+    Raises ScheduleError if the lines do not sum to the requisition amount —
+    deterministic-first: a schedule that disagrees with what was approved is
+    refused, never printed. Figures are compared in whole kobo.
+    """
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    org = store.require_org(org_id)
+    lines = _schedule_lines(req)
+    total_k = sum(int(round(line[3] * 100)) for line in lines)
+    approved_k = int(round(float(getattr(req, "amount", 0.0) or 0.0) * 100))
+    if total_k != approved_k:
+        raise ScheduleError(
+            f"The payee lines total {total_k / 100:,.2f} but the approved amount is "
+            f"{approved_k / 100:,.2f}; the two differ by {abs(total_k - approved_k) / 100:,.2f}. "
+            "No schedule is produced until they agree.")
+
+    when = when or dt.datetime.now(dt.timezone.utc)
+    number = pv_number_for(req, org, when=when)
+    tpl = get_template(org)
+    org_name = str((tpl.get("letterhead") or {}).get("org_name") or "")
+    currency = str(getattr(req, "currency", "NGN") or "NGN")
+    ref = str(getattr(req, "ref", "") or "")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Payee schedule"
+    bold = Font(name="Arial", bold=True)
+    ws["A1"] = f"Payee schedule — {org_name} — {number or ref}".replace(" —  —", " —")
+    ws["A1"].font = Font(name="Arial", bold=True, size=13)
+    ws["A2"] = ("CONFIDENTIAL — contains full bank account numbers. "
+                f"Requisition {ref} · voucher {number or '(not numbered)'} · "
+                f"{len(lines)} payees · {currency} {total_k / 100:,.2f} · "
+                f"generated {when.strftime('%d %b %Y %H:%M')} UTC by {generated_by}")
+    ws["A2"].font = Font(name="Arial", italic=True, size=9, color="9C0006")
+
+    headers = ["#", "Name", "Bank", "Account number", f"Amount ({currency})", "Purpose"]
+    fill = PatternFill("solid", start_color="1F3A5F")
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=4, column=col, value=h)
+        c.font = Font(name="Arial", bold=True, color="FFFFFF")
+        c.fill = fill
+    for i, (name, bank, acct, amount, purpose) in enumerate(lines, start=1):
+        row = 4 + i
+        ws.cell(row=row, column=1, value=i)
+        ws.cell(row=row, column=2, value=name)
+        ws.cell(row=row, column=3, value=bank)
+        # Text, not a number: Excel would drop a leading zero from 0123456789
+        # and the bank would reject — or worse, find — a nine-digit account.
+        a = ws.cell(row=row, column=4, value=str(acct))
+        a.number_format = "@"
+        amt = ws.cell(row=row, column=5, value=round(amount, 2))
+        amt.number_format = "#,##0.00"
+        ws.cell(row=row, column=6, value=purpose)
+    trow = 5 + len(lines)
+    ws.cell(row=trow, column=2, value="TOTAL").font = bold
+    t = ws.cell(row=trow, column=5, value=total_k / 100)
+    t.number_format = "#,##0.00"
+    t.font = bold
+    ws.cell(row=trow + 1, column=2,
+            value="Must equal the payment voucher total. If it does not, do not pay; "
+                  "re-download from DOCex.").font = Font(name="Arial", italic=True, size=9)
+
+    for col, width in zip("ABCDEF", (5, 34, 20, 18, 16, 44)):
+        ws.column_dimensions[col].width = width
+    for row in ws.iter_rows(min_row=5, max_row=trow - 1):
+        for c in row:
+            c.alignment = Alignment(vertical="top")
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A4:F{trow - 1}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
     return buf.getvalue()

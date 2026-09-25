@@ -114,6 +114,7 @@
     "requisition_attachments": false,
     "requisition_compliance_check": false,
     "requisition_export": false,
-    "voucher_export": false
+    "voucher_export": false,
+    "payee_schedule_export": false
   }
 }

@@ -287,6 +287,78 @@ def test_chargeable_to_carries_project_and_donor() -> None:
 # never bought the feature. Only the endpoint can refuse.
 
 
+def test_two_vouchers_exported_together_never_share_a_number() -> None:
+    print("\nTwo vouchers exported at the same moment get different PV numbers")
+    import threading, time
+    org = "race"
+    pv.set_template(org, NEEM_TEMPLATE)
+    st = store.get_store()
+    real_get = st.get
+
+    def slow_get(*a, **k):          # the network round-trip to Supabase
+        r = real_get(*a, **k)
+        time.sleep(0.05)
+        return r
+
+    st.get = slow_get
+    try:
+        out = {}
+        reqs = [_Req(id="race-a", ref="REQ-0101"), _Req(id="race-b", ref="REQ-0102")]
+        ts = [threading.Thread(target=lambda r=r: out.__setitem__(r.id, pv.pv_number_for(r, org)))
+              for r in reqs]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+    finally:
+        st.get = real_get
+    check("two different requisitions, two different PV numbers",
+          out.get("race-a") != out.get("race-b"), str(out))
+
+
+def test_a_double_click_prints_the_number_that_is_stored() -> None:
+    print("\nA double-click on Download prints one number, and it is the stored one")
+    import threading, time
+    org = "dblclick"
+    pv.set_template(org, NEEM_TEMPLATE)
+    st = store.get_store()
+    real_get = st.get
+
+    def slow_get(*a, **k):
+        r = real_get(*a, **k)
+        time.sleep(0.05)
+        return r
+
+    st.get = slow_get
+    try:
+        req = _Req(id="dbl-1", ref="REQ-0201")
+        got = []
+        ts = [threading.Thread(target=lambda: got.append(pv.pv_number_for(req, org))) for _ in range(3)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+    finally:
+        st.get = real_get
+    stored = pv.pv_number_for(req, org)
+    check("every click got the same number", len(set(got)) == 1, str(got))
+    check("and it is the number the system keeps", got and got[0] == stored, f"{got} vs {stored}")
+    check("and only one number was used from the sequence",
+          stored.endswith("/01"), stored)
+
+
+def test_drafts_and_declined_payments_cannot_become_vouchers() -> None:
+    print("\nOnly a submitted, still-live payment can become a voucher")
+    for status, allowed in [("draft", False), ("declined", False), ("submitted", True),
+                            ("in_review", True), ("on_hold", True), ("returned", True),
+                            ("approved", True), ("paid", True)]:
+        req = _Req(id=f"st-{status}")
+        req.status = status
+        reason = pv.export_refusal(req)
+        check(f"{status:9s} ⇒ {'allowed' if allowed else 'refused'}",
+              (reason is None) == allowed, str(reason))
+    req = _Req(id="st-draft-2")
+    req.status = "draft"
+    check("the refusal says why, in words a finance officer understands",
+          "draft" in (pv.export_refusal(req) or "").lower())
+
+
 def test_the_flag_actually_hides_the_endpoint() -> None:
     print("\nFlag off means the endpoint is gone, not merely hidden in the nav")
     import os as _os
@@ -326,6 +398,17 @@ def test_the_flag_actually_hides_the_endpoint() -> None:
 
     org_config.set_features(ORG, voucher_export=True)
     pv.set_template(ORG, NEEM_TEMPLATE)
+
+    d = c.post("/requisitions", headers=H, data={
+        "vendor_name": "Draft Vendor Ltd", "amount": "50000", "category": "transport",
+        "description": "Not yet submitted", "documents": "memo,invoice", "submit": "false"})
+    dref = d.json().get("ref") if d.status_code < 300 else None
+    check("a draft exists", bool(dref), f"{d.status_code} {d.text[:80]}")
+    dr = c.get(f"/requisitions/{dref}/voucher.pdf", headers=H)
+    check("exporting a DRAFT is refused with 409", dr.status_code == 409, str(dr.status_code))
+    check("and still no PV number was burned",
+          not (store.get_store().list(ORG, "voucher_sequence") or []))
+
     on = c.get(f"/requisitions/{ref}/voucher.pdf", headers=H)
     check("flag ON ⇒ a PDF comes back", on.status_code == 200, str(on.status_code))
     check("it is really a PDF", on.content[:5] == b"%PDF-", str(on.content[:12]))
@@ -361,6 +444,9 @@ if __name__ == "__main__":
     test_numbers_do_not_leak_between_organisations()
     test_an_org_that_wants_to_number_by_hand_gets_a_blank()
     test_chargeable_to_carries_project_and_donor()
+    test_two_vouchers_exported_together_never_share_a_number()
+    test_a_double_click_prints_the_number_that_is_stored()
+    test_drafts_and_declined_payments_cannot_become_vouchers()
     test_the_flag_actually_hides_the_endpoint()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)
