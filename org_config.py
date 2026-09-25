@@ -135,6 +135,21 @@ def validate_profile(profile: dict) -> ValidationReport:
         except store.StoreError as exc:
             rep.errors.append(str(exc))
 
+    # The client's own payment voucher. Checked here so a malformed template
+    # fails validation — before anything is written — rather than surfacing
+    # as a broken voucher in front of the client's finance team.
+    if "voucher_template" in profile:
+        vt = profile["voucher_template"]
+        if not isinstance(vt, dict):
+            rep.errors.append("voucher_template must be an object.")
+        else:
+            if "letterhead" in vt and not isinstance(vt["letterhead"], dict):
+                rep.errors.append("voucher_template.letterhead must be an object.")
+            if "signature_roles" in vt and not isinstance(vt["signature_roles"], list):
+                rep.errors.append("voucher_template.signature_roles must be a list.")
+            if "schedule_departments" in vt and not isinstance(vt["schedule_departments"], list):
+                rep.errors.append("voucher_template.schedule_departments must be a list.")
+
     depts = profile.get("departments") or []
     dept_keys: set[str] = set()
     for i, d in enumerate(depts):
@@ -351,6 +366,17 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             advances.set_policy(org_id, advances.AdvancePolicy.model_validate(adv_policy))
         except Exception as exc:  # noqa: BLE001 — a bad policy must not abort the rest of apply
             res.warnings.append(f"advance_policy was not applied: {exc}")
+
+    # 3c. The client's own payment voucher — letterhead, RC number, wording,
+    # signature roles, account codes, PV number format, and who may download
+    # the payee schedule. Third time this exact bug shape has turned up
+    # (document packs, advance policy, now this): the profile carried the
+    # template, the engine supported it, and apply never passed it across.
+    # Nothing errored — NEEM's voucher would simply have printed with no
+    # letterhead and no PV number.
+    if isinstance(profile.get("voucher_template"), dict):
+        import payment_voucher
+        payment_voucher.set_template(org_id, profile["voucher_template"])
 
     # 4. First admin (create-only; never resets a password from a profile).
     admin = profile.get("admin")

@@ -460,6 +460,52 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+// ─── the organisation's own paperwork ─────────────────────────────────────
+
+/** Which documents this signed-in person may download — the server answers
+ * from the same rules the download routes enforce, so the screen never
+ * offers a button that would be refused. */
+export type DocumentPermissions = { voucher: boolean; payee_schedule: boolean };
+
+export async function getDocumentPermissions(): Promise<DocumentPermissions> {
+  return apiFetch<DocumentPermissions>("/requisitions/document-permissions");
+}
+
+/** A binary download whose filename the SERVER chooses — the voucher and the
+ * payee schedule are named for the PV number, which only the server knows
+ * once it has been issued. Refusals (403/409) carry a sentence meant for the
+ * person, so that sentence is what gets thrown, not raw JSON. */
+async function downloadNamed(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
+  const token = getToken();
+  const res = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    let message = `Could not download this document (${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* not JSON — keep the generic message */
+    }
+    throw new Error(message);
+  }
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: await res.blob(), filename: match ? match[1] : fallbackName };
+}
+
+/** The organisation's own payment voucher (PDF), numbered on first export. */
+export function downloadRequisitionVoucher(id: string, ref: string) {
+  return downloadNamed(`/requisitions/${encodeURIComponent(id)}/voucher.pdf`, `voucher-${ref}.pdf`);
+}
+
+/** Every payee with FULL bank details (Excel). Finance/admin only, approved
+ * payments only, and every download is written to the requisition's trail. */
+export function downloadPayeeSchedule(id: string, ref: string) {
+  return downloadNamed(`/requisitions/${encodeURIComponent(id)}/payees.xlsx`, `payees-${ref}.xlsx`);
+}
+
 /** Fetch a requisition's export packet as a Blob — the printable/pasteable
  * artifact, not the JSON detail view. Raw authenticated fetch(), like
  * downloadRequisitionAttachment: the response is binary, never JSON. */

@@ -272,6 +272,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The screens are on a different site from the API, so the browser hides
+    # every response header it is not told it may read. Downloads name
+    # themselves via Content-Disposition — the voucher and payee schedule by
+    # their PV number — and without this the file saved as a fallback name.
+    expose_headers=["Content-Disposition"],
 )
 
 # GZip compression — shrinks JSON responses ~60-80% on payloads over 1KB.

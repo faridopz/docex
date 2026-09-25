@@ -28,7 +28,10 @@ import {
   addRequisitionComment,
   decideRequisition,
   downloadRequisitionAttachment,
+  downloadPayeeSchedule,
   downloadRequisitionExport,
+  downloadRequisitionVoucher,
+  getDocumentPermissions,
   getRequisition,
   getWorkflow,
   listComplianceRulebooks,
@@ -122,6 +125,17 @@ export default function RequisitionDetailPage() {
   const [exportEnabled, setExportEnabled] = useState(false);
   const [exportBusy, setExportBusy] = useState<"" | "pdf" | "xlsx">("");
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // The organisation's own paperwork: the payment voucher, and for bulk
+  // payments the schedule Finance pays from. Which buttons appear is the
+  // server's answer (flag + who you are); the status rules below mirror the
+  // routes so a button never shows where it would be refused.
+  const [docPerms, setDocPerms] = useState<{ voucher: boolean; payee_schedule: boolean }>({
+    voucher: false,
+    payee_schedule: false,
+  });
+  const [docBusy, setDocBusy] = useState<"" | "voucher" | "schedule">("");
+  const [docError, setDocError] = useState<string | null>(null);
 
   const payKey = useRef<string>(newIdempotencyKey());
 
@@ -322,6 +336,37 @@ export default function RequisitionDetailPage() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    getDocumentPermissions()
+      .then((p) => {
+        if (!cancelled) setDocPerms(p);
+      })
+      .catch(() => {
+        /* no buttons rather than buttons that fail */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleDocument(kind: "voucher" | "schedule") {
+    if (!req) return;
+    setDocBusy(kind);
+    setDocError(null);
+    try {
+      const { blob, filename } =
+        kind === "voucher"
+          ? await downloadRequisitionVoucher(req.id, req.ref)
+          : await downloadPayeeSchedule(req.id, req.ref);
+      triggerBlobDownload(blob, filename);
+    } catch (e) {
+      setDocError(e instanceof Error ? e.message : "Could not download this document.");
+    } finally {
+      setDocBusy("");
+    }
+  }
+
   async function handleExport(format: "pdf" | "xlsx") {
     if (!req) return;
     setExportBusy(format);
@@ -476,6 +521,57 @@ export default function RequisitionDetailPage() {
               </div>
             ) : null}
             {exportError ? <p className="mt-1 text-red-700">{exportError}</p> : null}
+            {/* Voucher: from submission on, never a draft or a declined payment.
+                Payee schedule: only once fully approved — it is what money is
+                sent from. Both mirror the server, which re-checks. */}
+            {(() => {
+              const showVoucher =
+                docPerms.voucher && req.status !== "draft" && req.status !== "declined";
+              const showSchedule =
+                docPerms.payee_schedule && (req.status === "approved" || req.status === "paid");
+              if (!showVoucher && !showSchedule) return null;
+              return (
+                <div className="mt-2 flex flex-wrap justify-end gap-2">
+                  {showVoucher ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDocument("voucher")}
+                      disabled={docBusy !== ""}
+                      className="inline-flex items-center gap-1 rounded-md border border-brand-600 bg-brand-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-brand-700 disabled:opacity-50"
+                    >
+                      {docBusy === "voucher" ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Download className="h-3 w-3" />
+                      )}
+                      Payment voucher
+                    </button>
+                  ) : null}
+                  {showSchedule ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDocument("schedule")}
+                      disabled={docBusy !== ""}
+                      title="Every payee with full bank details. Your download is recorded on this payment's audit trail."
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {docBusy === "schedule" ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Download className="h-3 w-3" />
+                      )}
+                      Payee schedule
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })()}
+            {docPerms.payee_schedule && (req.status === "approved" || req.status === "paid") ? (
+              <p className="mt-1 text-[11px] text-gray-400">
+                Payee schedule contains full bank details; downloads are recorded.
+              </p>
+            ) : null}
+            {docError ? <p className="mt-1 text-red-700">{docError}</p> : null}
           </div>
         </div>
 

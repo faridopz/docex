@@ -197,11 +197,19 @@ def test_bank_details_leave_the_system_only_through_the_right_hands() -> None:
     url = f"/requisitions/{req.ref}/payees.xlsx"
     before = len(rq.get_requisition(ORG, req.id).audit_log)
 
-    org_config.set_features(ORG, payee_schedule_export=False)
+    org_config.set_features(ORG, payee_schedule_export=False, voucher_export=True)
+    perms = c.get("/requisitions/document-permissions", headers=fin).json()
+    check("flag OFF ⇒ the screen is told not to show the schedule button",
+          perms.get("payee_schedule") is False and perms.get("voucher") is True, str(perms))
     r = c.get(url, headers=fin)
     check("flag OFF ⇒ 404, as if the route did not exist", r.status_code == 404, str(r.status_code))
 
     org_config.set_features(ORG, payee_schedule_export=True)
+    for who, h, expect in (("programme officer", prog, False), ("finance officer", fin, True),
+                           ("admin", admin, True)):
+        perms = c.get("/requisitions/document-permissions", headers=h).json()
+        check(f"the screen offers the schedule to a {who}: {expect}",
+              perms.get("payee_schedule") is expect, str(perms))
     r = c.get(url, headers=prog)
     check("a programme officer is refused (403)", r.status_code == 403, str(r.status_code))
     check("and a refused download leaves no trace in the trail",
@@ -284,6 +292,40 @@ def test_a_page_that_falls_out_of_the_file_still_says_whose_it_is() -> None:
     check("a one-page voucher says Page 1 of 1", "Page 1 of 1" in _pdf_pages(short)[0])
 
 
+def test_applying_a_profile_installs_its_voucher_template() -> None:
+    print("\nThe voucher in the profile is the voucher the client gets")
+    import json
+    prof = json.loads(Path("profiles/neem.json").read_text())
+    prof = {**prof, "org_id": "applied"}
+    prof["admin"] = {**prof["admin"], "password": "Passw0rd!Passw0rd!"}
+    org_config.apply_profile(prof)
+    tpl = pv.get_template("applied")
+    want = prof["voucher_template"]
+    check("letterhead org name comes from the profile",
+          (tpl.get("letterhead") or {}).get("org_name") == want["letterhead"]["org_name"],
+          str(tpl.get("letterhead")))
+    check("PV number format comes from the profile",
+          tpl.get("pv_number_format") == want.get("pv_number_format"), str(tpl.get("pv_number_format")))
+    bad = {**prof, "org_id": "applied_bad", "voucher_template": "not-a-template"}
+    rep = org_config.validate_profile(bad)
+    check("a malformed voucher_template is rejected BEFORE anything is written",
+          not rep.ok and any("voucher_template" in e for e in rep.errors), str(rep.errors))
+    check("and nothing was written for that org",
+          not store.get_store().get("applied_bad", "config", "features"))
+
+
+def test_the_browser_can_read_the_filename_the_server_chose() -> None:
+    print("\nCross-site downloads keep the PV-number filename")
+    from fastapi.testclient import TestClient
+    import api.main as m
+    c = TestClient(m.app, raise_server_exceptions=False)
+    r = c.options("/health", headers={"Origin": "http://localhost:3000",
+                                      "Access-Control-Request-Method": "GET"})
+    r = c.get("/health", headers={"Origin": "http://localhost:3000"})
+    exposed = r.headers.get("access-control-expose-headers", "").lower()
+    check("Content-Disposition is exposed to the browser", "content-disposition" in exposed, exposed)
+
+
 if __name__ == "__main__":
     print("WO-42 — bulk payments: schedule, audit packet, voucher pages")
     test_finance_never_pays_from_a_schedule_that_disagrees_with_the_voucher()
@@ -295,5 +337,7 @@ if __name__ == "__main__":
     test_the_auditor_sees_every_payee_but_not_their_full_account_numbers()
     test_a_single_payee_packet_is_unchanged()
     test_a_page_that_falls_out_of_the_file_still_says_whose_it_is()
+    test_applying_a_profile_installs_its_voucher_template()
+    test_the_browser_can_read_the_filename_the_server_chose()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)

@@ -765,6 +765,29 @@ def _period_fingerprint(data) -> str:
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
 
 
+@router.get("/requisitions/document-permissions")
+async def document_permissions_endpoint(ctx: Ctx = Depends(request_context)):
+    """Which paper this person may take out of DOCex, so the screen only shows
+    buttons that will work.
+
+    Answered here, from the same rules the download routes enforce, rather
+    than re-derived in the browser: who counts as Finance is per-org config,
+    and a screen that guessed "finance" would show a button that 403s at the
+    one client who calls it Accounts. Status rules are per requisition and
+    are applied on the screen; the routes re-check everything regardless.
+    Declared before /requisitions/{req_id} so it is not read as an id.
+    """
+    import payment_voucher
+
+    allowed = payment_voucher.schedule_departments(ctx.org_id)
+    may_see_bank_details = ctx.role == "admin" or (ctx.department or "").lower() in allowed
+    return {
+        "voucher": org_config.feature_enabled(ctx.org_id, "voucher_export"),
+        "payee_schedule": (org_config.feature_enabled(ctx.org_id, "payee_schedule_export")
+                           and may_see_bank_details),
+    }
+
+
 @router.get("/requisitions/pending")
 async def pending_for_me_endpoint(ctx: Ctx = Depends(request_context)):
     """Everything currently waiting on the signed-in user's department."""
