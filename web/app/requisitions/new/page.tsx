@@ -20,6 +20,7 @@ import {
   type PayeeImportPreview,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
+import { checkAccount, listBanks, type AccountCheck, type BankOption } from "@/lib/payeeCheckApi";
 import { humanise, money } from "@/lib/requisitionFormat";
 import type {
   BudgetLine,
@@ -128,6 +129,11 @@ export default function NewRequisitionPage() {
   const [grantCode, setGrantCode] = useState("");
   const [vendorAccount, setVendorAccount] = useState("");
   const [vendorBankName, setVendorBankName] = useState("");
+  // WO-48: the bank list (empty when the org has no account checking) and
+  // the result of checking the single vendor's account as it is typed.
+  const [banks, setBanks] = useState<BankOption[]>([]);
+  const [acctCheck, setAcctCheck] = useState<AccountCheck | null>(null);
+  const [acctChecking, setAcctChecking] = useState(false);
   const [vendorTin, setVendorTin] = useState("");
   const [vendorPhoneOrEmail, setVendorPhoneOrEmail] = useState("");
   const [paymentType, setPaymentType] = useState<PaymentType>("full");
@@ -186,6 +192,34 @@ export default function NewRequisitionPage() {
     if (payee) setVendorName(payee);
     if (rulebook) setRulebookId(rulebook);
   }, []);
+
+  useEffect(() => {
+    listBanks().then(setBanks).catch(() => setBanks([]));
+  }, []);
+
+  // Check the vendor's account once all three are filled in. Debounced so a
+  // lookup is not sent per keystroke; a stale answer is discarded.
+  useEffect(() => {
+    setAcctCheck(null);
+    const acct = vendorAccount.replace(/\D/g, "");
+    if (!banks.length || acct.length !== 10 || !vendorBankName.trim() || !vendorName.trim()) return;
+    let stale = false;
+    const t = setTimeout(async () => {
+      setAcctChecking(true);
+      try {
+        const r = await checkAccount({ name: vendorName, account_number: acct, bank: vendorBankName });
+        if (!stale) setAcctCheck(r);
+      } catch {
+        /* The same check runs on submit; the form never depends on this. */
+      } finally {
+        if (!stale) setAcctChecking(false);
+      }
+    }, 600);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [banks.length, vendorAccount, vendorBankName, vendorName]);
 
   useEffect(() => {
     let cancelled = false;
@@ -660,6 +694,12 @@ export default function NewRequisitionPage() {
 
   return (
     <AppShell>
+      {/* One bank list for the vendor field and every payee row (WO-48). */}
+      <datalist id="docex-banks">
+        {banks.map((b) => (
+          <option key={b.code} value={b.name} />
+        ))}
+      </datalist>
       <div className="mx-auto max-w-3xl">
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">New payment requisition</h1>
@@ -816,9 +856,27 @@ export default function NewRequisitionPage() {
                   <input
                     value={vendorBankName}
                     onChange={(e) => setVendorBankName(e.target.value)}
-                    placeholder="Optional"
+                    placeholder={banks.length ? "Start typing, then choose" : "Optional"}
+                    list={banks.length ? "docex-banks" : undefined}
                     className={inputClass}
                   />
+                  {acctChecking ? (
+                    <p className="mt-1 text-xs text-gray-500">Checking the account with the bank…</p>
+                  ) : acctCheck ? (
+                    <p
+                      className={`mt-1 text-xs ${
+                        acctCheck.status === "verified"
+                          ? "text-emerald-700"
+                          : acctCheck.status === "mismatch"
+                            ? "text-red-700"
+                            : "text-amber-700"
+                      }`}
+                    >
+                      {acctCheck.status === "verified"
+                        ? `✓ Account is in the name of ${acctCheck.bank_name_on_record}`
+                        : acctCheck.message}
+                    </p>
+                  ) : null}
                 </Field>
                 <Field label="Tax Identification Number (TIN)">
                   <input
@@ -1276,6 +1334,7 @@ function PayeeEditor({
                     <input
                       value={row.bank_name}
                       onChange={(e) => onPatchRow(i, { bank_name: e.target.value })}
+                      list="docex-banks"
                       className={payeeInputClass}
                     />
                   </td>

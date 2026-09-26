@@ -117,6 +117,8 @@
     "voucher_export": false,
     "payee_schedule_export": false,
     "documents_require_files": false,
-    "bank_verification": false
+    "bank_verification": false,
+    "payee_account_check": false,
+    "payee_check_blocks": false
   }
 }

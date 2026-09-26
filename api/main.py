@@ -219,6 +219,7 @@ from .vendor_routes import router as vendor_router  # noqa: E402
 from .accounting_routes import router as accounting_router  # noqa: E402
 from .treasury_routes import router as treasury_router  # noqa: E402
 from .advance_routes import router as advance_router  # noqa: E402
+from .payee_check_routes import router as payee_check_router  # noqa: E402
 from .onboarding_routes import router as onboarding_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
@@ -529,6 +530,9 @@ app.include_router(treasury_router)
 # down a three-stage escalation ladder and this enforces it. Gated on
 # `advance_retirement`. See api/advance_routes.py.
 app.include_router(advance_router)
+
+# Payee bank-account checks for the request form (payee_account_check).
+app.include_router(payee_check_router)
 
 # In-app onboarding — an admin configures departments + approval chain
 # themselves instead of a developer hand-editing a JSON profile. Detection

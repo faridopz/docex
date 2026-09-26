@@ -913,6 +913,15 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     if period is not None:
         checks.append(period)
 
+    # 12. Each payee's account is in their own name (payee_account_check)
+    try:
+        import payee_verification
+        payee = payee_verification.check_requisition(org, req)
+    except ImportError:  # pragma: no cover
+        payee = None
+    if payee is not None:
+        checks.append(payee)
+
     return checks
 
 
