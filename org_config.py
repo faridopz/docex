@@ -404,6 +404,12 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
     features = dict(profile.get("features") or {})
     st = store.get_store()
     existing = st.get(org_id, _CONFIG, _FEATURES_ID) or {}
+    # The profile is the source of truth, but a flag switched on by hand in a
+    # live org and missing from the profile is switched off here — say so.
+    for name, on in sorted((existing.get("features") or {}).items()):
+        if on and not features.get(name):
+            res.warnings.append(f"feature '{name}' was on in the live org and is now off "
+                                "(not on in the profile)")
     modules = profile.get("modules") or existing.get("modules") or list(_ALL_MODULES)
     st.put(org_id, _CONFIG, _FEATURES_ID,
            {"features": features, "modules": list(modules)})
@@ -522,6 +528,85 @@ def describe_org(org_id: str) -> dict:
     return out
 
 
+def diff_profile(profile: dict) -> list[str]:
+    """What apply_profile(profile) would change in the live org, one line per
+    difference. Empty when the live org already matches.
+
+    Covers what drifts in practice: feature flags (including ones set by hand
+    that apply would switch off), modules, departments, the policy numbers and
+    lists, the approval steps, the voucher template and the advance policy.
+    Grants and the admin are add-only in apply, so they are not reported.
+    """
+    org = store.require_org(profile["org_id"])
+    out: list[str] = []
+    live = client_config(org)
+    raw = store.get_store().get(org, _CONFIG, _FEATURES_ID)
+
+    want_f = dict(profile.get("features") or {})
+    have_f = live["features"] if raw else {}
+    for name in sorted(set(want_f) | set(have_f)):
+        want, have = bool(want_f.get(name)), bool(have_f.get(name))
+        if want != have:
+            why = "" if name in want_f else " (set by hand; not in the profile)"
+            out.append(f"feature {name}: {'on' if have else 'off'} → {'on' if want else 'off'}{why}")
+
+    if profile.get("modules") and (not raw or sorted(profile["modules"]) != sorted(live["modules"])):
+        out.append(f"modules: {sorted(live['modules']) if raw else 'all (never set)'} → {sorted(profile['modules'])}")
+
+    if profile.get("departments"):
+        import departments
+        have_d = {d.key: d.name for d in departments.load(org).departments}
+        want_d = {d["key"]: d.get("name") or d["key"] for d in profile["departments"]}
+        if have_d != want_d:
+            out.append(f"departments: {sorted(have_d)} → {sorted(want_d)}")
+
+    wf = profile.get("workflow")
+    if wf:
+        import requisitions
+        cur = requisitions.get_workflow(org)
+        for key in ("max_amount", "allowed_categories", "forbidden_vendors", "approved_vendors",
+                    "required_documents", "documents_by_category", "duplicate_window_days",
+                    "max_payees", "rulebook_id"):
+            if key in wf and wf[key] != getattr(cur, key):
+                out.append(f"workflow.{key}: {_short(getattr(cur, key))} → {_short(wf[key])}")
+        if wf.get("steps"):
+            have_s = [(s.key, s.department) for s in cur.steps]
+            want_s = [(s["key"], s.get("department")) for s in wf["steps"]]
+            if have_s != want_s or [s.model_dump() for s in cur.steps] != [
+                    requisitions.WorkflowStep(**s).model_dump() for s in wf["steps"]]:
+                out.append(f"workflow.steps: {[k for k, _ in have_s]} → {[k for k, _ in want_s]}"
+                           + (" (same steps, settings differ)" if have_s == want_s else ""))
+        if "cc_rules" in wf and [r.model_dump() for r in cur.cc_rules] != [
+                requisitions.CCRule(**r).model_dump() for r in wf["cc_rules"]]:
+            out.append("workflow.cc_rules: differ")
+
+    if isinstance(profile.get("voucher_template"), dict):
+        import payment_voucher
+        # The raw stored template, not get_template(): that merges in defaults,
+        # which would hide "never installed".
+        have_t = store.get_store().get(org, payment_voucher._CONFIG, payment_voucher._TEMPLATE_ID)
+        if not have_t:
+            out.append("voucher_template: not installed → will be installed")
+        elif {k: have_t.get(k) for k in profile["voucher_template"]} != profile["voucher_template"]:
+            out.append("voucher_template: differs → will be replaced")
+
+    if profile.get("advance_policy"):
+        try:
+            import advances
+            meta = {"org_id", "updated_at"}   # stamped on save, not policy
+            want = advances.AdvancePolicy.model_validate(profile["advance_policy"]).model_dump(exclude=meta)
+            if advances.get_policy(org).model_dump(exclude=meta) != want:
+                out.append("advance_policy: differs → will be replaced")
+        except Exception as exc:  # noqa: BLE001 — a diff must still report the rest
+            out.append(f"advance_policy: could not compare ({exc})")
+    return out
+
+
+def _short(v: Any) -> str:
+    text = json.dumps(v, default=str)
+    return text if len(text) <= 60 else text[:57] + "…"
+
+
 # ─── CLI ────────────────────────────────────────────────────────────────────
 
 
@@ -536,6 +621,9 @@ def _cli(argv: list[str]) -> int:
     v.add_argument("profile")
     d = sub.add_parser("describe", help="print an org's live config as JSON")
     d.add_argument("org_id", nargs="?", default=None)
+    df = sub.add_parser("diff", help="show what applying a profile would change in the live org "
+                                     "(exit 1 if anything)")
+    df.add_argument("profile")
     f = sub.add_parser("features",
                        help="turn features on/off for a running org, e.g. "
                             "features timesheets=on bank_reconciliation=on")
@@ -544,11 +632,26 @@ def _cli(argv: list[str]) -> int:
     f.add_argument("--org", default=None)
     args = p.parse_args(argv)
 
-    # Same backend selection as api/main.py, so the CLI writes where the API reads.
-    db = os.environ.get("DOCEX_DB", "").strip()
-    if db:
-        import store_sql
-        store.set_store(store_sql.SqliteStore(db))
+    # Same backend selection as api/main.py (Postgres → SQLite → JSON), so the
+    # CLI writes where the API reads. This used to check DOCEX_DB only: against
+    # production (Postgres) every command read and wrote local JSON files and
+    # reported success.
+    print(f"[org_config] storage: {store.configure_from_env(quiet=True)}")
+
+    if args.cmd == "diff":
+        try:
+            profile = load_profile(args.profile)
+        except ProfileError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        lines = diff_profile(profile)
+        if not lines:
+            print(f"Live config for '{profile.get('org_id')}' matches the profile.")
+            return 0
+        print(f"Applying this profile to '{profile.get('org_id')}' would change:")
+        for line in lines:
+            print(f"  {line}")
+        return 1
 
     if args.cmd == "features":
         org = args.org or os.environ.get("DOCEX_ORG") or "default"
@@ -595,6 +698,8 @@ def _cli(argv: list[str]) -> int:
             print(f"OK — would apply to org '{res.org_id}'.")
             return 0
         print(f"Applied profile to org '{res.org_id}':")
+        for w in res.warnings:
+            print(f"  warning     : {w}")
         print(f"  departments : {res.departments or 'unchanged'}")
         print(f"  workflow    : {'updated' if res.workflow else 'unchanged'}")
         print(f"  grants      : +{res.grants_added} ({res.grants_skipped} already present)")
