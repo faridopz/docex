@@ -440,7 +440,9 @@ export function AppShell({
             </span>
           </div>
         )}
-        <main className="flex-1">{children}</main>
+        {/* Phones get a side gutter; from sm: up each page keeps its own
+            layout. Several pages had none, so text ran to the screen edge. */}
+        <main className="flex-1 px-4 sm:px-0">{children}</main>
       </div>
     </div>
   );

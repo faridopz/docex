@@ -6,8 +6,10 @@ import { useParams } from "next/navigation";
 import {
   ArrowLeft,
   ArrowLeftRight,
+  ArrowRightLeft,
   Banknote,
   Check,
+  Clock,
   Download,
   Loader2,
   Lock,
@@ -23,6 +25,8 @@ import {
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { useAuth } from "@/lib/auth";
+import { listDepartments } from "@/lib/erpApi";
 import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
 import {
   addRequisitionComment,
@@ -209,6 +213,36 @@ export default function RequisitionDetailPage() {
   const isHeld = req?.status === "on_hold";
   const canHold = req?.status === "in_review" && holdEnabled;
 
+  // WHOSE TURN IT IS. Everyone used to see Approve / Return / Decline, and
+  // anyone not at the current step got an error when they clicked. The server
+  // still enforces all of this; the screen now simply stops offering what it
+  // knows will be refused, and tells everyone else who it is waiting on.
+  const { user } = useAuth();
+  // The org's own names for its departments ("Assistant Executive
+  // Director"), not the keys ("aed") — people read names.
+  const [deptNames, setDeptNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    listDepartments()
+      .then((r) => setDeptNames(Object.fromEntries(r.departments.map((d) => [d.key, d.name]))))
+      .catch(() => {
+        /* fall back to the key, humanised */
+      });
+  }, []);
+  const deptName = (key: string) => deptNames[key] || humanise(key);
+  const currentStep = workflow?.steps.find((s) => s.key === req?.current_step) ?? null;
+  const myTurn = Boolean(
+    isOpen && currentStep && user && user.department === currentStep.department,
+  );
+  const iRaisedIt = Boolean(user && req && user.email === req.submitted_by);
+  const amount = req?.amount ?? 0;
+  const mayRelease = (st: { can_override: boolean; override_limit: number | null } | null) =>
+    Boolean(st && st.can_override && (st.override_limit == null || amount <= st.override_limit));
+  // Stages that could release a blocking check on THIS amount — from the
+  // org's own chain, so it names their AED, their board, whoever it is.
+  const releasers = (workflow?.steps ?? []).filter(
+    (st) => st.key !== currentStep?.key && (st.min_amount ?? 0) <= amount && mayRelease(st),
+  );
+
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
   }
@@ -382,6 +416,22 @@ export default function RequisitionDetailPage() {
       setExportError(e instanceof Error ? e.message : "Could not export this requisition.");
     } finally {
       setExportBusy("");
+    }
+  }
+
+  async function passTo(stepKey: string) {
+    if (!req) return;
+    const reason =
+      notes.trim() || `A blocking check needs releasing; passed to ${humanise(stepKey)} to decide.`;
+    setRouteBusy(true);
+    setActionError(null);
+    try {
+      setReq(await routeRequisition(req.id, { target_step: stepKey, reason }));
+      setNotes("");
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not pass this on.");
+    } finally {
+      setRouteBusy(false);
     }
   }
 
@@ -636,6 +686,45 @@ export default function RequisitionDetailPage() {
               </div>
             </div>
           </div>
+        ) : null}
+
+        {/* The one thing the person at the current step came to do, first. */}
+        {isOpen && currentStep ? (
+          myTurn ? (
+            <div id="decide">
+              <DecisionPanel
+                stepLabel={currentStep.label}
+                blockingCount={blocking.length}
+                allBlockingSelected={allBlockingSelected}
+                selectedCount={selected.length}
+                notes={notes}
+                setNotes={setNotes}
+                overrideReason={overrideReason}
+                setOverrideReason={setOverrideReason}
+                overrideAuthority={overrideAuthority}
+                setOverrideAuthority={setOverrideAuthority}
+                canApprove={canApprove}
+                canRelease={mayRelease(currentStep)}
+                releasers={releasers.map((st) => ({ key: st.key, label: st.label }))}
+                iRaisedIt={iRaisedIt}
+                departmentName={deptName(currentStep.department)}
+                onPassTo={passTo}
+                passBusy={routeBusy}
+                busy={busy}
+                onDecide={decide}
+                error={actionError}
+              />
+            </div>
+          ) : (
+            <div className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-4 text-sm">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+              <p className="text-gray-700">
+                <span className="font-medium text-gray-900">With {currentStep.label}.</span>{" "}
+                Waiting on {deptName(currentStep.department)} to decide. You&rsquo;ll be
+                notified when it moves; comments below reach everyone on it.
+              </p>
+            </div>
+          )
         ) : null}
 
         <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
@@ -924,63 +1013,12 @@ export default function RequisitionDetailPage() {
             >
               <PolicyCheckList
                 checks={req.checks}
-                selectable={isOpen}
+                selectable={myTurn && mayRelease(currentStep)}
                 selectedCodes={selected}
                 onToggle={toggle}
               />
             </Card>
 
-            {isOpen ? (
-              <DecisionPanel
-                blockingCount={blocking.length}
-                allBlockingSelected={allBlockingSelected}
-                selectedCount={selected.length}
-                notes={notes}
-                setNotes={setNotes}
-                overrideReason={overrideReason}
-                setOverrideReason={setOverrideReason}
-                overrideAuthority={overrideAuthority}
-                setOverrideAuthority={setOverrideAuthority}
-                canApprove={canApprove}
-                busy={busy}
-                onDecide={decide}
-                error={actionError}
-              />
-            ) : null}
-
-            {canHold ? (
-              <Card
-                title="Not ready to decide?"
-                subtitle="Pauses this at the current step — not a decision, and nothing is lost."
-              >
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-gray-700">
-                    Why is this on hold?
-                    <span className="ml-0.5 text-red-500">*</span>
-                  </span>
-                  <textarea
-                    value={holdReason}
-                    onChange={(e) => setHoldReason(e.target.value)}
-                    rows={2}
-                    placeholder="What you're waiting on before you can act."
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={placeHold}
-                  disabled={busy !== "" || !holdReason.trim()}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {busy === "hold" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <PauseCircle className="h-4 w-4" />
-                  )}
-                  Put on hold
-                </button>
-              </Card>
-            ) : null}
 
             {canPay ? (
               <Card title="Record payment" subtitle="Freezes an immutable transaction record">
@@ -1121,6 +1159,52 @@ export default function RequisitionDetailPage() {
               )}
             </Card>
 
+            {/* Less common actions, for whoever holds it now. Collapsed so the
+                page shows the decision, the evidence and the trail — not six
+                forms at once. */}
+            {myTurn ? (
+              <details className="group rounded-xl border border-gray-200 bg-white">
+                <summary className="cursor-pointer list-none px-5 py-3.5 text-sm font-medium text-gray-700 hover:text-gray-900">
+                  More actions
+                  <span className="ml-1.5 text-xs font-normal text-gray-400">
+                    put on hold · move along the chain · send a sign-off link
+                  </span>
+                </summary>
+                <div className="space-y-4 border-t border-gray-100 p-4">
+            {canHold ? (
+              <Card
+                title="Not ready to decide?"
+                subtitle="Pauses this at the current step — not a decision, and nothing is lost."
+              >
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Why is this on hold?
+                    <span className="ml-0.5 text-red-500">*</span>
+                  </span>
+                  <textarea
+                    value={holdReason}
+                    onChange={(e) => setHoldReason(e.target.value)}
+                    rows={2}
+                    placeholder="What you're waiting on before you can act."
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={placeHold}
+                  disabled={busy !== "" || !holdReason.trim()}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === "hold" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <PauseCircle className="h-4 w-4" />
+                  )}
+                  Put on hold
+                </button>
+              </Card>
+            ) : null}
+
             {/* Move it along the chain WITHOUT deciding it. The three
                 decisions each move a requisition one fixed way — approve
                 goes one step on, return goes all the way back to the
@@ -1260,6 +1344,10 @@ export default function RequisitionDetailPage() {
               </Card>
             ) : null}
 
+                </div>
+              </details>
+            ) : null}
+
             <Card title="Comments" subtitle="Anyone who can see this requisition can comment on it">
               {req.comments.length === 0 ? (
                 <p className="text-sm text-gray-500">No comments yet.</p>
@@ -1345,6 +1433,13 @@ export default function RequisitionDetailPage() {
 // ─── decision panel ─────────────────────────────────────────────────────────
 
 function DecisionPanel({
+  stepLabel,
+  canRelease,
+  releasers,
+  iRaisedIt,
+  departmentName,
+  onPassTo,
+  passBusy,
   blockingCount,
   allBlockingSelected,
   selectedCount,
@@ -1359,6 +1454,13 @@ function DecisionPanel({
   onDecide,
   error,
 }: {
+  stepLabel: string;
+  canRelease: boolean;
+  releasers: { key: string; label: string }[];
+  iRaisedIt: boolean;
+  departmentName: string;
+  onPassTo: (stepKey: string) => void;
+  passBusy: boolean;
   blockingCount: number;
   allBlockingSelected: boolean;
   selectedCount: number;
@@ -1373,8 +1475,11 @@ function DecisionPanel({
   onDecide: (d: Decision) => void;
   error: string | null;
 }) {
+  // Blocked, and this step cannot release it: say who can, and offer the
+  // one useful move instead of an override form the server will refuse.
+  const stuck = blockingCount > 0 && !canRelease;
   return (
-    <Card title="Your decision">
+    <Card title={`Your turn · ${stepLabel}`}>
       <label className="block">
         <span className="mb-1.5 block text-sm font-medium text-gray-700">
           Notes for the next approver and the auditor
@@ -1387,7 +1492,47 @@ function DecisionPanel({
         />
       </label>
 
-      {blockingCount > 0 ? (
+      {iRaisedIt ? (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900">
+          You raised this, so someone else in {departmentName} has to approve it. You can still
+          return it to yourself to fix something.
+        </div>
+      ) : null}
+
+      {stuck && !iRaisedIt ? (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3.5">
+          <p className="text-sm font-semibold text-amber-900">
+            {blockingCount} {blockingCount === 1 ? "check blocks" : "checks block"} this payment, and
+            this step can&rsquo;t release {blockingCount === 1 ? "it" : "them"}.
+          </p>
+          <p className="mt-1 text-sm text-amber-900">
+            {releasers.length
+              ? `Only ${releasers.map((r) => r.label).join(" or ")} can release a blocking check on this amount. Return it for the submitter to fix, or pass it on to decide.`
+              : "Nobody in the approval chain can release it on this amount. Return it for the submitter to fix."}
+          </p>
+          {releasers.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {releasers.map((r) => (
+                <button
+                  key={r.key}
+                  type="button"
+                  onClick={() => onPassTo(r.key)}
+                  disabled={passBusy || busy !== ""}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {passBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRightLeft className="h-4 w-4" />}
+                  Pass to {r.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <p className="mt-2 text-xs text-amber-800">
+            Your notes above go with it, and are recorded on the audit trail.
+          </p>
+        </div>
+      ) : null}
+
+      {blockingCount > 0 && !stuck && !iRaisedIt ? (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3.5">
           <p className="text-sm font-semibold text-red-900">
             {blockingCount} {blockingCount === 1 ? "check blocks" : "checks block"} this payment
@@ -1438,6 +1583,7 @@ function DecisionPanel({
       ) : null}
 
       <div className="mt-4 flex flex-wrap gap-2.5">
+        {stuck || iRaisedIt ? null : (
         <button
           type="button"
           onClick={() => onDecide("approved")}
@@ -1456,6 +1602,7 @@ function DecisionPanel({
           )}
           {blockingCount > 0 ? "Approve with override" : "Approve"}
         </button>
+        )}
         <button
           type="button"
           onClick={() => onDecide("returned")}
