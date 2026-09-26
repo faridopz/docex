@@ -576,11 +576,16 @@ export async function payRequisition(
   id: string,
   bankReference: string,
   idempotencyKey?: string,
+  opts: { accountId?: string; settlement?: "individual" | "bulk" } = {},
 ): Promise<TransactionRecord> {
   return apiFetch(`/requisitions/${encodeURIComponent(id)}/pay`, {
     method: "POST",
     headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
-    body: form({ bank_reference: bankReference }),
+    body: form({
+      bank_reference: bankReference,
+      account_id: opts.accountId || undefined,
+      settlement: opts.settlement || undefined,
+    }),
   });
 }
 

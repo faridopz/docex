@@ -199,6 +199,43 @@ def deactivate(org_id: str, account_id: str, *, reason: str = "") -> BankAccount
 # ─── the rule that prevents the dangerous case ──────────────────────────────
 
 
+def account_for_payment(org_id: str, *, project_code: str = "",
+                        account_id: str = "") -> Optional[BankAccount]:
+    """Which account a payment left from, or refuse to guess.
+
+    The payment side of the same rule reconciliation follows. In order:
+      * an account was named — use it (it must exist and be active);
+      * no register at all — None, single-account behaviour, unchanged;
+      * exactly one account — it;
+      * exactly one account carries this payment's project code — it;
+      * otherwise raise, and the person recording the payment chooses.
+
+    Without this a payment carried no account at all, so every account's
+    reconciliation included every project's payments.
+    """
+    org = store.require_org(org_id)
+    if account_id:
+        acct = get(org, account_id)
+        if acct is None or not acct.active:
+            raise BankAccountError(f"Bank account '{account_id}' is not an active account.")
+        return acct
+    accounts = list_accounts(org)
+    if not accounts:
+        return None
+    if len(accounts) == 1:
+        return accounts[0]
+    code = (project_code or "").strip().lower()
+    if code:
+        hits = [a for a in accounts if (a.project_code or "").strip().lower() == code]
+        if len(hits) == 1:
+            return hits[0]
+    raise BankAccountError(
+        "Choose the bank account this was paid from"
+        + (f" — no single account is set up for project {project_code}." if code else ".")
+        + " Accounts: " + "; ".join(a.label for a in accounts[:6])
+        + ("…" if len(accounts) > 6 else ""))
+
+
 def resolve_for_reconciliation(org_id: str,
                                account_id: Optional[str] = None,
                                *, detected_number: str = "") -> Optional[BankAccount]:

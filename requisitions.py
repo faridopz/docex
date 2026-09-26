@@ -415,6 +415,13 @@ class TransactionRecord(BaseModel):
     bank_reference: str = ""
     paid_by: str = ""
     paid_at: str = ""
+    # Which of the org's bank accounts the money left from ("" when no
+    # register exists), and whether a batch left as one debit ("bulk") or one
+    # transfer per payee ("individual"). Both decide what reconciliation
+    # compares this payment against.
+    paid_from_account_id: str = ""
+    paid_from_account: str = ""          # human label, frozen with the record
+    settlement: str = "individual"
 
     # Frozen copies — the audit view never depends on the live requisition
     checks: list[PolicyCheck] = Field(default_factory=list)
@@ -2172,6 +2179,8 @@ def mark_paid(
     actor: str,
     bank_reference: str = "",
     department: str = "finance",
+    account_id: str = "",
+    settlement: str = "individual",
 ) -> TransactionRecord:
     """
     Final step: money left the account. Freezes an immutable TransactionRecord
@@ -2193,8 +2202,22 @@ def mark_paid(
             f"{req.ref} was raised by you. Payment must be released by someone else."
         )
 
+    settlement = (settlement or "individual").strip().lower()
+    if settlement not in ("individual", "bulk"):
+        raise RequisitionError("Settlement must be 'individual' or 'bulk'.")
+    try:
+        import bank_accounts as _ba
+        account = _ba.account_for_payment(org, project_code=req.project_code,
+                                          account_id=account_id)
+    except ImportError:                                   # pragma: no cover
+        account = None
+    except Exception as exc:  # BankAccountError: say it plainly, pay nothing
+        raise RequisitionError(str(exc)) from exc
+
     _audit(req, "paid", actor=actor, department=department,
-           detail=f"Payment processed. Bank reference: {bank_reference or '(none)'}")
+           detail=(f"Payment processed. Bank reference: {bank_reference or '(none)'}"
+                   + (f". From {account.label}" if account else "")
+                   + (f". Settled as one bulk transfer" if settlement == "bulk" and req.payees else "")))
 
     txn = TransactionRecord(
         id=_next_txn_ref(org),
@@ -2212,6 +2235,9 @@ def mark_paid(
         bank_reference=bank_reference.strip(),
         paid_by=actor,
         paid_at=_now_iso(),
+        paid_from_account_id=account.id if account else "",
+        paid_from_account=account.label if account else "",
+        settlement=settlement,
         checks=[c.model_copy(deep=True) for c in req.checks],
         approvals=[a.model_copy(deep=True) for a in req.approvals],
         audit_log=[e.model_copy(deep=True) for e in req.audit_log],

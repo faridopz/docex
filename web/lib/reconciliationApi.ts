@@ -70,11 +70,12 @@ export const DATE_FORMAT_CHOICES: { value: string; label: string; example: strin
 export function runReconciliation(
   period: string,
   file: File,
-  opts: { columnMap?: ColumnMap; dateFormat?: string; dateWindowDays?: number } = {},
+  opts: { columnMap?: ColumnMap; dateFormat?: string; dateWindowDays?: number; accountId?: string } = {},
 ): Promise<ReconRun> {
   const fd = new FormData();
   fd.append("period", period);
   fd.append("statement", file);
+  if (opts.accountId) fd.append("account_id", opts.accountId);
   if (opts.columnMap) fd.append("column_map", JSON.stringify(opts.columnMap));
   if (opts.dateFormat) fd.append("date_format", opts.dateFormat);
   if (opts.dateWindowDays != null) fd.append("date_window_days", String(opts.dateWindowDays));

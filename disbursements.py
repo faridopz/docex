@@ -295,6 +295,33 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
     out: list[Disbursement] = []
     for txn in rq.list_transactions(org_id):
         payees = getattr(txn, "payees", None) or []
+        acct_id = getattr(txn, "paid_from_account_id", "") or ""
+        if payees and getattr(txn, "settlement", "individual") == "bulk":
+            # One upload to the bank, one debit on the statement: one
+            # disbursement for the batch total. Splitting it per payee made a
+            # correct 40-person payment produce 40 "never cleared" items and
+            # an amount mismatch against the single bulk debit.
+            out.append(Disbursement(
+                id=f"req-{txn.id}",
+                org_id=org_id,
+                source_kind=SourceKind.REQUISITION,
+                source_id=txn.requisition_id or txn.id,
+                source_ref=txn.requisition_ref or txn.id,
+                payee_name=f"{txn.vendor_name} ({len(payees)} payees)",
+                amount=_money(sum(p.amount for p in payees)),
+                currency=txn.currency or "NGN",
+                paid_at=txn.paid_at,
+                paid_by=txn.paid_by,
+                bank_reference=txn.bank_reference,
+                batch_id=txn.id,
+                settlement=Settlement.BULK,
+                memo=txn.category or "",
+                project_code=txn.project_code or "",
+                grant_code=txn.grant_code,
+                account_id=acct_id,
+                created_at=txn.paid_at,
+            ))
+            continue
         if payees:
             # A multi-payee requisition is one approval but many transfers —
             # the same shape record_batch() already gives payroll. One
@@ -320,6 +347,7 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
                     memo=payee.purpose or txn.category or "",
                     project_code=txn.project_code or "",
                     grant_code=txn.grant_code,
+                    account_id=acct_id,
                     created_at=txn.paid_at,
                 ))
             continue
@@ -342,6 +370,7 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
             memo=txn.category or "",
             project_code=txn.project_code or "",
             grant_code=txn.grant_code,
+            account_id=acct_id,
             created_at=txn.paid_at,
         ))
     return out

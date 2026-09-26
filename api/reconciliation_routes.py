@@ -148,6 +148,10 @@ def _line_out(l: br.BankLine) -> dict:
 def _detail_out(run: br.ReconciliationRun) -> dict:
     out = br.summary(run)
     out.update({
+        # Which account was reconciled — shown on screen so nobody has to
+        # wonder whether it was the CARE statement or the UNFPA one.
+        "account_id": run.account_id,
+        "account_label": run.account_label,
         "period_start": run.period_start,
         "period_end": run.period_end,
         "column_map": run.column_map.model_dump(),
@@ -242,6 +246,7 @@ async def run_reconciliation(
     date_format: str = Form(""),
     date_window_days: int = Form(br.DEFAULT_DATE_WINDOW_DAYS),
     settlement_days: int = Form(br.DEFAULT_SETTLEMENT_DAYS),
+    account_id: str = Form("", description="Which bank account this statement is for"),
     ctx: Ctx = Depends(request_context),
 ):
     """Reconcile a month and store the run as evidence."""
@@ -256,9 +261,15 @@ async def run_reconciliation(
                                    date_format),
             date_window_days=date_window_days,
             settlement_days=settlement_days,
-            actor=ctx.user_id)
+            actor=ctx.user_id,
+            account_id=account_id or None)
     except br.ReconciliationError as exc:
         raise _fail(exc)
+    except ValueError as exc:
+        # bank_accounts.BankAccountError: "which account is this statement
+        # for?" is a question for the person, not a server fault. It escaped
+        # as a 500, so staff saw "something went wrong" instead of the ask.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _detail_out(run)
 
 

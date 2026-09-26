@@ -90,6 +90,9 @@ export interface ReconRunSummary {
 }
 
 export interface ReconRun extends ReconRunSummary {
+  /** Which bank account this statement was reconciled against. */
+  account_id?: string;
+  account_label?: string;
   period_start: string;
   period_end: string;
   column_map: ColumnMap;

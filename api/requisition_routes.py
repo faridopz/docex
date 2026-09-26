@@ -2019,6 +2019,8 @@ async def resubmit_endpoint(
 async def pay_endpoint(
     req_id: str,
     bank_reference: Annotated[str, Form(description="Bank confirmation reference")] = "",
+    account_id: Annotated[str, Form(description="Bank account paid from; found from the project code when omitted")] = "",
+    settlement: Annotated[str, Form(description="'individual' (one transfer per payee) or 'bulk' (one debit)")] = "individual",
     idempotency_key: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
     ctx: Ctx = Depends(request_context),
 ):
@@ -2041,6 +2043,8 @@ async def pay_endpoint(
                     actor=ctx.user_id,
                     bank_reference=bank_reference,
                     department=ctx.department or "finance",
+                    account_id=account_id,
+                    settlement=settlement,
                 )
             except rq.RequisitionError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

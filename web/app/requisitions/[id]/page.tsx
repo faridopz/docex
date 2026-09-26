@@ -27,6 +27,7 @@ import {
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
 import { listDepartments } from "@/lib/erpApi";
+import { listBankAccounts, suggestAccount, type BankAccount } from "@/lib/bankAccountsApi";
 import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
 import {
   addRequisitionComment,
@@ -229,6 +230,25 @@ export default function RequisitionDetailPage() {
       });
   }, []);
   const deptName = (key: string) => deptNames[key] || humanise(key);
+
+  // WHICH ACCOUNT PAID IT. Reconciliation compares a statement against the
+  // payments from THAT account, so the account is recorded at payment.
+  // Pre-chosen from the project code; asked only when it is genuinely unclear.
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [paidFrom, setPaidFrom] = useState("");
+  const [settlement, setSettlement] = useState<"individual" | "bulk">("individual");
+  useEffect(() => {
+    if (req?.status !== "approved") return;
+    listBankAccounts()
+      .then((accts) => {
+        const active = accts.filter((a) => a.active);
+        setBankAccounts(active);
+        setPaidFrom((cur) => cur || suggestAccount(active, req.project_code || ""));
+      })
+      .catch(() => {
+        /* no register, or reconciliation not enabled: nothing to choose */
+      });
+  }, [req?.status, req?.project_code]);
   const currentStep = workflow?.steps.find((s) => s.key === req?.current_step) ?? null;
   const myTurn = Boolean(
     isOpen && currentStep && user && user.department === currentStep.department,
@@ -278,7 +298,10 @@ export default function RequisitionDetailPage() {
     setBusy("pay");
     setActionError(null);
     try {
-      await payRequisition(req.id, bankReference.trim(), payKey.current);
+      await payRequisition(req.id, bankReference.trim(), payKey.current, {
+        accountId: paidFrom || undefined,
+        settlement: req.payees.length > 1 ? settlement : undefined,
+      });
       payKey.current = newIdempotencyKey();
       await load();
     } catch (e) {
@@ -1026,6 +1049,53 @@ export default function RequisitionDetailPage() {
                   Do this once the money has actually left the account. Every check, approval and
                   audit line is copied and locked at this moment; nothing can be edited afterwards.
                 </p>
+                {bankAccounts.length > 1 ? (
+                  <label className="mb-3 block">
+                    <span className="mb-1.5 block text-sm font-medium text-gray-700">Paid from</span>
+                    <select
+                      value={paidFrom}
+                      onChange={(e) => setPaidFrom(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm"
+                    >
+                      <option value="">Choose the account the money left from…</option>
+                      {bankAccounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-xs text-gray-500">
+                      {paidFrom && suggestAccount(bankAccounts, req.project_code || "") === paidFrom
+                        ? "Chosen from the project code. Change it if the money left from a different account."
+                        : "Month-end reconciliation compares each statement with the payments from that account."}
+                    </span>
+                  </label>
+                ) : null}
+                {req.payees.length > 1 ? (
+                  <fieldset className="mb-3">
+                    <legend className="mb-1.5 text-sm font-medium text-gray-700">
+                      How did the {req.payees.length} payments leave the bank?
+                    </legend>
+                    <div className="flex flex-wrap gap-3 text-sm text-gray-700">
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="radio"
+                          checked={settlement === "individual"}
+                          onChange={() => setSettlement("individual")}
+                        />
+                        One transfer per person
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="radio"
+                          checked={settlement === "bulk"}
+                          onChange={() => setSettlement("bulk")}
+                        />
+                        One bulk upload (a single debit on the statement)
+                      </label>
+                    </div>
+                  </fieldset>
+                ) : null}
                 <div className="flex flex-wrap items-end gap-3">
                   <label className="min-w-[220px] flex-1">
                     <span className="mb-1.5 block text-sm font-medium text-gray-700">
@@ -1041,7 +1111,8 @@ export default function RequisitionDetailPage() {
                   <button
                     type="button"
                     onClick={pay}
-                    disabled={busy !== ""}
+                    disabled={busy !== "" || (bankAccounts.length > 1 && !paidFrom)}
+                    title={bankAccounts.length > 1 && !paidFrom ? "Choose the account it was paid from" : undefined}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
                   >
                     {busy === "pay" ? (

@@ -379,6 +379,15 @@ export function AppShell({
               Withholding tax
             </Link>
           )}
+          {isAdmin && clientConfig.features["bank_reconciliation"] === true && (
+            <Link
+              href="/settings/accounts"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+            >
+              <Landmark className="h-4 w-4 shrink-0 text-gray-400" />
+              Bank accounts
+            </Link>
+          )}
           {isAdmin && clientConfig.features["accounting_export"] === true && (
             <Link
               href="/settings/accounting"

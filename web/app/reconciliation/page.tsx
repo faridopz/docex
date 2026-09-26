@@ -1,5 +1,6 @@
 "use client";
 
+import { listBankAccounts, type BankAccount } from "@/lib/bankAccountsApi";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
@@ -117,6 +118,17 @@ export default function ReconciliationPage() {
     }
   }, []);
 
+  // Which account this statement is for. Only asked when the organisation
+  // has more than one — a statement is compared with the payments from ITS
+  // account, never with every project's payments.
+  const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [accountId, setAccountId] = useState("");
+  useEffect(() => {
+    listBankAccounts()
+      .then((a) => setAccounts(a.filter((x) => x.active)))
+      .catch(() => setAccounts([]));
+  }, []);
+
   async function onPickFile(f: File | null) {
     setFile(f);
     setPreview(null);
@@ -139,6 +151,7 @@ export default function ReconciliationPage() {
     try {
       setRun(await runReconciliation(period, file, {
         dateFormat: dateFormat || undefined,
+        accountId: accountId || undefined,
       }));
       await refreshRuns();
     } catch (e) {
@@ -207,6 +220,9 @@ export default function ReconciliationPage() {
 
         {!run && (
           <UploadCard
+            accounts={accounts}
+            accountId={accountId}
+            setAccountId={setAccountId}
             busy={busy}
             dateFormat={dateFormat}
             file={file}
@@ -253,8 +269,14 @@ function UploadCard(props: {
   periods: string[];
   preview: StatementPreview | null;
   setPeriod: (p: string) => void;
+  accounts: BankAccount[];
+  accountId: string;
+  setAccountId: (id: string) => void;
 }) {
   const {
+    accounts,
+    accountId,
+    setAccountId,
     busy,
     dateFormat,
     file,
@@ -286,6 +308,24 @@ function UploadCard(props: {
             ))}
           </select>
         </label>
+
+        {accounts.length > 1 ? (
+          <label className="text-sm">
+            <span className="mb-1 block font-medium text-gray-700">Account</span>
+            <select
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+              onChange={(e) => setAccountId(e.target.value)}
+              value={accountId}
+            >
+              <option value="">Read it from the statement…</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         <label className="text-sm">
           <span className="mb-1 block font-medium text-gray-700">Bank statement</span>
@@ -458,6 +498,9 @@ function RunView(props: {
                 ? `${periodLabel(run.period)} reconciles`
                 : `${unexplained.length} item${unexplained.length === 1 ? "" : "s"} nobody has explained`}
             </h2>
+            {run.account_label ? (
+              <p className="mt-0.5 text-xs font-medium text-gray-500">{run.account_label}</p>
+            ) : null}
             <p className="mt-1 text-sm text-gray-700">
               {run.matched} of {run.payments_in_system} payments matched the bank.
               DOCex says {money(run.total_paid_in_system)} went out; the bank says{" "}
