@@ -247,6 +247,7 @@ def _attachment_out(a: rq.Attachment) -> dict:
     return {
         "id": a.id, "filename": a.filename, "content_type": a.content_type,
         "size": a.size, "uploaded_by": a.uploaded_by, "uploaded_at": a.uploaded_at,
+        "document_type": a.document_type,
         # storage_key deliberately excluded — it's an internal detail of
         # attachments.py, not something the frontend needs or should guess
         # at. Downloading goes through GET .../attachments/{id}, never a
@@ -1290,6 +1291,9 @@ def _step_department(ctx: Ctx, req: rq.Requisition) -> str:
 async def upload_attachment_endpoint(
     req_id: str,
     file: Annotated[UploadFile, File(description="The file to attach")],
+    document_type: Annotated[str, Form(
+        description="Which required document this file is (e.g. 'invoice'); "
+                    "empty for a supporting file")] = "",
     ctx: Ctx = Depends(request_context),
 ):
     """Attach a real file — the invoice, a signed memo, a photo of a
@@ -1338,6 +1342,7 @@ async def upload_attachment_endpoint(
             filename=file.filename or "file",
             content_type=file.content_type or "application/octet-stream",
             size=len(content), storage_key=storage_key, attachment_id=attachment_id,
+            document_type=document_type,
         )
     except rq.RequisitionError as exc:
         # The file is already in the bucket at this point but the metadata

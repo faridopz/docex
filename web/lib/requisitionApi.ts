@@ -75,6 +75,8 @@ export interface NewRequisition {
    * recomputes it as the sum of these rows, so the two can never disagree. */
   payees?: Payee[];
   currency?: string;
+  /** false = save as a draft (files are attached, then it is submitted). */
+  submit?: boolean;
 }
 
 export async function createRequisition(
@@ -101,8 +103,17 @@ export async function createRequisition(
       documents: (body.documents ?? []).join(","),
       payees: JSON.stringify(body.payees ?? []),
       currency: body.currency ?? "NGN",
+      // Omitted means "submit now" on the server. The form sends false when
+      // it has files to attach first, so the checks run with them in place.
+      submit: body.submit === undefined ? undefined : String(body.submit),
     }),
   });
+}
+
+/** Send a draft into the approval chain. The server re-runs every check
+ * first, so the verdict reflects the files attached since it was saved. */
+export async function submitRequisition(id: string): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/submit`, { method: "POST" });
 }
 
 // ─── list ───────────────────────────────────────────────────────────────────
@@ -216,9 +227,15 @@ export async function addRequisitionComment(id: string, text: string): Promise<R
 
 /** Upload a real file — the invoice itself, not just a ticked document
  * label. Requires the org's requisition_attachments flag. */
-export async function uploadRequisitionAttachment(id: string, file: File): Promise<Requisition> {
+/** Attach a file. `documentType` says which required document it IS
+ * ("invoice", "grn") — that, not a ticked label, is what satisfies the
+ * documents check. Leave it empty for a supporting file. */
+export async function uploadRequisitionAttachment(
+  id: string, file: File, documentType = "",
+): Promise<Requisition> {
   const fd = new FormData();
   fd.append("file", file);
+  if (documentType) fd.append("document_type", documentType);
   return apiFetch(`/requisitions/${encodeURIComponent(id)}/attachments`, {
     method: "POST",
     body: fd,

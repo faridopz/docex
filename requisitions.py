@@ -162,6 +162,10 @@ class Attachment(BaseModel):
     storage_key: str = ""
     uploaded_by: str = ""
     uploaded_at: str = ""
+    # Which required document this file IS ("invoice", "grn"), or "" for a
+    # supporting file. This is what lets an attached file — rather than a
+    # ticked label — satisfy the documents check.
+    document_type: str = ""
 
 
 class ComplianceFinding(BaseModel):
@@ -866,31 +870,7 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     # 7. Required documents present — for THIS kind of payment
     required = required_documents_for(wf, req.category)
     if required:
-        have = {d.strip().lower() for d in req.documents}
-        missing = [d for d in required if d.strip().lower() not in have]
-        specific = (req.category or "").strip().lower() in {
-            k.strip().lower() for k in wf.documents_by_category}
-        # A FAIL, not a warning. It was a warning, which meant a requisition
-        # with no memo, no invoice, nothing attached could be approved with no
-        # override and no written reason — the nineteen document packs in
-        # NEEM's profile were advisory. Their Finance/Audit step exists to
-        # "check the pack and return it until satisfied"; a warning is clicked
-        # past, a FAIL with an override reason is recorded. That reason
-        # ("invoice to follow, vendor confirmed by phone") is exactly the
-        # audit line the override mechanism was built to capture.
-        checks.append(PolicyCheck(
-            code="DOCS_COMPLETE", name="Supporting documents attached",
-            result=CheckResult.FAIL if missing else CheckResult.PASS,
-            policy_value=", ".join(required),
-            actual_value=", ".join(req.documents) or "(none)",
-            message=(
-                (f"Missing document(s) for a {req.category} payment: "
-                 f"{', '.join(missing)}." if specific else
-                 f"Missing document(s): {', '.join(missing)}.")
-                if missing else
-                (f"All documents required for a {req.category} payment are "
-                 "attached." if specific else "All required documents attached.")),
-        ))
+        checks.append(_documents_check(org, wf, req, required))
 
     # 8. Duplicate detection — same vendor + same amount inside the window
     dup = _find_duplicate(org, req, wf.duplicate_window_days)
@@ -928,6 +908,58 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
 
     return checks
 
+
+
+def _doc_label(key: str) -> str:
+    """'payment_sheet' → 'payment sheet'. People read words, not keys."""
+    return (key or "").replace("_", " ").strip()
+
+
+def provided_documents(org_id: str, req: "Requisition") -> list[str]:
+    """What this requisition can actually show, as document keys.
+
+    A file attached AS a document always counts. A ticked label counts only
+    where the organisation has not switched on `documents_require_files`:
+    for an org that keeps its papers in DOCex, a tick with no file behind it
+    is a claim, not evidence — and "evidence nobody can edit" is the product.
+    """
+    have = {(a.document_type or "").strip().lower()
+            for a in req.attachments if (a.document_type or "").strip()}
+    try:
+        import org_config
+        files_only = org_config.feature_enabled(org_id, "documents_require_files")
+    except ImportError:  # pragma: no cover
+        files_only = False
+    if not files_only:
+        have |= {d.strip().lower() for d in req.documents if d.strip()}
+    return sorted(have)
+
+
+def _documents_check(org_id: str, wf: "RequisitionWorkflow", req: "Requisition",
+                     required: list[str]) -> "PolicyCheck":
+    have = set(provided_documents(org_id, req))
+    missing = [d for d in required if d.strip().lower() not in have]
+    specific = (req.category or "").strip().lower() in {
+        k.strip().lower() for k in wf.documents_by_category}
+    kind = _doc_label(req.category)
+    # A FAIL, not a warning. It was a warning, which meant a requisition with
+    # no memo, no invoice, nothing attached could be approved with no override
+    # and no written reason — the document packs were advisory. A Finance step
+    # that exists to "check the pack and return it until satisfied" needs a
+    # FAIL with an override reason, which is the audit line that matters.
+    return PolicyCheck(
+        code="DOCS_COMPLETE", name="Supporting documents attached",
+        result=CheckResult.FAIL if missing else CheckResult.PASS,
+        policy_value=", ".join(_doc_label(d) for d in required),
+        actual_value=", ".join(_doc_label(d) for d in sorted(have)) or "(none)",
+        message=(
+            (f"Missing for a {kind} payment: {', '.join(_doc_label(d) for d in missing)}."
+             if specific else
+             f"Missing: {', '.join(_doc_label(d) for d in missing)}.")
+            if missing else
+            (f"Every document a {kind} payment needs is attached." if specific
+             else "All required documents attached.")),
+    )
 
 def _check_vendor_register(org_id: str, req: Requisition) -> Optional[PolicyCheck]:
     """Is the payee a known, checked vendor?
@@ -1854,9 +1886,15 @@ def add_comment(org_id: str, req_id: str, *, actor: str, department: str = "", t
 MAX_ATTACHMENTS_PER_REQUISITION = 50
 
 
+# Undecided states: a late file may still change what an approver sees.
+# Approved, paid and declined payments keep the checks they were decided on.
+_DOCS_RECHECK_STATUSES = {"draft", "submitted", "in_review", "on_hold", "returned"}
+
+
 def add_attachment(
     org_id: str, req_id: str, *, actor: str, filename: str, content_type: str,
     size: int, storage_key: str, attachment_id: Optional[str] = None,
+    document_type: str = "",
 ) -> Requisition:
     """Record that a file was stored against this requisition.
 
@@ -1894,14 +1932,31 @@ def add_attachment(
             f"organisation's limit of {MAX_ATTACHMENTS_PER_REQUISITION}."
         )
 
+    doc_type = (document_type or "").strip().lower()
     att = Attachment(
         id=attachment_id or uuid.uuid4().hex, filename=filename.strip(),
         content_type=content_type, size=size, storage_key=storage_key,
-        uploaded_by=actor, uploaded_at=_now_iso(),
+        uploaded_by=actor, uploaded_at=_now_iso(), document_type=doc_type,
     )
     req.attachments.append(att)
     _audit(req, "attached", actor=actor,
-           detail=f"{att.filename} ({att.size:,} bytes)")
+           detail=f"{att.filename} ({att.size:,} bytes)"
+                  + (f" as the {_doc_label(doc_type)}" if doc_type else ""))
+
+    # The invoice that arrives after a return should clear the block it
+    # caused, without making anyone resubmit. Only the documents check moves,
+    # only while the payment is undecided, and never over an override: a
+    # released block keeps the name and reason of whoever released it.
+    if doc_type and req.status in _DOCS_RECHECK_STATUSES:
+        wf = get_workflow(org)
+        required = required_documents_for(wf, req.category)
+        current = next((c for c in req.checks if c.code == "DOCS_COMPLETE"), None)
+        if required and current is not None and not current.overridden:
+            fresh = _documents_check(org, wf, req, required)
+            if fresh.result != current.result or fresh.message != current.message:
+                req.checks = [fresh if c.code == "DOCS_COMPLETE" else c for c in req.checks]
+                _audit(req, "documents_rechecked", actor="system",
+                       detail=f"{fresh.result.value}: {fresh.message}")
     req.updated_at = _now_iso()
     return _save(org, req)
 

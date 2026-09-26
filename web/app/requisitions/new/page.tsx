@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowRight, Loader2, Plus, Send, ShieldCheck, Sparkles, Trash2, Upload, Users,
+  ArrowRight, CheckCircle2, Circle, Loader2, Plus, Send, ShieldCheck, Sparkles, Trash2, Upload, Users,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { DropZone } from "@/components/DropZone";
 import { PolicyCheckList } from "@/components/erp/PolicyChecks";
 import {
   createRequisition,
+  submitRequisition,
   getWorkflow,
   listComplianceRulebooks,
   newIdempotencyKey,
@@ -152,6 +153,9 @@ export default function NewRequisitionPage() {
   const [attachmentsEnabled, setAttachmentsEnabled] = useState(false);
   const [complianceEnabled, setComplianceEnabled] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  // One file per required document, keyed by the document ("invoice").
+  // Attaching the file IS providing the document — there is no separate tick.
+  const [docFiles, setDocFiles] = useState<Record<string, File>>({});
   const [rulebooks, setRulebooks] = useState<RulebookSummary[]>([]);
   const [rulebookId, setRulebookId] = useState("");
   const [runCheck, setRunCheck] = useState(true);
@@ -272,6 +276,18 @@ export default function NewRequisitionPage() {
 
   const canSubmit = vendorName.trim() !== "" && effectiveAmountValid && !submitting;
 
+  // The documents THIS kind of payment needs: the category's own pack, else
+  // the organisation-wide list. Mirrors requisitions.required_documents_for —
+  // the form used to show only the org-wide list while the server enforced
+  // the pack, so a correctly filled request was blocked on submit.
+  const requiredDocs: string[] = (() => {
+    if (!workflow) return [];
+    const want = category.trim().toLowerCase();
+    const packs = workflow.documents_by_category ?? {};
+    const hit = Object.keys(packs).find((k) => k.trim().toLowerCase() === want);
+    return hit ? packs[hit] : workflow.required_documents;
+  })();
+
   function toggleDocument(doc: string) {
     setDocuments((prev) => (prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc]));
   }
@@ -362,8 +378,16 @@ export default function NewRequisitionPage() {
     setWarning(null);
     setStage("raising");
     try {
+      const slotEntries = attachmentsEnabled
+        ? requiredDocs.filter((d) => docFiles[d]).map((d) => [d, docFiles[d]] as const)
+        : [];
+      const hasFiles = attachmentsEnabled && (slotEntries.length > 0 || files.length > 0);
       let req = await createRequisition(
         {
+          // With files, save as a draft first so the checks run once they
+          // are attached — not before, which would block on documents the
+          // submitter has already provided.
+          submit: hasFiles ? false : undefined,
           vendor_name: vendorName.trim(),
           amount: effectiveAmount,
           category: category.trim(),
@@ -386,7 +410,7 @@ export default function NewRequisitionPage() {
               line_total: 0, // server-computed — this value is ignored
             })),
           description: description.trim(),
-          documents,
+          documents: attachmentsEnabled ? slotEntries.map(([d]) => d) : documents,
           payees:
             mode === "batch"
               ? validPayeeRows.map((r) => ({ ...r, amount: parseMoney(r.amount) }))
@@ -403,21 +427,40 @@ export default function NewRequisitionPage() {
       // it must never read as "your request wasn't raised". It downgrades to
       // a warning on the result screen, with the requisition still shown and
       // both actions still available on its detail page.
-      if (attachmentsEnabled && files.length > 0) {
+      if (hasFiles) {
         setStage("uploading");
-        const failed: string[] = [];
+        const failedDocs: string[] = [];
+        const failedExtras: string[] = [];
+        for (const [doc, file] of slotEntries) {
+          try {
+            req = await uploadRequisitionAttachment(req.id, file, doc);
+          } catch {
+            failedDocs.push(humanise(doc));
+          }
+        }
         for (const file of files) {
           try {
             req = await uploadRequisitionAttachment(req.id, file);
           } catch {
-            failed.push(file.name);
+            failedExtras.push(file.name);
           }
         }
-        if (failed.length) {
+        if (failedDocs.length) {
+          // A required document did not arrive. Submitting now would put a
+          // block in front of an approver for a file the submitter DID
+          // provide — so it stays a draft and says exactly what to redo.
           setWarning(
-            `${req.ref} was raised, but ${failed.length === 1 ? "this file" : "these files"} ` +
-              `did not attach: ${failed.join(", ")}. You can attach ${failed.length === 1 ? "it" : "them"} again from the requisition.`,
+            `${req.ref} is saved as a draft: ${failedDocs.join(", ")} did not upload. ` +
+              "Open it, attach again, and submit.",
           );
+        } else {
+          req = await submitRequisition(req.id);
+          if (failedExtras.length) {
+            setWarning(
+              `${req.ref} was submitted, but ${failedExtras.join(", ")} did not attach. ` +
+                "You can add it from the requisition.",
+            );
+          }
         }
       }
 
@@ -625,7 +668,7 @@ export default function NewRequisitionPage() {
           </p>
         </div>
 
-        {workflow ? <PolicySummary workflow={workflow} /> : null}
+        {workflow ? <PolicySummary workflow={workflow} requiredCount={requiredDocs.length} /> : null}
 
         {multiPayeeEnabled ? (
           <div className="mt-4 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
@@ -846,13 +889,77 @@ export default function NewRequisitionPage() {
             />
           </Field>
 
-          {workflow?.required_documents.length ? (
+          {attachmentsEnabled && requiredDocs.length ? (
             <Field
-              label="Supporting documents attached"
+              label="Documents this payment needs"
+              hint={
+                category
+                  ? `What your policy asks for on a ${humanise(category).toLowerCase()} payment. Attach each one — a missing document comes back as a blocking check.`
+                  : "Choose a category above to see exactly which documents it needs."
+              }
+            >
+              <ul className="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white">
+                {requiredDocs.map((doc) => {
+                  const file = docFiles[doc];
+                  return (
+                    <li key={doc} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
+                      <span className="flex min-w-0 items-center gap-2 text-sm">
+                        {file ? (
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                        ) : (
+                          <Circle className="h-4 w-4 shrink-0 text-gray-300" />
+                        )}
+                        <span className="font-medium text-gray-800">{humanise(doc)}</span>
+                        {file ? <span className="truncate text-xs text-gray-500">{file.name}</span> : null}
+                      </span>
+                      <span className="flex items-center gap-2">
+                        {file ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDocFiles((prev) => {
+                                const next = { ...prev };
+                                delete next[doc];
+                                return next;
+                              })
+                            }
+                            className="text-xs text-gray-500 underline hover:text-gray-800"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                        <label className="cursor-pointer rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
+                          {file ? "Replace" : "Attach"}
+                          <input
+                            type="file"
+                            className="sr-only"
+                            accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx,.xls,.xlsx,.csv"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) setDocFiles((prev) => ({ ...prev, [doc]: f }));
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-1.5 text-xs text-gray-500">
+                {requiredDocs.filter((d) => docFiles[d]).length} of {requiredDocs.length} attached. On a
+                phone, Attach lets you take a photo.
+              </p>
+            </Field>
+          ) : null}
+
+          {!attachmentsEnabled && requiredDocs.length ? (
+            <Field
+              label="Supporting documents you have"
               hint="Your policy requires these. Anything unticked comes back as a blocking check."
             >
               <div className="flex flex-wrap gap-2">
-                {workflow.required_documents.map((doc) => {
+                {requiredDocs.map((doc) => {
                   const on = documents.includes(doc);
                   return (
                     <button
@@ -877,13 +984,12 @@ export default function NewRequisitionPage() {
           {attachmentsEnabled ? (
             <div className="space-y-2">
               <span className="block text-sm font-medium text-gray-700">
-                Attach the actual documents
+                Anything else
                 <span className="ml-1.5 font-normal text-gray-400">(optional)</span>
               </span>
               <p className="text-xs text-gray-500">
-                The real files — memo, invoice, quotes, receipts. The ticks above are a
-                checklist; these are the documents themselves, and the only thing a policy
-                check can actually read.
+                Quotes, photos, correspondence — supporting files that are not one of the documents
+                above.
               </p>
               <DropZone files={files} onFilesChange={setFiles} />
             </div>
@@ -1047,13 +1153,13 @@ function Field({
 }
 
 /** The org's own spend policy, stated up front rather than discovered later. */
-function PolicySummary({ workflow }: { workflow: RequisitionWorkflow }) {
+function PolicySummary({ workflow, requiredCount }: { workflow: RequisitionWorkflow; requiredCount: number }) {
   const bits: string[] = [];
   if (workflow.max_amount) {
     bits.push(`Ceiling ${money(workflow.max_amount, workflow.currency)}`);
   }
-  if (workflow.required_documents.length) {
-    bits.push(`${workflow.required_documents.length} required documents`);
+  if (requiredCount) {
+    bits.push(`${requiredCount} required documents`);
   }
   if (workflow.duplicate_window_days) {
     bits.push(`Duplicate window ${workflow.duplicate_window_days} days`);

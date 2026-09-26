@@ -60,6 +60,9 @@ export interface Attachment {
   size: number;
   uploaded_by: string;
   uploaded_at: string;
+  /** Which required document this file is ("invoice"), or "" for a
+   * supporting file. */
+  document_type: string;
 }
 
 /** One rule's verdict from a compliance-rulebook check, mirroring the

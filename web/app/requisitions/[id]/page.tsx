@@ -94,6 +94,9 @@ export default function RequisitionDetailPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Which required document the next upload IS. Attaching the invoice as
+  // "the invoice" is what clears a missing-document block — no resubmit.
+  const [uploadAs, setUploadAs] = useState("");
 
   const [complianceEnabled, setComplianceEnabled] = useState(false);
   const [complianceBusy, setComplianceBusy] = useState(false);
@@ -312,7 +315,8 @@ export default function RequisitionDetailPage() {
     setUploadBusy(true);
     setUploadError(null);
     try {
-      setReq(await uploadRequisitionAttachment(req.id, file));
+      setReq(await uploadRequisitionAttachment(req.id, file, uploadAs));
+      setUploadAs("");
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Could not upload that file.");
     } finally {
@@ -728,6 +732,11 @@ export default function RequisitionDetailPage() {
                           <Paperclip className="h-4 w-4 shrink-0 text-gray-400" />
                           <div className="min-w-0">
                             <p className="truncate text-sm font-medium text-gray-900">
+                              {a.document_type ? (
+                                <span className="mr-1.5 rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
+                                  {humanise(a.document_type)}
+                                </span>
+                              ) : null}
                               {a.filename}
                             </p>
                             <p className="text-xs text-gray-500">
@@ -752,7 +761,41 @@ export default function RequisitionDetailPage() {
                     ))}
                   </ul>
                 )}
-                <div className="mt-3 border-t border-gray-100 pt-3">
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3">
+                  {(() => {
+                    // Required for THIS category, minus what is already here.
+                    const want = (req.category || "").trim().toLowerCase();
+                    const packs = workflow?.documents_by_category ?? {};
+                    const key = Object.keys(packs).find((k) => k.trim().toLowerCase() === want);
+                    const required = key ? packs[key] : workflow?.required_documents ?? [];
+                    const have = new Set(req.attachments.map((a) => a.document_type).filter(Boolean));
+                    const missing = required.filter((d) => !have.has(d));
+                    if (!required.length) return null;
+                    return (
+                      <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                        This file is
+                        <select
+                          value={uploadAs}
+                          onChange={(e) => setUploadAs(e.target.value)}
+                          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-800"
+                        >
+                          <option value="">a supporting file</option>
+                          {missing.map((d) => (
+                            <option key={d} value={d}>
+                              the {humanise(d).toLowerCase()} (still needed)
+                            </option>
+                          ))}
+                          {required
+                            .filter((d) => have.has(d))
+                            .map((d) => (
+                              <option key={d} value={d}>
+                                the {humanise(d).toLowerCase()} (replace)
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                    );
+                  })()}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -775,7 +818,7 @@ export default function RequisitionDetailPage() {
                     )}
                     Attach a file
                   </button>
-                  {uploadError ? <p className="mt-2 text-xs text-red-700">{uploadError}</p> : null}
+                  {uploadError ? <p className="w-full text-xs text-red-700">{uploadError}</p> : null}
                 </div>
               </Card>
             ) : null}

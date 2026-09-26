@@ -108,3 +108,7 @@ demo.db
 
 # Generated locally by spend_report.py --html
 spend_report.html
+
+# Local-dev attachment storage (LocalDiskAttachmentBackend). Real client
+# files must never be committed.
+attachment_files/

@@ -391,7 +391,7 @@ _dsa = rq.Requisition(id="pack2", org_id=ORG, vendor_name="Amina Bello",
 _c = next(c for c in rq.run_policy_checks(ORG, _dsa) if c.code == "DOCS_COMPLETE")
 check("a correctly documented DSA passes without a GRN", _c.result, rq.CheckResult.PASS)
 check("and says so in the payment's own terms",
-      "dsa payment are attached" in _c.message, True)
+      "dsa payment" in _c.message and "attached" in _c.message, True)
 
 
 # ─── nobody approves or pays their own request ─────────────────────────────
