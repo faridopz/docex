@@ -34,6 +34,7 @@ import {
   type ModuleKey,
 } from "@/lib/orgConfig";
 import { getOnboardingStatus } from "@/lib/onboardingApi";
+import { getDocumentPermissions } from "@/lib/requisitionApi";
 import { NotificationBell } from "@/components/erp/NotificationBell";
 
 /**
@@ -80,6 +81,14 @@ type NavItem = {
   // a menu entry for something their organisation never bought — EVA gets
   // payroll, NEEM does not, and neither is aware of the other's screens.
   flag?: string;
+  // Who the item is for. "everyone" is anyone signed in; "money" is the
+  // org's finance department(s) and admins (the same people who may see
+  // bank details); "approvers" adds anyone with an approving role, so an
+  // executive who signs payments can see them; "admin" is administrators
+  // only. Defaults to everyone.
+  // A programme officer raising a request was shown sixteen items; they use
+  // two. Access is still enforced by the server — this is only the menu.
+  audience?: "everyone" | "approvers" | "money" | "admin";
 };
 
 // The three product modules a client can switch on independently. The engine
@@ -102,13 +111,13 @@ const NAV_GROUPS: NavGroup[] = [
       // not see a single requisition: the one screen titled "every payment"
       // was blind to the payment engine. Daily working view, so it belongs in
       // the working nav, not below a divider with Security and Org settings.
-      { section: "pipeline", label: "Pipeline", href: "/requisitions/board", icon: LayoutGrid, match: ["/requisitions/board"] },
-      { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] },
-      { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] },
+      { section: "pipeline", label: "Pipeline", href: "/requisitions/board", icon: LayoutGrid, match: ["/requisitions/board"] , audience: "approvers" },
+      { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] , audience: "approvers" },
+      { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] , audience: "approvers" },
       // Month end. Sits next to Audit deliberately: reconciliation is the
       // control that makes the audit trail a description of the bank account
       // rather than a story about it.
-      { section: "reconciliation", label: "Reconciliation", href: "/reconciliation", icon: Scale, match: ["/reconciliation"], flag: "bank_reconciliation" },
+      { section: "reconciliation", label: "Reconciliation", href: "/reconciliation", icon: Scale, match: ["/reconciliation"], flag: "bank_reconciliation" , audience: "money" },
       // Effort reporting. Sits in this group rather than an HR one because
       // its output is financial: approved hours decide what each grant is
       // charged for a salary.
@@ -123,7 +132,7 @@ const NAV_GROUPS: NavGroup[] = [
       // the rate-card dropdown is empty, because rate cards are configured per
       // organisation and NEEM has none. A dead end in the nav during a client
       // demo reads as a broken system, not an unused feature.
-      { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"], flag: "attendance_payments" },
+      { section: "vouchers", label: "New voucher", href: "/vouchers/new", icon: Wallet, match: ["/vouchers"], flag: "attendance_payments" , audience: "money" },
       // The pre-requisitions intake screens. "Submit requisition" here and
       // "Requisitions" above were two different systems wearing the same word,
       // which is confusing in a nav and worse in a demo — /requisitions is the
@@ -131,13 +140,13 @@ const NAV_GROUPS: NavGroup[] = [
       //
       // Flagged off by default so new clients see one obvious path. Existing
       // installs that still rely on these screens turn `legacy_intake` on.
-      { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"], flag: "legacy_intake" },
-      { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"], flag: "legacy_intake" },
-      { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] },
-      { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] },
+      { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"], flag: "legacy_intake" , audience: "everyone" },
+      { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"], flag: "legacy_intake" , audience: "everyone" },
+      { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] , audience: "admin" },
+      { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] , audience: "money" , flag: "bank_verification"},
       // Flagged: not every client runs participant-payment events. TA Connect
       // does; a client doing only internal finance ops has no use for it.
-      { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"], flag: "attendance_payments" },
+      { section: "attendance", label: "Attendance & Payment", href: "/agents/attendance-payment", icon: CalendarCheck, match: ["/agents/attendance-payment", "/rate-cards"], flag: "attendance_payments" , audience: "money" },
     ],
   },
   {
@@ -218,6 +227,32 @@ export function AppShell({
     };
   }, [user]);
 
+  // Whether this person handles money — the server decides from the org's
+  // own finance departments. Until it answers, show the everyone-menu only.
+  const [handlesMoney, setHandlesMoney] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    getDocumentPermissions()
+      .then((p) => {
+        if (!cancelled) setHandlesMoney(Boolean(p.handles_money));
+      })
+      .catch(() => {
+        /* the everyone-menu is the safe fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+  const isAdmin = user?.role === "admin";
+  const canSee = (item: NavItem) => {
+    const who = item.audience ?? "everyone";
+    if (who === "everyone") return true;
+    if (who === "admin") return isAdmin;
+    if (who === "approvers") return isAdmin || handlesMoney || user?.role === "approver";
+    return isAdmin || handlesMoney;
+  };
+
   const enabledModules = clientConfig.modules;
   const groups = NAV_GROUPS
     .filter((g) => enabledModules.includes(g.module))
@@ -225,7 +260,9 @@ export function AppShell({
     // ends up empty — an empty section header is worse than no section.
     .map((g) => ({
       ...g,
-      items: g.items.filter((i) => !i.flag || clientConfig.features[i.flag] === true),
+      items: g.items.filter(
+        (i) => (!i.flag || clientConfig.features[i.flag] === true) && canSee(i),
+      ),
     }))
     .filter((g) => g.items.length > 0);
   const complianceOn = enabledModules.includes("compliance");
@@ -256,7 +293,7 @@ export function AppShell({
       {/* Sidebar — desktop */}
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-gray-200 bg-white md:flex">
         <div className="px-5 py-5">
-          <Link href="/home" className="block">
+          <Link href="/dashboard" className="block">
             <span className="text-lg font-bold tracking-tight text-brand-600">DOCex</span>
             <span className="mt-0.5 block text-[11px] font-medium uppercase tracking-wide text-gray-400">
               Audit-grade compliance
@@ -306,7 +343,7 @@ export function AppShell({
               audit summary. Two different systems, both called audit, three
               items apart. This is the policy-check history, so it says so —
               and it sits under Compliance, which is the policy area. */}
-          {complianceOn && (
+          {complianceOn && isAdmin && (
             <Link
               href="/compliance/checks"
               className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -315,6 +352,7 @@ export function AppShell({
               Policy check history
             </Link>
           )}
+          {isAdmin && (
           <Link
             href="/settings/org"
             className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -322,6 +360,8 @@ export function AppShell({
             <Settings className="h-4 w-4 shrink-0 text-gray-400" />
             Org settings
           </Link>
+          )}
+          {isAdmin && (
           <Link
             href="/settings/departments"
             className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -329,7 +369,8 @@ export function AppShell({
             <Users className="h-4 w-4 shrink-0 text-gray-400" />
             Departments &amp; team
           </Link>
-          {clientConfig.features["withholding_tax"] === true && (
+          )}
+          {isAdmin && clientConfig.features["withholding_tax"] === true && (
             <Link
               href="/settings/withholding"
               className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -338,7 +379,7 @@ export function AppShell({
               Withholding tax
             </Link>
           )}
-          {clientConfig.features["accounting_export"] === true && (
+          {isAdmin && clientConfig.features["accounting_export"] === true && (
             <Link
               href="/settings/accounting"
               className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
@@ -391,7 +432,7 @@ export function AppShell({
         <header className="sticky top-0 z-40 border-b border-gray-100 bg-white/90 backdrop-blur-md">
           {/* Mobile brand + nav */}
           <div className="flex items-center gap-3 px-4 py-2 md:hidden">
-            <Link href="/home" className="text-base font-bold tracking-tight text-brand-600">
+            <Link href="/dashboard" className="text-base font-bold tracking-tight text-brand-600">
               DOCex
             </Link>
           </div>

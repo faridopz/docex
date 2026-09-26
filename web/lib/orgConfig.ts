@@ -27,8 +27,11 @@ export type ClientConfig = {
  * mid-session; failing closed on features keeps a blip from advertising a
  * capability the client never bought.
  */
+// Until the org's real config arrives (or if that call fails), show only the
+// core module. Defaulting to every module meant a network blip showed staff
+// Extract, Templates and Knowledge — screens their organisation never bought.
 export const DEFAULT_CLIENT_CONFIG: ClientConfig = {
-  modules: ["compliance", "screening", "knowledge"],
+  modules: ["compliance"],
   features: {},
 };
 

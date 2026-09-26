@@ -482,7 +482,12 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
 /** Which documents this signed-in person may download — the server answers
  * from the same rules the download routes enforce, so the screen never
  * offers a button that would be refused. */
-export type DocumentPermissions = { voucher: boolean; payee_schedule: boolean };
+export type DocumentPermissions = {
+  voucher: boolean;
+  payee_schedule: boolean;
+  /** The org's finance department(s) or an admin. */
+  handles_money?: boolean;
+};
 
 export async function getDocumentPermissions(): Promise<DocumentPermissions> {
   return apiFetch<DocumentPermissions>("/requisitions/document-permissions");

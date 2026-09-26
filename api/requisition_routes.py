@@ -786,6 +786,11 @@ async def document_permissions_endpoint(ctx: Ctx = Depends(request_context)):
         "voucher": org_config.feature_enabled(ctx.org_id, "voucher_export"),
         "payee_schedule": (org_config.feature_enabled(ctx.org_id, "payee_schedule_export")
                            and may_see_bank_details),
+        # Whether this person works on the money side — the org's own finance
+        # department(s), or an admin. The navigation uses it to show payments,
+        # reconciliation and audit to the people who do that work, and not to
+        # everyone who raises a request.
+        "handles_money": may_see_bank_details,
     }
 
 

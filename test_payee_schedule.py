@@ -210,6 +210,8 @@ def test_bank_details_leave_the_system_only_through_the_right_hands() -> None:
         perms = c.get("/requisitions/document-permissions", headers=h).json()
         check(f"the screen offers the schedule to a {who}: {expect}",
               perms.get("payee_schedule") is expect, str(perms))
+        check(f"and treats a {who} as handling money: {expect}",
+              perms.get("handles_money") is expect, str(perms))
     r = c.get(url, headers=prog)
     check("a programme officer is refused (403)", r.status_code == 403, str(r.status_code))
     check("and a refused download leaves no trace in the trail",
