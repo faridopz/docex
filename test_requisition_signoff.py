@@ -152,7 +152,7 @@ check("a compliance-check token cannot approve a requisition", r.status_code == 
 other_org = approval_tokens.make_token(
     req_id, "finance", "x@y.com", org="some-other-org", kind="requisition")
 r = client.get(f"/requisitions/approve/verify/{other_org}")
-check("a token for another org cannot read this requisition", r.status_code == 404)
+check("a token for another org cannot read this requisition", r.status_code == 400)
 
 # ─── acting on the link ─────────────────────────────────────────────────────
 

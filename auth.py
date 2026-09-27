@@ -650,6 +650,13 @@ def verify_token(token: str) -> User:
         raise AuthError("Session expired — please sign in again.")
     # Tokens minted before the org claim existed have no "org"; fall back to
     # the instance default so nobody is logged out by the upgrade.
+    #
+    # A token for another organisation is refused outright. This instance
+    # serves exactly one org (DOCEX_ORG); without this check, two instances
+    # sharing a database and a signing secret would let one client's user
+    # into the other's data, with their own role.
+    if _org(payload.get("org") or None) != _org(None):
+        raise AuthError("This session belongs to a different organisation — please sign in here.")
     user = get_by_id(payload.get("uid", ""), payload.get("org") or None)
     if user is None or not user.active:
         raise AuthError("Account not found or disabled.")

@@ -55,7 +55,7 @@ import requisitions as rq
 import store
 from models import PolicyRulebook
 from notifications import looks_like_email
-from .context import Ctx, request_context, require_role
+from .context import Ctx, default_org, request_context, require_role
 
 router = APIRouter(tags=["requisitions"])
 
@@ -1894,7 +1894,9 @@ def _signoff_token(token: str) -> tuple[dict, rq.Requisition, rq.WorkflowStep]:
     if payload.get("kind") != "requisition":
         raise HTTPException(status_code=400, detail="This is not a requisition link.")
     org = (payload.get("org") or "").strip()
-    if not org:
+    # A link minted for another organisation is invalid here: this instance
+    # serves one org, and never acts on another's payments.
+    if not org or org != default_org():
         raise HTTPException(status_code=400, detail="This approval link is invalid.")
 
     req = rq.get_requisition(org, payload["cid"])

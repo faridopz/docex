@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -187,7 +188,21 @@ def test_orgs_are_isolated() -> None:
 
     tok = auth.issue_token(auth.get_by_email("admin@beta.org", "beta"), org_id="beta")
     check("token carries its org", auth.token_org(tok) == "beta")
-    check("token resolves in the right org", auth.verify_token(tok).email == "admin@beta.org")
+    # Verified by the instance that serves beta — and refused by any other.
+    saved = os.environ.get("DOCEX_ORG")
+    os.environ["DOCEX_ORG"] = "beta"
+    try:
+        check("token resolves on its own org's instance", auth.verify_token(tok).email == "admin@beta.org")
+    finally:
+        if saved is None:
+            os.environ.pop("DOCEX_ORG", None)
+        else:
+            os.environ["DOCEX_ORG"] = saved
+    try:
+        auth.verify_token(tok)
+        check("token refused by another org's instance", False)
+    except auth.AuthError:
+        check("token refused by another org's instance", True)
 
 
 def test_client_config_drives_what_each_client_sees() -> None:
