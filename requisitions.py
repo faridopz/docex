@@ -356,6 +356,10 @@ class Requisition(BaseModel):
     # rather than free text buried in `description` so the export and any
     # future policy check can read it directly.
     payment_type: Literal["full", "advance", "balance"] = "full"
+    # When the trip or activity ends (YYYY-MM-DD). For categories whose
+    # advance is retired from the end of the activity (DSA), this is when
+    # the retirement clock starts.
+    activity_end: str = ""
 
     # The expense breakdown a memo's item table asks for. Optional: a
     # requisition raised with none just shows `amount` as a single line on
@@ -931,6 +935,9 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     advance_check = _check_outstanding_advances(org_id, req)
     if advance_check is not None:
         checks.append(advance_check)
+    trip_check = _check_trip_end_date(org_id, req)
+    if trip_check is not None:
+        checks.append(trip_check)
 
     # 6. Category allowed
     if wf.allowed_categories:
@@ -1172,6 +1179,72 @@ def _check_payees(req: Requisition) -> list[PolicyCheck]:
         actual_value=f"{len(req.payees)} payee(s)",
         message="Every payee row is complete.",
     )]
+
+
+def _advance_policy_if_on(org_id: str):
+    try:
+        import org_config
+        if not org_config.feature_enabled(org_id, "advance_retirement"):
+            return None
+        import advances as _adv
+        return _adv.get_policy(org_id)
+    except Exception:                                          # pragma: no cover
+        return None
+
+
+def _in(category: str, names: list[str]) -> bool:
+    return (category or "").strip().lower() in {n.strip().lower() for n in names or []}
+
+
+def _check_trip_end_date(org_id: str, req: Requisition) -> Optional[PolicyCheck]:
+    """A DSA-type request with no trip end date: say so while it can be fixed.
+
+    Its advance is retired from the END of the trip. Without the date the
+    clock would start on payment, and a person still travelling would be
+    shown as overdue, and blocked, for an advance they cannot yet retire.
+    """
+    policy = _advance_policy_if_on(org_id)
+    if policy is None or not _in(req.category, policy.activity_end_categories):
+        return None
+    if (req.activity_end or "").strip():
+        return PolicyCheck(code="TRIP_END_DATE", name="Trip end date given",
+                           result=CheckResult.PASS, actual_value=req.activity_end,
+                           message=f"Retirement is due counted from {req.activity_end}.")
+    return PolicyCheck(
+        code="TRIP_END_DATE", name="Trip end date given", result=CheckResult.WARNING,
+        policy_value="the date the trip or activity ends", actual_value="not given",
+        message=("Add the date the trip ends. Without it, the retirement clock "
+                 "starts the day this is paid."))
+
+
+def _open_advance_on_payment(org_id: str, req: Requisition, actor: str) -> None:
+    """Paying an advance starts its retirement clock — nobody re-types it.
+
+    The money has already left, so a failure here never undoes the payment;
+    it is written on the request's own trail instead, where finance sees it.
+    """
+    policy = _advance_policy_if_on(org_id)
+    if policy is None or not _in(req.category, policy.open_for_categories):
+        return
+    import advances as _adv
+    if any(a.source_ref == req.ref for a in _adv.list_advances(org_id)):
+        return                                           # never open it twice
+    try:
+        import auth as _auth
+        person = _auth.get_by_email(req.submitted_by, org_id)
+        a = _adv.issue(
+            org_id, staff_id=req.submitted_by,
+            staff_name=(person.name if person else "") or req.submitted_by,
+            department=req.department, amount=req.amount, currency=req.currency,
+            purpose=req.description or f"{req.category} — {req.vendor_name}",
+            project_code=req.project_code, grant_code=req.grant_code,
+            source_ref=req.ref,
+            activity_end=(req.activity_end if _in(req.category, policy.activity_end_categories) else ""))
+        _audit(req, "advance_opened", actor="system", department=req.department,
+               detail=f"{a.ref} opened for {a.staff_name}: retire by {a.due_at}")
+    except Exception as exc:  # noqa: BLE001 — the payment stands; make the gap visible
+        _audit(req, "advance_not_opened", actor="system", department=req.department,
+               detail=f"The advance could not be opened automatically: {exc}. Record it by hand.")
 
 
 def _check_outstanding_advances(org_id: str,
@@ -1422,6 +1495,7 @@ def create_requisition(
     payees: Optional[list[Payee]] = None,
     currency: str = "NGN",
     submit: bool = True,
+    activity_end: str = "",
 ) -> Requisition:
     """
     Raise a requisition. Runs policy checks immediately so the submitter sees
@@ -1490,6 +1564,7 @@ def create_requisition(
         receipt_ids=list(receipt_ids or []),
         documents=list(documents or []),
         payees=payees,
+        activity_end=(activity_end or "").strip()[:10],
         created_at=now,
         updated_at=now,
     )
@@ -1531,7 +1606,7 @@ _DRAFT_EDITABLE = (
     "vendor_name", "vendor_account", "vendor_bank_name", "vendor_tin",
     "vendor_phone_or_email", "payment_type", "budget_lines", "amount",
     "currency", "category", "project_code", "grant_code", "description",
-    "receipt_ids", "documents", "payees",
+    "receipt_ids", "documents", "payees", "activity_end",
 )
 
 
@@ -2341,6 +2416,7 @@ def mark_paid(
     req.status = ReqStatus.PAID
     req.transaction_id = txn.id
     req.current_step = None
+    _open_advance_on_payment(org, req, actor)
     _save(org, req)
     return txn
 

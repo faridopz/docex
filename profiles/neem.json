@@ -333,6 +333,9 @@
     "block_project_after_days": 0,
     "collective_default_count": 2,
     "recover_at_month_end": true,
+    "open_for_categories": ["advance", "dsa"],
+    "activity_end_categories": ["dsa"],
+    "_categories_source": "Slide 10: advances are retired within 5 working days of payment; DSA within 5 working days after the trip. Their category list names both 'advance' and 'dsa'. Confirm no other category is an advance (e.g. petty_cash).",
     "_dsa_note": "DSA runs the same clock but from the END of the trip — 'retired within 5 working days or 7 days after the event/trip has been concluded'. A travel approval form must exist BEFORE the trip.",
     "_confirm": "collective_default_count is set to 2 as a working assumption. Their policy says 'a collective default' without defining how many. Ask."
   },

@@ -39,6 +39,28 @@ def _gate(ctx: Ctx) -> Ctx:
     return ctx
 
 
+def _handles_money(ctx: Ctx) -> bool:
+    """Admins and the org's own finance departments (the same rule that
+    guards bank details) see every advance and settle them. Everyone else
+    sees their own and settles none — declaring your own advance spent is
+    exactly the control this exists to provide."""
+    import payment_voucher
+    return ctx.role == "admin" or (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
+
+
+def _settler(ctx: Ctx, advance_id: str) -> adv.Advance:
+    """Only someone who handles money, and never on their own advance."""
+    if not _handles_money(ctx):
+        raise HTTPException(status_code=403, detail="Only Finance can settle an advance.")
+    a = adv.get(ctx.org_id, advance_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="Advance not found.")
+    if a.staff_id.strip().lower() == (ctx.user_id or "").strip().lower():
+        raise HTTPException(status_code=403,
+                            detail="You cannot settle your own advance — someone else in Finance must.")
+    return a
+
+
 def _fail(exc: adv.AdvanceError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
@@ -66,6 +88,8 @@ async def list_advances(staff_id: Optional[str] = Query(None),
                         open_only: bool = Query(False),
                         ctx: Ctx = Depends(request_context)):
     _gate(ctx)
+    if not _handles_money(ctx):
+        staff_id = ctx.user_id          # staff see their own, whatever they ask for
     items = adv.list_advances(ctx.org_id, staff_id=staff_id,
                               project_code=project_code, open_only=open_only)
     return {"advances": [_out(a) for a in items], "total": len(items)}
@@ -73,9 +97,22 @@ async def list_advances(staff_id: Optional[str] = Query(None),
 
 @router.get("/aging")
 async def aging(ctx: Ctx = Depends(request_context)):
-    """Every outstanding advance, worst first, with the consequence spelled out."""
+    """Every outstanding advance, worst first, with the consequence spelled out.
+    Staff get the same list narrowed to their own."""
     _gate(ctx)
-    return adv.aging(ctx.org_id)
+    result = adv.aging(ctx.org_id)
+    result["sees_everyone"] = _handles_money(ctx)
+    if not result["sees_everyone"]:
+        me = (ctx.user_id or "").lower()
+        rows = [r for r in result["rows"] if (r["staff_id"] or "").lower() == me]
+        overdue = [r for r in rows if r["days_overdue"] >= 0]
+        result.update(
+            rows=rows, outstanding=len(rows),
+            outstanding_value=round(sum(r["amount"] for r in rows), 2),
+            overdue=len(overdue), overdue_value=round(sum(r["amount"] for r in overdue), 2),
+            blocked_staff=[s for s in result["blocked_staff"] if s.lower() == me],
+            for_recovery=[r for r in result["for_recovery"] if (r["staff_id"] or "").lower() == me])
+    return result
 
 
 @router.get("/block")
@@ -135,7 +172,8 @@ async def issue(
     for DSA, which cannot be retired before the trip has happened.
     """
     _gate(ctx)
-    require_role(ctx, "admin", "approver", "reviewer")
+    if not _handles_money(ctx):
+        raise HTTPException(status_code=403, detail="Only Finance can record an advance by hand.")
     try:
         a = adv.issue(ctx.org_id, staff_id=staff_id, amount=amount,
                       purpose=purpose, staff_name=staff_name,
@@ -151,7 +189,8 @@ async def issue(
 async def get_advance(advance_id: str, ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     a = adv.get(ctx.org_id, advance_id)
-    if a is None:
+    if a is None or (not _handles_money(ctx)
+                     and a.staff_id.strip().lower() != (ctx.user_id or "").strip().lower()):
         raise HTTPException(status_code=404, detail="Advance not found.")
     return _out(a)
 
@@ -161,7 +200,7 @@ async def retire(advance_id: str, spent: float = Form(...),
                  receipt_ids: str = Form(""), note: str = Form(""),
                  ctx: Ctx = Depends(request_context)):
     _gate(ctx)
-    require_role(ctx, "admin", "approver", "reviewer")
+    _settler(ctx, advance_id)
     ids = [r.strip() for r in receipt_ids.split(",") if r.strip()]
     try:
         return _out(adv.retire(ctx.org_id, advance_id, spent=spent,
@@ -177,6 +216,7 @@ async def recover(advance_id: str, reason: str = Form(""),
     rung of the ladder, and its own fact rather than a kind of 'retired'."""
     _gate(ctx)
     require_role(ctx, "admin", "approver")
+    _settler(ctx, advance_id)
     try:
         return _out(adv.mark_recovered(ctx.org_id, advance_id,
                                        actor=ctx.user_id, reason=reason))
@@ -191,6 +231,7 @@ async def write_off(advance_id: str, reason: str = Form(...),
     for — that should be possible, and never quiet."""
     _gate(ctx)
     require_role(ctx, "admin")
+    _settler(ctx, advance_id)
     try:
         return _out(adv.write_off(ctx.org_id, advance_id,
                                   actor=ctx.user_id, reason=reason))

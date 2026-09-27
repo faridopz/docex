@@ -110,6 +110,15 @@ class AdvancePolicy(BaseModel):
     collective_default_count: int = 2      # how many overdue makes it collective
     recover_at_month_end: bool = True
 
+    # Which payment categories ARE advances. Paying a request in one of these
+    # opens its advance and starts the clock, with nobody re-typing it.
+    # Empty = nothing opens automatically (advances can still be recorded
+    # by hand).
+    open_for_categories: list[str] = Field(default_factory=list)
+    # Of those, the ones whose clock runs from the END of the trip or
+    # activity (DSA), not from payment. The request carries that date.
+    activity_end_categories: list[str] = Field(default_factory=list)
+
     # Optional limits some organisations set instead of, or as well as, a clock.
     max_outstanding_per_person: Optional[float] = None
     max_concurrent_per_person: Optional[int] = None

@@ -21,6 +21,7 @@ import {
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { checkAccount, listBanks, type AccountCheck, type BankOption } from "@/lib/payeeCheckApi";
+import { getAdvancePolicy } from "@/lib/advancesApi";
 import { humanise, money } from "@/lib/requisitionFormat";
 import type {
   BudgetLine,
@@ -125,6 +126,10 @@ export default function NewRequisitionPage() {
   const [vendorName, setVendorName] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
+  // Categories whose advance is retired from the END of the trip (DSA). The
+  // form asks for that date only for them. Empty when advances aren't on.
+  const [tripEndCategories, setTripEndCategories] = useState<string[]>([]);
+  const [activityEnd, setActivityEnd] = useState("");
   const [projectCode, setProjectCode] = useState("");
   const [grantCode, setGrantCode] = useState("");
   const [vendorAccount, setVendorAccount] = useState("");
@@ -195,7 +200,11 @@ export default function NewRequisitionPage() {
 
   useEffect(() => {
     listBanks().then(setBanks).catch(() => setBanks([]));
+    getAdvancePolicy()
+      .then((p) => setTripEndCategories((p.activity_end_categories || []).map((c) => c.toLowerCase())))
+      .catch(() => setTripEndCategories([]));
   }, []);
+  const asksTripEnd = tripEndCategories.includes(category.trim().toLowerCase());
 
   // Check the vendor's account once all three are filled in. Debounced so a
   // lookup is not sent per keystroke; a stale answer is discarded.
@@ -432,6 +441,7 @@ export default function NewRequisitionPage() {
           vendor_tin: mode === "batch" ? "" : vendorTin.trim(),
           vendor_phone_or_email: mode === "batch" ? "" : vendorPhoneOrEmail.trim(),
           payment_type: paymentType,
+          activity_end: asksTripEnd ? activityEnd : "",
           budget_lines: budgetLines
             .filter((r) => r.description.trim() !== "")
             .map((r) => ({
@@ -827,6 +837,17 @@ export default function NewRequisitionPage() {
                 className={inputClass}
               />
             </Field>
+
+            {asksTripEnd ? (
+              <Field label="Trip ends on" hint="Retirement is due counted from this date">
+                <input
+                  type="date"
+                  value={activityEnd}
+                  onChange={(e) => setActivityEnd(e.target.value)}
+                  className={inputClass}
+                />
+              </Field>
+            ) : null}
 
             <Field label="Payment type" hint="Full, or an advance/balance split">
               <select

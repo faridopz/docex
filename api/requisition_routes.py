@@ -310,6 +310,7 @@ def _detail_out(r: rq.Requisition) -> dict:
         "vendor_tin": r.vendor_tin,
         "vendor_phone_or_email": r.vendor_phone_or_email,
         "payment_type": r.payment_type,
+        "activity_end": r.activity_end,
         "budget_lines": [_budget_line_out(bl) for bl in r.budget_lines],
         "amount_in_words": rq.amount_in_words(r.amount, r.currency),
         "description": r.description,
@@ -371,6 +372,8 @@ async def create_requisition_endpoint(
     vendor_phone_or_email: Annotated[str, Form(description="Vendor phone or email")] = "",
     payment_type: Annotated[str, Form(
         description="full, advance, or balance — matches the org's own memo wording")] = "full",
+    activity_end: Annotated[str, Form(
+        description="YYYY-MM-DD the trip or activity ends (DSA-type advances)")] = "",
     budget_lines: Annotated[str, Form(
         description="JSON array of expense-breakdown rows (description, unit, "
                     "budget_line, quantity, frequency, unit_cost). Totals are "
@@ -422,6 +425,7 @@ async def create_requisition_endpoint(
                     vendor_tin=vendor_tin,
                     vendor_phone_or_email=vendor_phone_or_email,
                     payment_type=payment_type,
+                    activity_end=activity_end,
                     budget_lines=budget_line_rows or None,
                     description=description,
                     receipt_ids=[s.strip() for s in receipt_ids.split(",") if s.strip()],
@@ -1085,6 +1089,7 @@ async def update_draft_endpoint(
     vendor_tin: Annotated[Optional[str], Form()] = None,
     vendor_phone_or_email: Annotated[Optional[str], Form()] = None,
     payment_type: Annotated[Optional[str], Form()] = None,
+    activity_end: Annotated[Optional[str], Form()] = None,
     budget_lines: Annotated[Optional[str], Form(
         description="JSON array of expense-breakdown rows. Send '[]' to clear it.")] = None,
     description: Annotated[Optional[str], Form()] = None,
@@ -1108,6 +1113,7 @@ async def update_draft_endpoint(
         "project_code": project_code, "vendor_account": vendor_account,
         "vendor_bank_name": vendor_bank_name, "vendor_tin": vendor_tin,
         "vendor_phone_or_email": vendor_phone_or_email, "payment_type": payment_type,
+        "activity_end": activity_end,
         "description": description, "currency": currency,
     }
     if grant_code is not None:

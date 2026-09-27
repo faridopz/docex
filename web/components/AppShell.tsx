@@ -52,6 +52,7 @@ import { NotificationBell } from "@/components/erp/NotificationBell";
 export type NavSection =
   | "dashboard"
   | "requisitions"
+  | "advances"
   | "pipeline"
   | "payments"
   | "audit"
@@ -104,6 +105,9 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { section: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutGrid, match: ["/dashboard", "/transactions"] },
       { section: "requisitions", label: "Requisitions", href: "/requisitions", icon: Send, match: ["/requisitions"] },
+      // Everyone: staff see the advances they must retire (before one stops
+      // their next payment); Finance sees everyone's and settles them.
+      { section: "advances", label: "Advances", href: "/advances", icon: Wallet, match: ["/advances"], flag: "advance_retirement", audience: "everyone" },
       // The payment pipeline. Sits directly under Requisitions because it is
       // the same data seen a different way — every card on it IS a
       // requisition. It used to live in the settings footer, pointing at

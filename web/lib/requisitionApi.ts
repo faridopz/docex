@@ -77,6 +77,9 @@ export interface NewRequisition {
   currency?: string;
   /** false = save as a draft (files are attached, then it is submitted). */
   submit?: boolean;
+  /** YYYY-MM-DD the trip or activity ends — starts a DSA-type advance's
+   * retirement clock. */
+  activity_end?: string;
 }
 
 export async function createRequisition(
@@ -103,6 +106,7 @@ export async function createRequisition(
       documents: (body.documents ?? []).join(","),
       payees: JSON.stringify(body.payees ?? []),
       currency: body.currency ?? "NGN",
+      activity_end: body.activity_end ?? "",
       // Omitted means "submit now" on the server. The form sends false when
       // it has files to attach first, so the checks run with them in place.
       submit: body.submit === undefined ? undefined : String(body.submit),
