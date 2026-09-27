@@ -1,58 +1,38 @@
 "use client";
 
 /**
- * QuickBooks handoff settings.
+ * QuickBooks settings.
  *
- * DOCex is not a general ledger and doesn't try to be one — it owns approval
- * and evidence, QuickBooks owns the books. This screen configures the ONE
- * thing that has to be entered by a human (mapping DOCex's spend categories
- * and project/grant codes to this organisation's actual chart of accounts;
- * an invented mapping posts money to the wrong account, which is worse and
- * harder to find than an import that fails outright), then produces two
- * files: the coded payment register, and a Nigerian bank statement cleaned
- * into a format QuickBooks will accept (its bank feeds cannot reach
- * GTBank/Zenith/etc — that's a monthly Excel chore today).
+ * DOCex is not a general ledger — it owns approval and evidence; QuickBooks
+ * owns the books. This screen holds the ONE thing a human must enter: how
+ * DOCex spend categories and project/grant codes map to this organisation's
+ * chart of accounts and classes (an invented mapping posts money to the wrong
+ * account, which is worse than a failed import), plus which QuickBooks they
+ * run. The monthly files themselves come from closing the month in
+ * Reconciliation, so the books only receive payments that were approved AND
+ * confirmed by the bank.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle,
   Banknote,
-  CheckCircle2,
-  Download,
-  FileUp,
   Loader2,
   Plus,
   Save,
   Trash2,
 } from "lucide-react";
+import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
 import { getWorkflow } from "@/lib/requisitionApi";
 import {
   getAccountMap,
   setAccountMap,
-  getExportSummary,
-  downloadPaymentRegister,
-  cleanBankStatement,
-  triggerDownload,
   type AccountMap,
-  type ExportSummary,
 } from "@/lib/accountingApi";
 
 const inputCls =
   "rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-400";
-
-function currentPeriod(): string {
-  const d = new Date();
-  d.setDate(1);
-  d.setMonth(d.getMonth() - 1); // last COMPLETE month, matching backend convention
-  return d.toISOString().slice(0, 7);
-}
-
-function money(n: number) {
-  return "₦" + (n ?? 0).toLocaleString("en-NG", { maximumFractionDigits: 2 });
-}
 
 export default function AccountingSettingsPage() {
   const { user } = useAuth();
@@ -65,14 +45,6 @@ export default function AccountingSettingsPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [period, setPeriod] = useState(currentPeriod());
-  const [summary, setSummary] = useState<ExportSummary | null>(null);
-  const [summaryBusy, setSummaryBusy] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-
-  const [file, setFile] = useState<File | null>(null);
-  const [cleanBusy, setCleanBusy] = useState(false);
-  const [cleanNote, setCleanNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,22 +63,6 @@ export default function AccountingSettingsPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  const loadSummary = useCallback(async (p: string) => {
-    setSummaryBusy(true);
-    try {
-      setSummary(await getExportSummary(p));
-    } catch (e) {
-      setSummary(null);
-      setError(e instanceof Error ? e.message : "Could not check the export.");
-    } finally {
-      setSummaryBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadSummary(period);
-  }, [period, loadSummary]);
 
   function patch(changes: Partial<AccountMap>) {
     setMap((m) => (m ? { ...m, ...changes } : m));
@@ -158,42 +114,10 @@ export default function AccountingSettingsPage() {
       const updated = await setAccountMap(map);
       setMap(updated);
       setSaved(true);
-      loadSummary(period);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the mapping.");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleDownload() {
-    setDownloading(true);
-    setError(null);
-    try {
-      await downloadPaymentRegister(period);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not export the payment register.");
-    } finally {
-      setDownloading(false);
-    }
-  }
-
-  async function handleClean() {
-    if (!file) return;
-    setCleanBusy(true);
-    setCleanNote(null);
-    setError(null);
-    try {
-      const result = await cleanBankStatement(file);
-      result.files.forEach((text, i) => {
-        const suffix = result.files.length > 1 ? `-part${i + 1}` : "";
-        triggerDownload(text, `docex-bank-statement${suffix}.csv`);
-      });
-      setCleanNote(`${result.rows} row(s) across ${result.file_count} file(s). ${result.note}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not clean that statement.");
-    } finally {
-      setCleanBusy(false);
     }
   }
 
@@ -363,22 +287,40 @@ export default function AccountingSettingsPage() {
               </div>
             </section>
 
-            {/* ── bank + format ── */}
+            {/* ── which QuickBooks ── */}
             <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-              <h2 className="text-sm font-semibold text-gray-900">Bank account &amp; format</h2>
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <h2 className="text-sm font-semibold text-gray-900">Your QuickBooks</h2>
+              <p className="mt-0.5 text-xs text-gray-500">
+                Decides which files DOCex gives you. The international edition of QuickBooks Online
+                (used in Nigeria) can import bank transactions but not journals, so it gets the coded
+                bank file; the US edition and Desktop can also import journals.
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="block">
-                  <span className="text-xs font-medium text-gray-600">Bank account, as named in QuickBooks</span>
-                  <input
-                    value={map.bank_account}
+                  <span className="text-xs font-medium text-gray-600">Edition</span>
+                  <select
+                    value={map.edition || "online_international"}
                     disabled={!isAdmin}
-                    onChange={(e) => patch({ bank_account: e.target.value })}
-                    placeholder="e.g. GTBank Operating"
+                    onChange={(e) => patch({ edition: e.target.value })}
+                    className={inputCls + " mt-1 w-full"}
+                  >
+                    <option value="online_international">QuickBooks Online — international</option>
+                    <option value="online_us">QuickBooks Online — US</option>
+                    <option value="desktop">QuickBooks Desktop</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-gray-600">Bank charges account</span>
+                  <input
+                    value={map.bank_charges_account ?? "Bank charges"}
+                    disabled={!isAdmin}
+                    onChange={(e) => patch({ bank_charges_account: e.target.value })}
+                    placeholder="e.g. Bank charges"
                     className={inputCls + " mt-1 w-full"}
                   />
                 </label>
                 <label className="block">
-                  <span className="text-xs font-medium text-gray-600">Date format on your QuickBooks import screen</span>
+                  <span className="text-xs font-medium text-gray-600">Date format on your import screen</span>
                   <select
                     value={map.date_format}
                     disabled={!isAdmin}
@@ -391,6 +333,10 @@ export default function AccountingSettingsPage() {
                   </select>
                 </label>
               </div>
+              <p className="mt-3 text-xs text-gray-500">
+                Each bank account&rsquo;s name in QuickBooks is set once, with the account, in{" "}
+                <Link href="/settings/accounts" className="text-brand-700 underline">Settings → Bank accounts</Link>.
+              </p>
             </section>
 
             {isAdmin && (
@@ -404,77 +350,17 @@ export default function AccountingSettingsPage() {
               </div>
             )}
 
-            {/* ── export ── */}
+            {/* ── where the files come from ── */}
             <section className="mt-8 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
               <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <Banknote className="h-4 w-4 text-gray-400" /> Export the payment register
+                <Banknote className="h-4 w-4 text-gray-400" /> Your monthly QuickBooks files
               </h2>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <input
-                  type="month"
-                  value={period}
-                  onChange={(e) => setPeriod(e.target.value)}
-                  className={inputCls}
-                />
-                <button type="button" onClick={handleDownload}
-                  disabled={downloading || !summary?.payments}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">
-                  {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  Download CSV
-                </button>
-              </div>
-
-              {summaryBusy ? (
-                <p className="mt-3 text-xs text-gray-400">Checking…</p>
-              ) : summary && (
-                <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50 p-4 text-sm">
-                  <div className="flex items-center gap-2">
-                    {summary.ready ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    ) : (
-                      <AlertTriangle className="h-4 w-4 text-amber-600" />
-                    )}
-                    <span className="font-medium text-gray-900">
-                      {summary.payments} payment{summary.payments === 1 ? "" : "s"}, {money(summary.value)}
-                    </span>
-                  </div>
-                  {!summary.bank_account && (
-                    <p className="mt-1 text-xs text-amber-700">No bank account name set above yet.</p>
-                  )}
-                  {summary.unmapped_categories.length > 0 && (
-                    <p className="mt-1 text-xs text-amber-700">
-                      Unmapped: {summary.unmapped_categories.join(", ")} — will post to &quot;{map.default_account}&quot;.
-                    </p>
-                  )}
-                  <p className="mt-2 text-xs text-gray-500">{summary.note}</p>
-                </div>
-              )}
-            </section>
-
-            {/* ── bank statement cleaner ── */}
-            <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-              <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <FileUp className="h-4 w-4 text-gray-400" /> Clean a bank statement for import
-              </h2>
-              <p className="mt-0.5 text-xs text-gray-500">
-                Nigerian bank exports use ₦ symbols, comma separators and title rows —
-                QuickBooks rejects all three. Upload the raw statement and get back a
-                file it will accept.
+              <p className="mt-1 text-sm text-gray-600">
+                They come from closing the month, so QuickBooks only ever receives payments that were
+                approved in DOCex <em>and</em> confirmed by the bank. Upload the statement in{" "}
+                <Link href="/reconciliation" className="text-brand-700 underline">Reconciliation</Link>,
+                explain anything unmatched, close the month — then <span className="font-medium">Send to QuickBooks</span>.
               </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <input
-                  type="file"
-                  accept=".csv,.xlsx,.xls"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                  className="text-sm text-gray-600"
-                />
-                <button type="button" onClick={handleClean} disabled={cleanBusy || !file}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">
-                  {cleanBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-                  Clean &amp; download
-                </button>
-              </div>
-              {cleanNote && <p className="mt-3 text-xs text-gray-500">{cleanNote}</p>}
             </section>
           </>
         )}

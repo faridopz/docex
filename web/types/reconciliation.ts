@@ -14,7 +14,9 @@ export type ExceptionCode =
   | "NOT_IN_SYSTEM"
   | "AMOUNT_MISMATCH"
   | "AMBIGUOUS"
-  | "DUPLICATE_BANK_LINE";
+  | "DUPLICATE_BANK_LINE"
+  | "BANK_CHARGE"
+  | "STATEMENT_GAP";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -87,6 +89,21 @@ export interface ReconRunSummary {
   reconciled: boolean;
   locked: boolean;
   closed_by: string;
+  closed_at?: string;
+  /** The second signature on a closed month (never the closer). */
+  reviewed_by?: string;
+  reviewed_at?: string;
+  bank_charges_count?: number;
+  bank_charges_total?: number;
+  money_in_count?: number;
+  money_in_total?: number;
+  /** From the bank's running balance; null when the statement has none. */
+  opening_balance?: number | null;
+  closing_balance?: number | null;
+  /** true = every running balance agrees; false = rows missing; null = not checked. */
+  statement_complete?: boolean | null;
+  explained?: number;
+  open_items?: number;
 }
 
 export interface ReconRun extends ReconRunSummary {
@@ -101,6 +118,7 @@ export interface ReconRun extends ReconRunSummary {
   /** Already sorted highest severity first by the server. */
   exceptions: ReconException[];
   bank_lines: BankLineRow[];
+  credit_lines?: BankLineRow[];
   created_at: string;
   created_by: string;
   closed_at: string;

@@ -109,6 +109,10 @@ class Disbursement(BaseModel):
     # breaking per-grant/per-donor reporting even when the map is configured
     # correctly. Empty for sources that don't track one yet (payroll,
     # vouchers) — that's a real gap, not this field lying about it.
+    # The approved spend category ("venue", "per_diem"). Kept apart from
+    # `memo`, which for a payee line holds that person's own purpose text —
+    # the QuickBooks handoff codes accounts from THIS, never from free text.
+    category: str = ""
     project_code: str = ""
     grant_code: Optional[str] = None
 
@@ -316,6 +320,7 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
                 batch_id=txn.id,
                 settlement=Settlement.BULK,
                 memo=txn.category or "",
+                category=txn.category or "",
                 project_code=txn.project_code or "",
                 grant_code=txn.grant_code,
                 account_id=acct_id,
@@ -345,6 +350,7 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
                     batch_id=txn.id,
                     settlement=Settlement.INDIVIDUAL,
                     memo=payee.purpose or txn.category or "",
+                    category=txn.category or "",
                     project_code=txn.project_code or "",
                     grant_code=txn.grant_code,
                     account_id=acct_id,
@@ -368,6 +374,7 @@ def _from_requisitions(org_id: str) -> list[Disbursement]:
             paid_by=txn.paid_by,
             bank_reference=txn.bank_reference,
             memo=txn.category or "",
+            category=txn.category or "",
             project_code=txn.project_code or "",
             grant_code=txn.grant_code,
             account_id=acct_id,

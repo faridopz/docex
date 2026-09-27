@@ -56,6 +56,7 @@ def _account_out(a: ba.BankAccount) -> dict:
         "project_code": a.project_code, "purpose": a.purpose,
         "entity": a.entity, "currency": a.currency, "active": a.active,
         "notes": a.notes, "updated_at": a.updated_at,
+        "quickbooks_name": a.quickbooks_name,
     }
 
 
@@ -124,6 +125,20 @@ async def identify(statement: UploadFile = File(...),
         raise HTTPException(status_code=422, detail="The statement file is empty.")
     text = data[:8192].decode("utf-8-sig", errors="replace")
     return ba.identify(ctx.org_id, text)
+
+
+@router.put("/accounts/{account_id}/quickbooks-name")
+async def set_quickbooks_name(account_id: str, body: dict = Body(...),
+                              ctx: Ctx = Depends(request_context)):
+    """What this account is called in QuickBooks — the account the
+    QuickBooks handoff credits payments from. Admins only."""
+    _gate(ctx, _ACCOUNTS_FLAG, "Bank reconciliation")
+    require_role(ctx, "admin")
+    try:
+        acct = ba.set_quickbooks_name(ctx.org_id, account_id, str(body.get("quickbooks_name") or ""))
+    except ba.BankAccountError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _account_out(acct)
 
 
 @router.post("/accounts/{account_id}/close")

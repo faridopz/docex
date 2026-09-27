@@ -15,6 +15,8 @@ export const EXCEPTION_TITLE: Record<ExceptionCode, string> = {
   AMOUNT_MISMATCH: "Paid a different amount than approved",
   AMBIGUOUS: "Several bank lines could be this payment",
   DUPLICATE_BANK_LINE: "The same debit appears twice",
+  BANK_CHARGE: "Bank charge",
+  STATEMENT_GAP: "The statement is incomplete",
 };
 
 /** What to actually do about it. */
@@ -27,6 +29,9 @@ export const EXCEPTION_ACTION: Record<ExceptionCode, string> = {
   AMBIGUOUS: "Match it to the right line yourself — the system will not guess.",
   DUPLICATE_BANK_LINE:
     "Confirm with the bank whether the account was debited twice.",
+  BANK_CHARGE: "Nothing to do — the bank's own charge, grouped for the month.",
+  STATEMENT_GAP:
+    "Download the complete statement for the month from the bank and reconcile again.",
 };
 
 export const SEVERITY_STYLE: Record<Severity, string> = {
@@ -61,13 +66,18 @@ export const METHOD_STYLE: Record<MatchMethod, string> = {
 export function money(amount?: number | null, currency = "NGN"): string {
   if (amount == null) return "—";
   try {
+    // A reconciliation agrees to the kobo or it doesn't agree: whole amounts
+    // stay clean (₦850,000), anything with kobo shows it (₦1,157.90) —
+    // rounding here made a correct month look ₦0.10 out.
+    const whole = Math.abs(amount - Math.round(amount)) < 0.005;
     return new Intl.NumberFormat("en-NG", {
       style: "currency",
       currency,
-      maximumFractionDigits: 0,
+      minimumFractionDigits: whole ? 0 : 2,
+      maximumFractionDigits: whole ? 0 : 2,
     }).format(amount);
   } catch {
-    return `${currency} ${Math.round(amount).toLocaleString()}`;
+    return `${currency} ${amount.toFixed(2)}`;
   }
 }
 

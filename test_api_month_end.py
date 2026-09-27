@@ -308,7 +308,11 @@ def test_the_month_reconciles_and_closes(admin: dict) -> None:
 
     r = client.post(f"/reconciliation/{run_id}/close", headers=admin, data={})
     check("close is refused over unexplained money", r.status_code == 422)
-    check("and says how many", "2 unexplained" in r.json()["detail"], r.text[:200])
+    # One: the unapproved transfer. The maintenance fee is recognised as the
+    # bank's own charge and listed, not counted as unexplained money
+    # (test_month_end_close.py).
+    check("and says how many", "1 unexplained" in r.json()["detail"], r.text[:200])
+    check("the maintenance fee is recognised as a bank charge", "BANK_CHARGE" in codes, str(codes))
 
     for exc in run["exceptions"]:
         r = client.post(f"/reconciliation/{run_id}/explain", headers=admin, data={

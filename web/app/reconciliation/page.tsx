@@ -5,22 +5,33 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  BadgeCheck,
   CheckCircle2,
+  Download,
   FileSpreadsheet,
   Loader2,
   Lock,
   ShieldAlert,
   Upload,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { getAccountMap } from "@/lib/accountingApi";
+import { getDocumentPermissions, triggerBlobDownload } from "@/lib/requisitionApi";
 import { AppShell } from "@/components/AppShell";
 import {
   closePeriod,
   DATE_FORMAT_CHOICES,
+  downloadQuickBooksFile,
+  downloadReconReport,
   explainException,
+  explainMany,
+  getRun,
   isAmbiguousDateError,
   listRuns,
   previewStatement,
+  reviewPeriod,
   runReconciliation,
+  type QuickBooksFileKind,
 } from "@/lib/reconciliationApi";
 import {
   EXCEPTION_ACTION,
@@ -191,6 +202,48 @@ export default function ReconciliationPage() {
     }
   }
 
+  async function onExplainMany(bankLineIds: string[], reason: string) {
+    if (!run || !reason.trim() || bankLineIds.length === 0) return;
+    setBusy("explain-many");
+    setError(null);
+    try {
+      setRun(await explainMany(run.run_id, bankLineIds, reason));
+    } catch (e) {
+      fail(e, "Could not record that explanation.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onReview() {
+    if (!run) return;
+    setBusy("review");
+    setError(null);
+    try {
+      setRun(await reviewPeriod(run.run_id));
+      await refreshRuns();
+    } catch (e) {
+      fail(e, "Could not sign this month off.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // A previous month opens in full: it is where the second person signs off,
+  // and where Finance comes back for the QuickBooks files and the report.
+  async function onOpenRun(runId: string) {
+    setBusy("open");
+    setError(null);
+    try {
+      setRun(await getRun(runId));
+      window.scrollTo({ top: 0 });
+    } catch (e) {
+      fail(e, "Could not open that month.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function reset() {
     setRun(null);
     setPreview(null);
@@ -243,12 +296,14 @@ export default function ReconciliationPage() {
             busy={busy}
             onClose={onClose}
             onExplain={onExplain}
+            onExplainMany={onExplainMany}
+            onReview={onReview}
             onStartOver={reset}
             run={run}
           />
         )}
 
-        {!run && !loading && runs.length > 0 && <PastRuns runs={runs} />}
+        {!run && !loading && runs.length > 0 && <PastRuns onOpen={onOpenRun} runs={runs} />}
       </div>
     </AppShell>
   );
@@ -466,15 +521,30 @@ function RunView(props: {
   busy: string | null;
   onClose: (forceReason?: string) => void;
   onExplain: (exc: ReconException, reason: string) => void;
+  onExplainMany: (bankLineIds: string[], reason: string) => void;
+  onReview: () => void;
   onStartOver: () => void;
   run: ReconRun;
 }) {
-  const { busy, onClose, onExplain, onStartOver, run } = props;
+  const { busy, onClose, onExplain, onExplainMany, onReview, onStartOver, run } = props;
+  const { user } = useAuth();
   const [forceReason, setForceReason] = useState("");
   const [forcing, setForcing] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [groupReason, setGroupReason] = useState("");
+  const [showCharges, setShowCharges] = useState(false);
 
+  const charges = run.exceptions.filter((e) => e.code === "BANK_CHARGE");
   const unexplained = run.exceptions.filter((e) => e.severity === "high");
-  const other = run.exceptions.filter((e) => e.severity !== "high");
+  const other = run.exceptions.filter((e) => e.severity !== "high" && e.code !== "BANK_CHARGE");
+  // Only bank lines can be explained together; a gap is fixed by the bank.
+  const selectable = unexplained.filter((e) => e.bank_line_id && e.code !== "STATEMENT_GAP");
+  const complete = run.statement_complete;
+  const iClosed = !!user?.email && user.email.toLowerCase() === (run.closed_by || "").toLowerCase();
+
+  function toggle(id: string) {
+    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
 
   return (
     <div className="space-y-6">
@@ -502,22 +572,27 @@ function RunView(props: {
               <p className="mt-0.5 text-xs font-medium text-gray-500">{run.account_label}</p>
             ) : null}
             <p className="mt-1 text-sm text-gray-700">
-              {run.matched} of {run.payments_in_system} payments matched the bank.
-              DOCex says {money(run.total_paid_in_system)} went out; the bank says{" "}
-              {money(run.total_debits_in_bank)}.{" "}
-              {Math.abs(run.variance) < 0.005 ? (
-                "The two agree."
-              ) : (
-                <span className="font-medium">
-                  A difference of {money(Math.abs(run.variance))}.
-                </span>
-              )}
+              {run.matched} of {run.payments_in_system} approved payment
+              {run.payments_in_system === 1 ? "" : "s"} confirmed by the bank.
+              {complete === true
+                ? " The statement is complete — every running balance agrees."
+                : complete === false
+                  ? " The statement is incomplete — rows are missing or altered."
+                  : " (No balance column, so completeness could not be checked.)"}
             </p>
+            {run.opening_balance != null && run.closing_balance != null ? (
+              <p className="mt-1 text-xs text-gray-600">
+                Opening {money(run.opening_balance)} + in {money(run.money_in_total ?? 0)} − out{" "}
+                {money(run.total_debits_in_bank)} = closing {money(run.closing_balance)}
+              </p>
+            ) : null}
             {run.locked && (
               <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-600">
                 <Lock className="h-3.5 w-3.5" />
-                Closed by {run.closed_by} on {shortDate(run.closed_at)} — this record
-                cannot be edited.
+                Closed by {run.closed_by} on {shortDate(run.closed_at)}
+                {run.reviewed_by
+                  ? ` · signed off by ${run.reviewed_by} on ${shortDate(run.reviewed_at || "")}`
+                  : " · awaiting a second person's sign-off"}
               </p>
             )}
           </div>
@@ -531,20 +606,92 @@ function RunView(props: {
         </div>
       </div>
 
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Tile label="Approved & confirmed" value={money(run.matched_value)} sub={`${run.matched} payment${run.matched === 1 ? "" : "s"}`} tone="good" />
+        <Tile label="Bank charges" value={money(run.bank_charges_total ?? 0)} sub={`${run.bank_charges_count ?? 0} item${run.bank_charges_count === 1 ? "" : "s"}`} />
+        <Tile label="Money in" value={money(run.money_in_total ?? 0)} sub={`${run.money_in_count ?? 0} receipt${run.money_in_count === 1 ? "" : "s"}`} />
+        <Tile label="Needs attention" value={String(unexplained.length)} sub={unexplained.length ? "explain before closing" : "nothing outstanding"} tone={unexplained.length ? "bad" : "good"} />
+      </div>
+
       {unexplained.length > 0 && (
         <section className="space-y-3">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
             Needs an explanation
           </h3>
+          {!run.locked && selectable.length > 1 ? (
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+              <p className="text-xs text-gray-600">
+                Several with the same answer? Tick them, give one reason, record once.
+              </p>
+              {selected.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <input
+                    className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
+                    onChange={(e) => setGroupReason(e.target.value)}
+                    placeholder={`One reason for the ${selected.length} ticked item${selected.length === 1 ? "" : "s"}`}
+                    value={groupReason}
+                  />
+                  <button
+                    className="rounded-lg bg-gray-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+                    disabled={!groupReason.trim() || busy !== null}
+                    onClick={() => {
+                      onExplainMany(selected, groupReason);
+                      setSelected([]);
+                      setGroupReason("");
+                    }}
+                    type="button"
+                  >
+                    {busy === "explain-many" ? <Loader2 className="h-4 w-4 animate-spin" /> : `Explain ${selected.length}`}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {unexplained.map((exc) => (
-            <ExceptionCard
-              busy={busy}
-              exc={exc}
-              key={`${exc.code}-${exc.bank_line_id || exc.transaction_id}-${exc.bank_row}`}
-              locked={run.locked}
-              onExplain={onExplain}
-            />
+            <div className="flex items-start gap-2" key={`${exc.code}-${exc.bank_line_id || exc.transaction_id}-${exc.bank_row}`}>
+              {!run.locked && selectable.length > 1 && selectable.includes(exc) ? (
+                <input
+                  aria-label="Select to explain together"
+                  checked={selected.includes(exc.bank_line_id)}
+                  className="mt-5 h-4 w-4"
+                  onChange={() => toggle(exc.bank_line_id)}
+                  type="checkbox"
+                />
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <ExceptionCard busy={busy} exc={exc} locked={run.locked} onExplain={onExplain} />
+              </div>
+            </div>
           ))}
+        </section>
+      )}
+
+      {charges.length > 0 && (
+        <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+          <button
+            className="flex w-full items-center justify-between text-left"
+            onClick={() => setShowCharges((v) => !v)}
+            type="button"
+          >
+            <span className="text-sm font-medium text-gray-900">
+              Bank charges · {charges.length} item{charges.length === 1 ? "" : "s"} · {money(run.bank_charges_total ?? 0)}
+            </span>
+            <span className="text-xs text-gray-500">{showCharges ? "Hide" : "Show"}</span>
+          </button>
+          <p className="mt-1 text-xs text-gray-500">
+            The bank&rsquo;s own fees (SMS alerts, stamp duty, transfer fees, VAT on fees), recognised
+            from the narration. Posted to QuickBooks as one entry.
+          </p>
+          {showCharges ? (
+            <ul className="mt-3 divide-y divide-gray-100 text-sm">
+              {charges.map((c) => (
+                <li className="flex justify-between py-1.5" key={c.bank_line_id}>
+                  <span className="text-gray-700">{shortDate(c.date)} · {c.description}</span>
+                  <span className="text-gray-900">{money(c.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       )}
 
@@ -645,10 +792,142 @@ function RunView(props: {
         </div>
       )}
 
+      {run.locked && !run.reviewed_by ? (
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <h3 className="font-medium text-gray-900">Second signature</h3>
+          <p className="mt-1 text-sm text-gray-600">
+            A month checked only by the person who prepared it isn&rsquo;t checked. Someone other than{" "}
+            {run.closed_by} signs it off.
+          </p>
+          {iClosed ? (
+            <p className="mt-3 text-sm text-gray-500">You closed this month, so someone else in Finance signs it off.</p>
+          ) : (
+            <button
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+              disabled={busy !== null}
+              onClick={onReview}
+              type="button"
+            >
+              {busy === "review" ? <Loader2 className="h-4 w-4 animate-spin" /> : <BadgeCheck className="h-4 w-4" />}
+              I&rsquo;ve checked it — sign off {periodLabel(run.period)}
+            </button>
+          )}
+        </div>
+      ) : null}
+
+      <QuickBooksCard run={run} />
+
       <p className="text-xs text-gray-400">
         Statement: {run.statement} · fingerprint {run.statement_sha256} · reconciled
         by {run.created_by || "—"}
       </p>
+    </div>
+  );
+}
+
+function Tile({ label, value, sub, tone }: { label: string; value: string; sub: string; tone?: "good" | "bad" }) {
+  const box = tone === "bad" ? "border-red-200 bg-red-50" : tone === "good" ? "border-emerald-200 bg-emerald-50" : "border-gray-200 bg-white";
+  return (
+    <div className={`rounded-xl border p-3 ${box}`}>
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="mt-1 text-base font-semibold text-gray-900">{value}</p>
+      <p className="text-xs text-gray-500">{sub}</p>
+    </div>
+  );
+}
+
+const EDITION_LABEL: Record<string, string> = {
+  online_international: "QuickBooks Online (international)",
+  online_us: "QuickBooks Online (US)",
+  desktop: "QuickBooks Desktop",
+};
+
+/**
+ * Send to QuickBooks. Everything comes FROM this reconciliation, so only money
+ * the bank confirmed — and DOCex approved — reaches the books.
+ *
+ * Every edition: the bank file, uploaded in place of the raw statement, each
+ * line already saying what it is. The US edition and Desktop can also import
+ * journals, which post each payment to its account and project class outright
+ * (closed months only). Intuit: the international edition cannot import
+ * journals, so it is not offered there.
+ */
+function QuickBooksCard({ run }: { run: ReconRun }) {
+  const [edition, setEdition] = useState("online_international");
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getDocumentPermissions()
+      .then((p) => setAllowed(!!p.handles_money))
+      .catch(() => setAllowed(false));
+    getAccountMap()
+      .then((m) => setEdition((m as { edition?: string }).edition || "online_international"))
+      .catch(() => undefined);
+  }, []);
+
+  if (!allowed) return null;
+
+  async function get(kind: QuickBooksFileKind | "report") {
+    setBusy(kind);
+    setError(null);
+    try {
+      const { blob, filename } = kind === "report"
+        ? await downloadReconReport(run.run_id)
+        : await downloadQuickBooksFile(run.run_id, kind);
+      triggerBlobDownload(blob, filename);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not download that file.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const journalKind: QuickBooksFileKind | null =
+    edition === "online_us" ? "journal" : edition === "desktop" ? "iif" : null;
+  const btn = "inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40";
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <h3 className="font-medium text-gray-900">Send to QuickBooks</h3>
+      <p className="mt-1 text-sm text-gray-600">
+        For {EDITION_LABEL[edition] || edition}. Upload the bank file in QuickBooks under{" "}
+        <span className="font-medium">Banking → Upload from file</span>, instead of the raw statement —
+        every line already says who was paid, the request, the account and the project.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button className={btn} disabled={!!busy} onClick={() => get("bank")} type="button">
+          {busy === "bank" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          Bank file for QuickBooks
+        </button>
+        {journalKind ? (
+          <button
+            className={btn}
+            disabled={!!busy || !run.locked}
+            onClick={() => get(journalKind)}
+            title={run.locked ? "" : "Close the month first"}
+            type="button"
+          >
+            {busy === journalKind ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {journalKind === "iif" ? "Journal file (IIF)" : "Journal file"}
+          </button>
+        ) : null}
+        <button className={btn} disabled={!!busy} onClick={() => get("report")} type="button">
+          {busy === "report" ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+          Reconciliation report (Excel)
+        </button>
+      </div>
+      {journalKind && !run.locked ? (
+        <p className="mt-2 text-xs text-gray-500">
+          The journal file is available once the month is closed, so the books only receive confirmed payments.
+        </p>
+      ) : null}
+      <p className="mt-2 text-xs text-gray-500">
+        Tip: in QuickBooks, one bank rule per expense account (&ldquo;Description contains · Venue costs ·&rdquo;)
+        files these lines by itself every month.
+      </p>
+      {error ? <p className="mt-2 text-sm text-red-700">{error}</p> : null}
     </div>
   );
 }
@@ -774,7 +1053,7 @@ function MatchTable({ run }: { run: ReconRun }) {
   );
 }
 
-function PastRuns({ runs }: { runs: ReconRunSummary[] }) {
+function PastRuns({ runs, onOpen }: { runs: ReconRunSummary[]; onOpen: (runId: string) => void }) {
   return (
     <section>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
@@ -782,7 +1061,12 @@ function PastRuns({ runs }: { runs: ReconRunSummary[] }) {
       </h3>
       <div className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white shadow-sm">
         {runs.map((r) => (
-          <div className="flex items-center justify-between px-4 py-3 text-sm" key={r.run_id}>
+          <button
+            className="flex w-full items-center justify-between px-4 py-3 text-left text-sm hover:bg-gray-50"
+            key={r.run_id}
+            onClick={() => onOpen(r.run_id)}
+            type="button"
+          >
             <div>
               <span className="font-medium text-gray-900">{periodLabel(r.period)}</span>
               <span className="ml-2 text-gray-500">
@@ -805,8 +1089,11 @@ function PastRuns({ runs }: { runs: ReconRunSummary[] }) {
               >
                 {r.reconciled ? "Reconciled" : `${r.unresolved_high} unexplained`}
               </span>
+              {r.locked ? (
+                <span className="text-xs text-gray-500">{r.reviewed_by ? "Signed off" : "Awaiting sign-off"}</span>
+              ) : null}
             </div>
-          </div>
+          </button>
         ))}
       </div>
     </section>

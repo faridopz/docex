@@ -62,6 +62,9 @@ async def set_map(payload: dict = Body(...), ctx: Ctx = Depends(request_context)
         amap = ax.AccountMap.model_validate(payload)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid mapping: {exc}")
+    if amap.edition not in ax.EDITIONS:
+        raise HTTPException(status_code=422,
+                            detail=f"QuickBooks edition must be one of: {', '.join(ax.EDITIONS)}.")
     return ax.set_map(ctx.org_id, amap).model_dump()
 
 

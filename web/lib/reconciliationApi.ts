@@ -5,6 +5,7 @@
  * Form(...) routes on the server; apiFetch leaves FormData's Content-Type
  * alone so the multipart boundary survives.
  */
+import { downloadNamed } from "@/lib/requisitionApi";
 import { apiFetch } from "@/lib/session";
 import type {
   ColumnMap,
@@ -133,4 +134,33 @@ export function setColumnMap(cmap: ColumnMap): Promise<ColumnMap> {
     method: "PUT",
     body: JSON.stringify(cmap),
   });
+}
+
+
+/** One reason for several items ("these three are agreed loan fees"). */
+export function explainMany(runId: string, bankLineIds: string[], reason: string): Promise<ReconRun> {
+  return apiFetch<ReconRun>(`/reconciliation/${encodeURIComponent(runId)}/explain-many`, {
+    method: "POST",
+    body: JSON.stringify({ bank_line_ids: bankLineIds, reason }),
+  });
+}
+
+/** The second signature on a closed month. Never the person who closed it. */
+export function reviewPeriod(runId: string): Promise<ReconRun> {
+  return apiFetch<ReconRun>(`/reconciliation/${encodeURIComponent(runId)}/review`, { method: "POST" });
+}
+
+export type QuickBooksFileKind = "bank" | "journal" | "iif";
+
+/** bank: any QuickBooks (Banking → Upload from file). journal / iif: the
+ * editions that can import journals — only from a closed month. */
+export function downloadQuickBooksFile(runId: string, kind: QuickBooksFileKind) {
+  const ext = kind === "iif" ? "iif" : "csv";
+  return downloadNamed(`/reconciliation/${encodeURIComponent(runId)}/quickbooks?kind=${kind}`,
+    `quickbooks-${kind}.${ext}`);
+}
+
+/** The month as evidence (Excel), for an auditor or a donor. */
+export function downloadReconReport(runId: string) {
+  return downloadNamed(`/reconciliation/${encodeURIComponent(runId)}/report.xlsx`, "bank-reconciliation.xlsx");
 }

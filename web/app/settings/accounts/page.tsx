@@ -14,7 +14,7 @@ import { Landmark, Loader2, Plus } from "lucide-react";
 
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
-import { addBankAccount, listBankAccounts, type BankAccount } from "@/lib/bankAccountsApi";
+import { addBankAccount, listBankAccounts, setQuickBooksName, type BankAccount } from "@/lib/bankAccountsApi";
 
 const EMPTY = { code: "", name: "", account_number: "", bank_name: "", project_code: "" };
 
@@ -89,6 +89,7 @@ export default function BankAccountsPage() {
                     {a.project_code ? `Project ${a.project_code}` : "No project — choose it when paying"}
                     {a.active ? "" : " · closed"}
                   </span>
+                  <QuickBooksName account={a} canEdit={user?.role === "admin"} onSaved={load} />
                 </li>
               ))}
             </ul>
@@ -128,5 +129,58 @@ export default function BankAccountsPage() {
         ) : null}
       </div>
     </AppShell>
+  );
+}
+
+
+/** This account's name in QuickBooks, edited in place. The QuickBooks files
+ * credit payments to it; set once, next to the account it describes. */
+function QuickBooksName({ account, canEdit, onSaved }: {
+  account: BankAccount; canEdit: boolean; onSaved: () => Promise<void> | void;
+}) {
+  const [value, setValue] = useState(account.quickbooks_name ?? "");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const dirty = value.trim() !== (account.quickbooks_name ?? "");
+
+  async function save() {
+    setBusy(true);
+    setNote(null);
+    try {
+      await setQuickBooksName(account.id, value.trim());
+      setNote("Saved");
+      await onSaved();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex w-full items-center gap-2 pl-6 text-xs">
+      <span className="shrink-0 text-gray-500">In QuickBooks:</span>
+      {canEdit ? (
+        <>
+          <input
+            className="min-w-0 flex-1 rounded-md border border-gray-300 px-2 py-1 text-xs"
+            onChange={(e) => { setValue(e.target.value); setNote(null); }}
+            placeholder="The account's exact name in your QuickBooks chart of accounts"
+            value={value}
+          />
+          <button
+            className="rounded-md border border-gray-300 px-2 py-1 font-medium text-gray-700 disabled:opacity-40"
+            disabled={!dirty || busy}
+            onClick={save}
+            type="button"
+          >
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </>
+      ) : (
+        <span className="text-gray-700">{account.quickbooks_name || "not set"}</span>
+      )}
+      {note ? <span className="text-gray-500">{note}</span> : null}
+    </div>
   );
 }

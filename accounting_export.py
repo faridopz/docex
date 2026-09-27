@@ -95,8 +95,19 @@ class AccountMap(BaseModel):
     # come out per funder. Off by default: it changes the shape of their books.
     grant_as_customer: bool = False
 
-    # The bank account these payments left, as named in QuickBooks.
+    # Fallback name of the bank account in QuickBooks, for organisations that
+    # have not registered their accounts. Each registered bank account carries
+    # its own QuickBooks name (bank_accounts.quickbooks_name), which wins.
     bank_account: str = ""
+
+    # Which QuickBooks the organisation runs — it decides what can be imported:
+    #   online_international  bank transactions only (Intuit: no journal import
+    #                         outside the US) — the coded bank file
+    #   online_us             + journal entries (CSV)
+    #   desktop               + journal entries (IIF)
+    edition: str = "online_international"
+    # Where the bank's own charges are posted.
+    bank_charges_account: str = "Bank charges"
     # QuickBooks date format on the import screen. Their books, their setting.
     date_format: str = "%d/%m/%Y"
 
@@ -310,3 +321,233 @@ def export_summary(org_id: str, period: str) -> dict:
                  "they differ by region and plan. Confirm the mapping on the "
                  "first import; QuickBooks remembers it afterwards."),
     }
+
+
+# ─── 3. from a reconciled month: the files QuickBooks can take ──────────────
+#
+# Research, Sept 2026 (Intuit help centre): the international edition of
+# QuickBooks Online — the one Nigerian organisations use — imports bank
+# transactions (Date, Description, Amount) and bills, but NOT journal entries
+# or expenses ("unavailable in the QuickBooks Online international version",
+# Intuit staff). The US edition imports journal entries (Journal No., Journal
+# Date, Account Name, Debits, Credits; debits = credits per journal; under
+# 1,000 rows). QuickBooks Desktop imports IIF.
+#
+# So everything here is built FROM A RECONCILIATION RUN: only money the bank
+# confirms moved, matched to an approval, reaches the books. The bank file
+# works on every edition and replaces the raw statement people upload today;
+# the journals are for the editions that can import them, and only from a
+# closed month.
+
+EDITIONS = ("online_international", "online_us", "desktop")
+
+
+def _run_account(org_id: str, run):
+    if not getattr(run, "account_id", ""):
+        return None
+    try:
+        import bank_accounts as _ba
+        return _ba.get(org_id, run.account_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def quickbooks_bank_name(org_id: str, run, amap: "AccountMap") -> str:
+    acct = _run_account(org_id, run)
+    return ((acct.quickbooks_name if acct else "") or amap.bank_account
+            or (acct.label if acct else "")).strip()
+
+
+def _coding(org_id: str, disbursement_id: str, amap: "AccountMap") -> dict:
+    """Account and class for one matched payment, from what was approved."""
+    import disbursements as _disb
+    d = _disb.get(org_id, disbursement_id)
+    if d is None:
+        return {"payee": "", "ref": "", "account": amap.default_account, "klass": ""}
+    category = (getattr(d, "category", "") or d.memo or "").strip().lower()
+    class_key = getattr(d, "grant_code", None) or getattr(d, "project_code", "") or ""
+    return {"payee": d.payee_name, "ref": d.source_ref,
+            "account": amap.accounts.get(category, amap.default_account),
+            "klass": amap.classes.get(class_key, "") if class_key else "",
+            "id": d.id}
+
+
+def _line_labels(org_id: str, run, amap: "AccountMap") -> dict:
+    """bank_line_id → the description QuickBooks should show for it."""
+    out = {}
+    for m in run.matches:
+        c = _coding(org_id, m.transaction_id, amap)
+        parts = [c["payee"] or m.vendor_name, c["ref"] or m.transaction_ref, c["account"], c["klass"]]
+        out[m.bank_line_id] = " · ".join(p for p in parts if p)
+    for e in run.exceptions:
+        if e.code.value == "BANK_CHARGE" and e.bank_line_id:
+            out[e.bank_line_id] = f"{amap.bank_charges_account} · {e.description}"
+    return out
+
+
+def bank_upload_from_run(org_id: str, run, amap: Optional["AccountMap"] = None) -> list[str]:
+    """The month's statement as QuickBooks' 3-column bank file, every line
+    labelled: matched payments say payee · reference · account · class, bank
+    charges say the charges account, everything else keeps the bank's words.
+
+    Upload it INSTEAD of the raw statement (Banking → Upload from file). One
+    bank rule per expense account ("Description contains '· Venue costs ·'")
+    then files each month's lines by itself."""
+    org = store.require_org(org_id)
+    amap = amap or get_map(org)
+    labels = _line_labels(org, run, amap)
+    lines = sorted(list(run.bank_lines) + list(getattr(run, "credit_lines", []) or []),
+                   key=lambda ln: (ln.date, ln.row))
+    rows = []
+    for ln in lines:
+        desc = labels.get(ln.id) or f"{ln.description} {ln.reference}"
+        rows.append([_qbo_date(ln.date, amap.date_format), _clean_text(desc),
+                     _qbo_amount(ln.amount_minor / 100.0)])
+    if not rows:
+        raise ExportError("This statement has no lines in the month.")
+    header = ["Date", "Description", "Amount"]
+    return [_write(rows[i:i + QBO_ROWS_PER_FILE], header)
+            for i in range(0, len(rows), QBO_ROWS_PER_FILE)]
+
+
+def _journal_entries(org_id: str, run, amap: "AccountMap") -> list[dict]:
+    """Balanced journals for a CLOSED month: one per matched payment (debit
+    the expense account + class, credit the bank), one for the month's bank
+    charges. Explained-but-unmatched money is never posted: nothing approved
+    it, so nothing in DOCex can say which account it belongs to."""
+    if not run.locked:
+        raise ExportError("Close the month first. Only a closed reconciliation goes to "
+                          "QuickBooks, so the books only ever hold money the bank confirmed.")
+    bank = quickbooks_bank_name(org_id, run, amap)
+    if not bank:
+        raise ExportError("Set this bank account's QuickBooks name (Settings → Bank accounts).")
+    entries, used = [], {}
+    for m in sorted(run.matches, key=lambda m: (m.bank_date, m.transaction_ref, m.transaction_id)):
+        c = _coding(org_id, m.transaction_id, amap)
+        ref = (c["ref"] or m.transaction_ref or "PAY").replace(" ", "")
+        used[ref] = used.get(ref, 0) + 1
+        entries.append({"no": f"DX-{ref}" + (f"-{used[ref]}" if used[ref] > 1 else ""),
+                        "date": m.bank_date, "debit_account": c["account"], "klass": c["klass"],
+                        "credit_account": bank, "amount": m.amount,
+                        "description": " · ".join(p for p in (c["payee"] or m.vendor_name, c["ref"]) if p)})
+    charges = [e for e in run.exceptions if e.code.value == "BANK_CHARGE"]
+    if charges:
+        entries.append({"no": f"DX-{run.period}-CHG", "date": run.period_end,
+                        "debit_account": amap.bank_charges_account, "klass": "",
+                        "credit_account": bank, "amount": round(sum(e.amount for e in charges), 2),
+                        "description": f"Bank charges {run.period} ({len(charges)} items)"})
+    return entries
+
+
+def journal_csv_from_run(org_id: str, run, amap: Optional["AccountMap"] = None) -> str:
+    """QuickBooks Online (US) journal import: Settings → Import data →
+    Journal entries. Journal numbers are stable, so importing the same month
+    twice is caught by QuickBooks' duplicate-number warning."""
+    org = store.require_org(org_id)
+    amap = amap or get_map(org)
+    rows = []
+    for e in _journal_entries(org, run, amap):
+        date = _qbo_date(e["date"], amap.date_format)
+        memo = f"DOCex reconciliation {run.period}"
+        rows.append([e["no"], date, e["debit_account"], _qbo_amount(e["amount"]), "",
+                     _clean_text(e["description"]), e["klass"], memo])
+        rows.append([e["no"], date, e["credit_account"], "", _qbo_amount(e["amount"]),
+                     _clean_text(e["description"]), e["klass"], memo])
+    return _write(rows, ["Journal No.", "Journal Date", "Account Name", "Debits", "Credits",
+                         "Description", "Class", "Memo"])
+
+
+def journal_iif_from_run(org_id: str, run, amap: Optional["AccountMap"] = None) -> str:
+    """QuickBooks Desktop: File → Utilities → Import → IIF Files. Tab-
+    separated GENERAL JOURNAL transactions; each sums to zero."""
+    org = store.require_org(org_id)
+    amap = amap or get_map(org)
+    out = ["!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
+           "!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
+           "!ENDTRNS"]
+
+    def clean(v):
+        return _clean_text(v).replace("\t", " ")
+    for e in _journal_entries(org, run, amap):
+        date = _qbo_date(e["date"], amap.date_format)
+        out.append("\t".join(["TRNS", "", "GENERAL JOURNAL", date, clean(e["debit_account"]),
+                              clean(e["klass"]), _qbo_amount(e["amount"]), e["no"], clean(e["description"])]))
+        out.append("\t".join(["SPL", "", "GENERAL JOURNAL", date, clean(e["credit_account"]),
+                              clean(e["klass"]), _qbo_amount(-e["amount"]), e["no"], clean(e["description"])]))
+        out.append("ENDTRNS")
+    return "\n".join(out) + "\n"
+
+
+def reconciliation_report_xlsx(org_id: str, run, amap: Optional["AccountMap"] = None) -> bytes:
+    """The month, as evidence for an auditor or a donor: what matched, what
+    was explained and by whom, the bank's charges, the money in, whether the
+    statement was complete, and who closed and who signed it off."""
+    import openpyxl
+    from openpyxl.styles import Font
+
+    import bank_reconciliation as br
+    org = store.require_org(org_id)
+    amap = amap or get_map(org)
+    s = br.summary(run)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    bold = Font(bold=True)
+
+    def money(v):
+        return None if v is None else round(float(v), 2)
+    complete = {True: "Yes — every running balance agrees", False: "NO — rows missing or altered",
+                None: "Not checked (no balance column)"}[s["statement_complete"]]
+    rows = [
+        ("Bank reconciliation", f"{run.account_label or quickbooks_bank_name(org, run, amap) or 'Account'} — {run.period}"),
+        ("Statement file", run.statement_name), ("Statement fingerprint (SHA-256)", run.statement_sha256),
+        ("Opening balance", money(s["opening_balance"])), ("Money in", money(s["money_in_total"])),
+        ("Money out", money(run.total_debits_in_bank)), ("Closing balance", money(s["closing_balance"])),
+        ("Statement complete", complete),
+        ("Payments approved in DOCex and confirmed by the bank", f"{s['matched']} ({money(s['matched_value']):,.2f})"),
+        ("Bank charges", f"{s['bank_charges_count']} ({money(s['bank_charges_total']):,.2f})"),
+        ("Items explained", s["explained"]), ("Items still open", s["open_items"]),
+        ("Reconciled", "Yes" if s["reconciled"] else "No"),
+        ("Closed by", f"{run.closed_by or '— not closed'} {run.closed_at[:16].replace('T', ' ')}"),
+        ("Signed off by", f"{run.reviewed_by or '— not yet signed off'} {run.reviewed_at[:16].replace('T', ' ')}"),
+    ]
+    for r in rows:
+        ws.append(list(r))
+    for c in ws["A"]:
+        c.font = bold
+    ws.column_dimensions["A"].width = 52
+    ws.column_dimensions["B"].width = 70
+
+    labels = _line_labels(org, run, amap)
+    m = wb.create_sheet("Matched")
+    m.append(["Bank date", "Amount", "Payee", "DOCex reference", "Account", "Class", "How matched", "Paid in DOCex"])
+    for x in run.matches:
+        c = _coding(org, x.transaction_id, amap)
+        m.append([x.bank_date, money(x.amount), c["payee"] or x.vendor_name, c["ref"] or x.transaction_ref,
+                  c["account"], c["klass"], x.method.value, (x.paid_at or "")[:10]])
+    o = wb.create_sheet("Explained & open items")
+    o.append(["Date", "Amount", "What", "Description", "Status", "Explanation / note"])
+    for e in run.exceptions:
+        if e.code.value == "BANK_CHARGE":
+            continue
+        explained = "EXPLAINED by" in (e.note or "")
+        o.append([e.date, money(e.amount), e.code.value.replace("_", " ").title(),
+                  e.description or e.transaction_ref,
+                  "Explained" if explained else ("Open" if e.severity.value == "high" else "Carried forward"),
+                  e.note])
+    ch = wb.create_sheet("Bank charges")
+    ch.append(["Date", "Amount", "Narration"])
+    for e in run.exceptions:
+        if e.code.value == "BANK_CHARGE":
+            ch.append([e.date, money(e.amount), e.description])
+    ch.append(["Total", money(s["bank_charges_total"]), ""])
+    mi = wb.create_sheet("Money in")
+    mi.append(["Date", "Amount", "Narration", "Reference"])
+    for ln in getattr(run, "credit_lines", []) or []:
+        mi.append([ln.date, money(ln.amount_minor / 100.0), ln.description, ln.reference])
+    for sheet in wb.worksheets[1:]:
+        for c in sheet[1]:
+            c.font = bold
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

@@ -20,6 +20,10 @@ export type AccountMap = {
   grant_as_customer: boolean;
   bank_account: string;
   date_format: string;
+  /** online_international | online_us | desktop — decides what can be imported. */
+  edition?: string;
+  /** Where the bank's own charges are posted. */
+  bank_charges_account?: string;
 };
 
 export type ExportSummary = {

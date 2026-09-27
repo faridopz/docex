@@ -108,6 +108,8 @@ class ExceptionCode(str, Enum):
     AMOUNT_MISMATCH = "AMOUNT_MISMATCH"         # same reference, different amount
     AMBIGUOUS = "AMBIGUOUS"                     # several equally good candidates
     DUPLICATE_BANK_LINE = "DUPLICATE_BANK_LINE"  # same debit twice on the statement
+    BANK_CHARGE = "BANK_CHARGE"                 # the bank's own fee — recognised, not a finding
+    STATEMENT_GAP = "STATEMENT_GAP"             # running balance breaks: rows missing or altered
 
 
 class Severity(str, Enum):
@@ -129,6 +131,10 @@ class ColumnMap(BaseModel):
     debit: str = ""
     credit: str = ""
     amount: str = ""
+    # The running balance. Optional — when present it proves the statement is
+    # complete (each balance = previous balance + this line), and gives the
+    # opening and closing balances the month-end report states.
+    balance: str = ""
     date_format: str = ""        # e.g. "%d/%m/%Y". Empty = infer from the data.
     detected: bool = False       # True when auto-detection produced this
 
@@ -141,6 +147,7 @@ class BankLine(BaseModel):
     description: str = ""
     reference: str = ""
     amount_minor: int = 0        # negative = money OUT of the account
+    balance_minor: Optional[int] = None   # running balance after this line, if the bank gives it
     raw: dict = Field(default_factory=dict)
 
     @property
@@ -209,7 +216,15 @@ class ReconciliationRun(BaseModel):
 
     matches: list[Match] = Field(default_factory=list)
     exceptions: list[ReconException] = Field(default_factory=list)
-    bank_lines: list[BankLine] = Field(default_factory=list)
+    bank_lines: list[BankLine] = Field(default_factory=list)        # debits in the period
+    credit_lines: list[BankLine] = Field(default_factory=list)      # money in, in the period
+
+    # Completeness, from the bank's own running balance. None = the statement
+    # has no balance column, so completeness could not be proved either way.
+    opening_balance: Optional[float] = None
+    closing_balance: Optional[float] = None
+    balance_checked: bool = False
+    balance_gaps: list[dict] = Field(default_factory=list)
 
     total_paid_in_system: float = 0.0
     total_debits_in_bank: float = 0.0
@@ -221,15 +236,26 @@ class ReconciliationRun(BaseModel):
     closed_at: str = ""
     closed_by: str = ""
     locked: bool = False
+    # Maker-checker: a second person signs the closed month off. Never the
+    # person who closed it.
+    reviewed_at: str = ""
+    reviewed_by: str = ""
 
     @property
     def unresolved_high(self) -> int:
         return len([e for e in self.exceptions if e.severity == Severity.HIGH])
 
     @property
+    def statement_complete(self) -> Optional[bool]:
+        return (not self.balance_gaps) if self.balance_checked else None
+
+    @property
     def reconciled(self) -> bool:
-        """Clean means: nothing unexplained, and the totals agree to the kobo."""
-        return self.unresolved_high == 0 and abs(self.variance) < 0.005
+        """Reconciled means what an accountant means by it: nothing unexplained
+        and the statement complete. Bank charges, explained items and payments
+        still in transit are the ordinary contents of a reconciled month, not
+        a reason it isn't one. (`variance` stays as the raw difference.)"""
+        return self.unresolved_high == 0 and self.statement_complete is not False
 
 
 class ReconciliationError(ValueError):
@@ -418,6 +444,8 @@ _CANDIDATES = {
     "credit": ["credit", "deposit", "deposits", "creditamount", "moneyin",
                "paidin", "cr", "lodgement"],
     "amount": ["amount", "transactionamount", "value"],
+    "balance": ["balance", "runningbalance", "closingbalance", "ledgerbalance",
+                "availablebalance", "bal"],
 }
 
 
@@ -448,7 +476,7 @@ def detect_columns(headers: list[str]) -> ColumnMap:
     cmap = ColumnMap(
         date=pick("date"), description=pick("description"),
         reference=pick("reference"), debit=pick("debit"),
-        credit=pick("credit"), detected=True)
+        credit=pick("credit"), balance=pick("balance"), detected=True)
     if not (cmap.debit or cmap.credit):
         cmap.amount = pick("amount")
 
@@ -564,14 +592,14 @@ def parse_statement(
         cmap = column_map.model_copy(deep=True)
     else:
         cmap = detect_columns(headers)
-        for field in ("date", "description", "reference", "debit", "credit", "amount"):
+        for field in ("date", "description", "reference", "debit", "credit", "amount", "balance"):
             supplied = getattr(column_map, field)
             if supplied:
                 setattr(cmap, field, supplied)
         if column_map.date_format:
             cmap.date_format = column_map.date_format
 
-    for field in ("date", "description", "reference", "debit", "credit", "amount"):
+    for field in ("date", "description", "reference", "debit", "credit", "amount", "balance"):
         name = getattr(cmap, field)
         if name and name not in headers:
             match = next((h for h in headers if _norm(h) == _norm(name)), None)
@@ -610,6 +638,7 @@ def parse_statement(
             description=str(row.get(cmap.description) or "").strip(),
             reference=str(row.get(cmap.reference) or "").strip(),
             amount_minor=minor,
+            balance_minor=(_try_amount(row.get(cmap.balance)) if cmap.balance else None),
             raw={str(k): ("" if v is None else str(v)) for k, v in row.items()},
         ))
 
@@ -618,6 +647,96 @@ def parse_statement(
             "No usable transaction rows found. Check that the date and amount "
             "columns were mapped to the right headers.")
     return lines, cmap
+
+
+def _try_amount(value: object) -> Optional[int]:
+    """Like parse_amount, for supporting columns (the running balance): an
+    unreadable cell there means "no evidence", never a failed import."""
+    try:
+        return parse_amount(value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ─── bank charges ───────────────────────────────────────────────────────────
+#
+# A Nigerian current account statement carries dozens of the bank's own small
+# debits a month: SMS alerts, stamp duty, NIP transfer fees and VAT on them,
+# account maintenance, COT. None has a requisition, and none should: they are
+# the bank charging for the account. Reported as "money left with no approval"
+# they buried the one finding that mattered. They are recognised here —
+# deterministically, by the narration AND a size cap, so a large debit that
+# happens to say "charge" is still a finding — then grouped and totalled.
+
+_CHARGES = "config"
+_CHARGES_ID = "bank_charge_rules"
+DEFAULT_CHARGE_WORDS = [
+    "charge", "charges", "fee", "fees", "commission", "comm", "vat",
+    "stamp duty", "sms", "alert", "maintenance", "cot", "levy", "emtl",
+]
+DEFAULT_CHARGE_MAX = 10_000.00
+
+
+class ChargeRules(BaseModel):
+    """Configuration: which debits are the bank's own charges."""
+    words: list[str] = Field(default_factory=lambda: list(DEFAULT_CHARGE_WORDS))
+    max_amount: float = DEFAULT_CHARGE_MAX
+
+
+def get_charge_rules(org_id: str) -> ChargeRules:
+    raw = store.get_store().get(store.require_org(org_id), _CHARGES, _CHARGES_ID)
+    return ChargeRules.model_validate(raw) if raw else ChargeRules()
+
+
+def set_charge_rules(org_id: str, rules: ChargeRules) -> ChargeRules:
+    store.get_store().put(store.require_org(org_id), _CHARGES, _CHARGES_ID, rules.model_dump())
+    return rules
+
+
+def charge_word(line: "BankLine", rules: ChargeRules) -> str:
+    """The word that makes this debit a bank charge, or "" if it isn't one."""
+    if not line.is_debit or abs(line.amount_minor) > _minor(rules.max_amount):
+        return ""
+    text = f" {_words(line.description)} {_words(line.reference)} "
+    for w in sorted(rules.words, key=len, reverse=True):
+        if f" {_words(w)} " in text:
+            return w
+    return ""
+
+
+def _words(s: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+
+# ─── completeness: the bank's own running balance ───────────────────────────
+
+
+def balance_check(lines: list["BankLine"]) -> dict:
+    """Prove the statement is complete from its running balance.
+
+    Each line's balance must equal the previous balance plus this line's
+    amount. A break means rows are missing (a page not exported) or altered.
+    Banks export newest-first or oldest-first; both orders are tried and the
+    one the balances actually follow is used.
+    """
+    rows = [ln for ln in lines if ln.balance_minor is not None]
+    if len(rows) < 2:
+        return {"checked": False, "gaps": [], "opening": None, "closing": None}
+
+    def breaks(seq):
+        out = []
+        for prev, cur in zip(seq, seq[1:]):
+            expected = prev.balance_minor + cur.amount_minor
+            if expected != cur.balance_minor:
+                out.append({"after_row": prev.row, "row": cur.row, "date": cur.date,
+                            "expected": expected / 100.0, "found": cur.balance_minor / 100.0})
+        return out
+
+    forward, backward = breaks(rows), breaks(rows[::-1])
+    seq, gaps = (rows, forward) if len(forward) <= len(backward) else (rows[::-1], backward)
+    return {"checked": True, "gaps": gaps,
+            "opening": (seq[0].balance_minor - seq[0].amount_minor) / 100.0,
+            "closing": seq[-1].balance_minor / 100.0}
 
 
 # ─── matching ───────────────────────────────────────────────────────────────
@@ -727,6 +846,9 @@ def reconcile(
 
     lines, cmap = parse_statement(statement, filename=filename, column_map=column_map)
     debits = [ln for ln in lines if ln.is_debit and start <= ln.date <= end]
+    credits = [ln for ln in lines if not ln.is_debit and start <= ln.date <= end]
+    completeness = balance_check(lines)
+    charge_rules = get_charge_rules(org)
 
     remaining_txns = {t.id: t for t in txns}
     remaining_lines = {ln.id: ln for ln in debits}
@@ -837,6 +959,28 @@ def reconcile(
                   "was sent."),
         ))
 
+    # The bank's own charges: recognised, grouped, never a finding. Before the
+    # duplicate check — two identical SMS charges on one day are normal.
+    for ln in sorted(remaining_lines.values(), key=lambda l: l.row):
+        word = charge_word(ln, charge_rules)
+        if word:
+            exceptions.append(ReconException(
+                code=ExceptionCode.BANK_CHARGE, severity=Severity.LOW,
+                amount=abs(ln.amount), date=ln.date, description=ln.description,
+                bank_line_id=ln.id, bank_row=ln.row,
+                note=f"Bank charge — recognised by '{word}' in the narration."))
+            remaining_lines.pop(ln.id, None)
+
+    for gap in completeness["gaps"]:
+        exceptions.append(ReconException(
+            code=ExceptionCode.STATEMENT_GAP, severity=Severity.HIGH,
+            date=gap["date"], bank_row=gap["row"],
+            amount=round(abs(gap["found"] - gap["expected"]), 2),
+            description=f"Running balance breaks between rows {gap['after_row']} and {gap['row']}",
+            note=(f"The balance should be {gap['expected']:,.2f} here and the statement "
+                  f"shows {gap['found']:,.2f}. Rows are missing (often a page not exported) "
+                  "or were altered. Get the complete statement from the bank.")))
+
     seen: dict[tuple, BankLine] = {}
     for ln in sorted(remaining_lines.values(), key=lambda l: l.row):
         fingerprint = (ln.amount_minor, ln.date, _norm(ln.reference or ln.description))
@@ -874,6 +1018,9 @@ def reconcile(
         statement_lines=len(lines),
         column_map=cmap, date_window_days=date_window_days,
         matches=matches, exceptions=exceptions, bank_lines=debits,
+        credit_lines=credits,
+        opening_balance=completeness["opening"], closing_balance=completeness["closing"],
+        balance_checked=completeness["checked"], balance_gaps=completeness["gaps"],
         total_paid_in_system=total_system,
         total_debits_in_bank=total_bank,
         total_matched=total_matched,
@@ -985,6 +1132,50 @@ def close_period(org_id: str, run_id: str, *, actor: str,
     return _save(run.org_id, run)
 
 
+def explain_many(
+    org_id: str, run_id: str, *, bank_line_ids: Iterable[str] = (),
+    transaction_ids: Iterable[str] = (), actor: str, reason: str,
+) -> ReconciliationRun:
+    """Explain several items with one reason — "these three are loan fees
+    agreed with the bank" — rather than typing it three times. Each item
+    still records who explained it and why."""
+    if not reason.strip():
+        raise ReconciliationError("An explanation cannot be blank.")
+    run = _require_open(org_id, run_id)
+    lines, txns = set(bank_line_ids or ()), set(transaction_ids or ())
+    if not (lines or txns):
+        raise ReconciliationError("Choose at least one item to explain.")
+    hit = 0
+    for e in run.exceptions:
+        if (e.bank_line_id and e.bank_line_id in lines) or (e.transaction_id and e.transaction_id in txns):
+            if e.code == ExceptionCode.STATEMENT_GAP:
+                continue                    # a missing page is fixed by the bank, not explained
+            e.severity = Severity.LOW
+            e.note = f"{e.note} — EXPLAINED by {actor}: {reason.strip()}"
+            hit += 1
+    if not hit:
+        raise ReconciliationError("None of those items are open in this run.")
+    return _save(run.org_id, run)
+
+
+def review_period(org_id: str, run_id: str, *, actor: str) -> ReconciliationRun:
+    """The second signature on a closed month. Never the person who closed it:
+    a reconciliation checked only by the person who prepared it is not checked."""
+    run = get_run(org_id, run_id)
+    if run is None:
+        raise ReconciliationError(f"Reconciliation '{run_id}' not found.")
+    if not run.locked:
+        raise ReconciliationError("Close the month first; then someone else signs it off.")
+    if run.reviewed_by:
+        raise ReconciliationError(f"Already signed off by {run.reviewed_by}.")
+    if (actor or "").strip().lower() == (run.closed_by or "").strip().lower():
+        raise ReconciliationError(
+            "The month must be signed off by a different person from the one who closed it.")
+    run.reviewed_by = actor
+    run.reviewed_at = _now_iso()
+    return _save(run.org_id, run)
+
+
 # ─── persistence + reporting ────────────────────────────────────────────────
 
 
@@ -1027,6 +1218,7 @@ def list_runs(org_id: str, *, period: Optional[str] = None) -> list[Reconciliati
 
 def summary(run: ReconciliationRun) -> dict:
     """The one screen a finance officer reads at month end."""
+    charges = [e for e in run.exceptions if e.code == ExceptionCode.BANK_CHARGE]
     by_code: dict[str, int] = {}
     for e in run.exceptions:
         by_code[e.code.value] = by_code.get(e.code.value, 0) + 1
@@ -1048,4 +1240,18 @@ def summary(run: ReconciliationRun) -> dict:
         "reconciled": run.reconciled,
         "locked": run.locked,
         "closed_by": run.closed_by,
+        "closed_at": run.closed_at,
+        "reviewed_by": run.reviewed_by,
+        "reviewed_at": run.reviewed_at,
+        "bank_charges_count": len(charges),
+        "bank_charges_total": round(sum(e.amount for e in charges), 2),
+        "money_in_count": len(run.credit_lines),
+        "money_in_total": round(sum(ln.amount for ln in run.credit_lines), 2),
+        "opening_balance": run.opening_balance,
+        "closing_balance": run.closing_balance,
+        "statement_complete": run.statement_complete,
+        "balance_gaps": run.balance_gaps,
+        "explained": len([e for e in run.exceptions if "EXPLAINED by" in (e.note or "")]),
+        "open_items": len([e for e in run.exceptions
+                           if e.code != ExceptionCode.BANK_CHARGE and "EXPLAINED by" not in (e.note or "")]),
     }

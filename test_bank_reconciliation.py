@@ -401,7 +401,9 @@ def test_closing_is_blocked_over_unexplained_money() -> None:
     print("\nA month cannot quietly close over money nobody explained")
     run = br.reconcile(ORG, PERIOD, statement(
         ["2026-08-11,TRF TO UNKNOWN,X1,750000.00,",
-         "2026-08-12,MONTHLY BANK CHARGE,CHG,2500.00,"]),
+         # A real transfer nobody approved. (A small "BANK CHARGE" line would
+         # now be recognised as the bank's own charge — test_month_end_close.)
+         "2026-08-12,TRF TO SUPPLIER XYZ,X2,2500.00,"]),
         transactions=[], actor="test")
     check("two high-severity items", run.unresolved_high == 2)
     raises("close is refused",
@@ -410,7 +412,7 @@ def test_closing_is_blocked_over_unexplained_money() -> None:
 
     run = br.explain_exception(ORG, run.id,
                                bank_line_id=run.bank_lines[1].id,
-                               actor="fin@org", reason="Standard bank charge")
+                               actor="fin@org", reason="Refund due from supplier, agreed in writing")
     check("an explained item is downgraded, not deleted",
           len(run.exceptions) == 2 and run.unresolved_high == 1)
     check("and the explanation names who gave it",

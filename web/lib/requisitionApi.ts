@@ -501,7 +501,7 @@ export async function getDocumentPermissions(): Promise<DocumentPermissions> {
  * payee schedule are named for the PV number, which only the server knows
  * once it has been issued. Refusals (403/409) carry a sentence meant for the
  * person, so that sentence is what gets thrown, not raw JSON. */
-async function downloadNamed(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
+export async function downloadNamed(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
   const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,

@@ -148,6 +148,10 @@ def _line_out(l: br.BankLine) -> dict:
 def _detail_out(run: br.ReconciliationRun) -> dict:
     out = br.summary(run)
     out.update({
+        "id": run.id,
+        # The same figures, grouped — what the month-end screen reads.
+        "summary": br.summary(run),
+        "credit_lines": [_line_out(l) for l in run.credit_lines],
         # Which account was reconciled — shown on screen so nobody has to
         # wonder whether it was the CARE statement or the UNFPA one.
         "account_id": run.account_id,
@@ -331,3 +335,99 @@ async def close(run_id: str, force_reason: str = Form(""),
     except br.ReconciliationError as exc:
         raise _fail(exc)
     return _detail_out(run)
+
+
+# ─── month end: explain several, sign off, hand QuickBooks its files ───────
+
+
+def _handles_money(ctx: Ctx) -> None:
+    """Taking the books out of DOCex is Finance's job (and admins'): the
+    same rule that guards bank details."""
+    import payment_voucher
+    if not (ctx.role == "admin"
+            or (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)):
+        raise HTTPException(status_code=403, detail="Only Finance can take these files out of DOCex.")
+
+
+@router.post("/{run_id}/explain-many")
+async def explain_many(run_id: str, body: dict = Body(...), ctx: Ctx = Depends(request_context)):
+    """One reason for several items: {bank_line_ids, transaction_ids, reason}."""
+    _gate(ctx)
+    require_role(ctx, "admin", "approver", "reviewer")
+    try:
+        run = br.explain_many(ctx.org_id, run_id,
+                              bank_line_ids=body.get("bank_line_ids") or [],
+                              transaction_ids=body.get("transaction_ids") or [],
+                              actor=ctx.user_id, reason=str(body.get("reason") or ""))
+    except br.ReconciliationError as exc:
+        raise _fail(exc)
+    return _detail_out(run)
+
+
+@router.post("/{run_id}/review")
+async def review(run_id: str, ctx: Ctx = Depends(request_context)):
+    """The second signature on a closed month — never the closer's."""
+    _gate(ctx)
+    require_role(ctx, "admin", "approver")
+    try:
+        run = br.review_period(ctx.org_id, run_id, actor=ctx.user_id)
+    except br.ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _detail_out(run)
+
+
+def _run_or_404(ctx: Ctx, run_id: str) -> br.ReconciliationRun:
+    run = br.get_run(ctx.org_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Reconciliation not found.")
+    return run
+
+
+def _file_stem(run: br.ReconciliationRun) -> str:
+    import re as _re
+    label = _re.sub(r"[^A-Za-z0-9]+", "-", run.account_label or "account").strip("-")
+    return f"{label}-{run.period}"
+
+
+@router.get("/{run_id}/quickbooks")
+async def quickbooks_file(run_id: str, kind: str = "bank", part: int = 1,
+                          ctx: Ctx = Depends(request_context)):
+    """kind=bank     the coded bank file, any QuickBooks (Banking → Upload from file)
+    kind=journal  QuickBooks Online US journal import (closed month only)
+    kind=iif      QuickBooks Desktop (closed month only)"""
+    from fastapi.responses import Response
+    import accounting_export as ax
+    _gate(ctx)
+    _handles_money(ctx)
+    run = _run_or_404(ctx, run_id)
+    stem = _file_stem(run)
+    try:
+        if kind == "bank":
+            files = ax.bank_upload_from_run(ctx.org_id, run)
+            idx = max(1, min(part, len(files)))
+            name = f"quickbooks-bank-{stem}" + (f"-part{idx}" if len(files) > 1 else "") + ".csv"
+            body, media = files[idx - 1], "text/csv"
+        elif kind == "journal":
+            body, media, name = ax.journal_csv_from_run(ctx.org_id, run), "text/csv", f"quickbooks-journal-{stem}.csv"
+        elif kind == "iif":
+            body, media, name = ax.journal_iif_from_run(ctx.org_id, run), "text/plain", f"quickbooks-journal-{stem}.iif"
+        else:
+            raise HTTPException(status_code=422, detail="kind must be bank, journal or iif.")
+    except ax.ExportError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(content=body, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/{run_id}/report.xlsx")
+async def report(run_id: str, ctx: Ctx = Depends(request_context)):
+    """The month as evidence, for an auditor or a donor."""
+    from fastapi.responses import Response
+    import accounting_export as ax
+    _gate(ctx)
+    _handles_money(ctx)
+    run = _run_or_404(ctx, run_id)
+    return Response(
+        content=ax.reconciliation_report_xlsx(ctx.org_id, run),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="bank-reconciliation-{_file_stem(run)}.xlsx"'})

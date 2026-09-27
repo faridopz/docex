@@ -73,6 +73,11 @@ class BankAccount(BaseModel):
     # Foundation, and mixing their statements would be a real accounting error.
     entity: str = ""
 
+    # The name of this account in the organisation's QuickBooks chart of
+    # accounts ("GTBank CARE 3344"). The QuickBooks handoff credits payments
+    # to it; one place to set it, next to the account it describes.
+    quickbooks_name: str = ""
+
     active: bool = True
     notes: str = ""
     created_at: str = ""
@@ -179,6 +184,16 @@ def find_by_code(org_id: str, code: str) -> Optional[BankAccount]:
         return None
     return next((a for a in list_accounts(org_id, active_only=False)
                  if a.code.upper() == want), None)
+
+
+def set_quickbooks_name(org_id: str, account_id: str, name: str) -> BankAccount:
+    """What this account is called in QuickBooks (blank to clear)."""
+    acct = get(org_id, account_id)
+    if acct is None:
+        raise BankAccountError("No such bank account.")
+    acct.quickbooks_name = " ".join((name or "").split())[:120]
+    acct.updated_at = _now_iso()
+    return _save(org_id, acct)
 
 
 def deactivate(org_id: str, account_id: str, *, reason: str = "") -> BankAccount:

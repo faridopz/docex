@@ -16,6 +16,8 @@ export interface BankAccount {
   project_code: string;
   purpose: string;
   active: boolean;
+  /** This account's name in QuickBooks — what the QuickBooks files credit. */
+  quickbooks_name?: string;
 }
 
 export async function listBankAccounts(): Promise<BankAccount[]> {
@@ -54,4 +56,13 @@ export function suggestAccount(accounts: BankAccount[], projectCode: string): st
   if (!code) return "";
   const hits = active.filter((a) => (a.project_code || "").trim().toLowerCase() === code);
   return hits.length === 1 ? hits[0].id : "";
+}
+
+
+/** Set what this account is called in QuickBooks (admin). */
+export async function setQuickBooksName(accountId: string, quickbooksName: string): Promise<BankAccount> {
+  return apiFetch<BankAccount>(`/treasury/accounts/${encodeURIComponent(accountId)}/quickbooks-name`, {
+    method: "PUT",
+    body: JSON.stringify({ quickbooks_name: quickbooksName }),
+  });
 }
