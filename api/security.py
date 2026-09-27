@@ -22,6 +22,7 @@ someone who is not signed in, with a note saying why.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Iterable, Optional
 
@@ -240,4 +241,47 @@ class AuthMiddleware:
                 )
                 return
 
+        # Modules the organisation hasn't switched on are refused here, not
+        # just hidden in the menu: screening and knowledge spend model credit
+        # on every call, and a direct API call used to bypass the nav.
+        module = module_for_path(scope.get("path", ""))
+        if module and not _module_enabled(module):
+            await self._reject(
+                scope, send,
+                f"{module.capitalize()} isn't part of your organisation's DOCex plan. "
+                "Contact founder@docex.app to add it.",
+                status=403,
+                extra={"module_not_enabled": module},
+            )
+            return
+
         await self.app(scope, receive, send)
+
+
+# ─── module entitlements ────────────────────────────────────────────────────
+
+# Path prefix → the product module it belongs to. Everything not listed is
+# part of the core (compliance and finance) and always available.
+_MODULE_PATHS: tuple[tuple[str, str], ...] = (
+    ("/extract", "screening"),
+    ("/draft-followups", "screening"),
+    ("/knowledge", "knowledge"),
+)
+
+
+def module_for_path(path: str) -> str | None:
+    for prefix, module in _MODULE_PATHS:
+        if path == prefix or path.startswith(prefix + "/"):
+            return module
+    return None
+
+
+def _module_enabled(module: str) -> bool:
+    try:
+        import org_config
+        org = (os.environ.get("DOCEX_ORG") or "default").strip() or "default"
+        return module in org_config.client_config(org)["modules"]
+    except Exception:
+        # A broken config record must not lock an organisation out; the
+        # nav still hides what isn't bought.
+        return True
