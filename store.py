@@ -59,6 +59,7 @@ class Store(Protocol):
     def list(self, org_id: str, collection: str) -> list[dict]: ...
     def delete(self, org_id: str, collection: str, record_id: str) -> bool: ...
     def collections(self, org_id: str) -> list[str]: ...
+    def delete_org(self, org_id: str) -> int: ...
 
 
 class JsonFileStore:
@@ -129,6 +130,16 @@ class JsonFileStore:
         if not org_dir.exists():
             return []
         return sorted(p.name for p in org_dir.iterdir() if p.is_dir())
+
+    def delete_org(self, org_id: str) -> int:
+        """Remove every record of one organisation (offboarding only)."""
+        import shutil
+        org_dir = self.root / _validate(org_id, "org id")
+        if not org_dir.exists():
+            return 0
+        n = sum(1 for p in org_dir.rglob("*.json"))
+        shutil.rmtree(org_dir)
+        return n
 
 
 # ─── module-level default store ─────────────────────────────────────────────

@@ -79,6 +79,11 @@ class AttachmentBackend(Protocol):
         callers fall back to streaming the bytes through the API instead."""
         ...
 
+    def delete(self, storage_key: str) -> bool:
+        """Remove the stored bytes; False if already gone. Only offboarding
+        calls this — attachments on a live payment are never deleted."""
+        ...
+
     def read(self, storage_key: str) -> bytes:
         """Fetch the stored bytes directly — for server-side use only (e.g.
         extracting text for a compliance check), never returned to a
@@ -132,6 +137,13 @@ class LocalDiskAttachmentBackend:
 
     def url(self, storage_key: str, *, expires_in: int = 3600) -> str:
         return ""
+
+    def delete(self, storage_key: str) -> bool:
+        path = self._path(storage_key)
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
 
 
 class SupabaseStorageBackend:
@@ -202,6 +214,22 @@ class SupabaseStorageBackend:
                 f"Could not fetch stored file ({resp.status_code}): {resp.text[:300]}"
             )
         return resp.content
+
+    def delete(self, storage_key: str) -> bool:
+        """Remove one stored file. Used only when an organisation's data is
+        deleted at the end of its contract (org_offboard.py)."""
+        try:
+            resp = httpx.delete(
+                f"{self.base_url}/storage/v1/object/{self.bucket}/{storage_key}",
+                headers=self._headers(), timeout=60,
+            )
+        except httpx.HTTPError as exc:
+            raise AttachmentError(f"Could not reach storage: {exc}") from exc
+        if resp.status_code == 404:
+            return False
+        if resp.status_code not in (200, 204):
+            raise AttachmentError(f"Could not delete stored file ({resp.status_code}): {resp.text[:300]}")
+        return True
 
 
 _backend: Optional[AttachmentBackend] = None

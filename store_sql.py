@@ -205,6 +205,12 @@ class SqliteStore:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def delete_org(self, org_id: str) -> int:
+        """Remove every record of one organisation (offboarding only)."""
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM records WHERE org_id=?", (_validate(org_id, "org id"),))
+            return cur.rowcount
+
     # ── operational helpers ──────────────────────────────────────────────────
 
     def backup(self, destination: Path | str) -> str:
@@ -500,6 +506,12 @@ class PostgresStore:
             fetch="all",
         )
         return [r[0] for r in rows]
+
+    def delete_org(self, org_id: str) -> int:
+        """Remove every record of one organisation (offboarding only)."""
+        n = self._run("DELETE FROM {t} WHERE org_id=%s", (_validate(org_id, "org id"),),
+                      fetch="rowcount")
+        return int(n or 0)
 
     # ── operational helpers (parity with SqliteStore) ────────────────────────
 
