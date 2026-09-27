@@ -285,7 +285,8 @@ def process(*, files: list, org_name: str = "the organisation", rulebook_text: s
     if client is None and os.environ.get("ANTHROPIC_API_KEY"):
         try:
             import anthropic
-            client = anthropic.Anthropic()
+            import ai_client
+            client = ai_client.client("agent")
         except Exception as exc:  # noqa: BLE001
             print(f"[docex-agent] anthropic client unavailable ({exc}); using fallback")
     if client is not None:

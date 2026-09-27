@@ -183,7 +183,8 @@ def _get_client() -> anthropic.Anthropic:
     """Lazily construct the Anthropic client (see screener.py rationale)."""
     global _client
     if _client is None:
-        _client = anthropic.Anthropic()
+        import ai_client
+        _client = ai_client.client("compliance_check")
     return _client
 
 

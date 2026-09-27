@@ -55,7 +55,8 @@ def _get_client() -> anthropic.Anthropic:
     """Lazily construct the Anthropic client (see screener.py rationale)."""
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(timeout=180.0)
+        import ai_client
+        _client = ai_client.client("knowledge", timeout=180.0)
     return _client
 
 

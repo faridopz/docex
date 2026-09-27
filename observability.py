@@ -173,7 +173,7 @@ def _today() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
 
-def check_llm_allowed(org_id: Optional[str], *, operation: str = "llm") -> None:
+def check_llm_allowed(org_id: Optional[str], *, operation: str = "llm", burst: bool = True) -> None:
     """Raise LimitExceeded if this org has hit a limit. Call BEFORE the model.
 
     Deliberately fails closed. The alternative — logging a warning and calling
@@ -183,7 +183,9 @@ def check_llm_allowed(org_id: Optional[str], *, operation: str = "llm") -> None:
     org = (org_id or "default").strip() or "default"
 
     # 1. Burst. A broken retry loop shows up here within seconds.
-    per_min = rate_limit_per_minute()
+    # Skipped per model call (ai_client): one batch makes dozens of calls a
+    # minute legitimately. The daily caps below still apply to every call.
+    per_min = rate_limit_per_minute() if burst else 0
     if per_min > 0:
         now = time.monotonic()
         with _lock:

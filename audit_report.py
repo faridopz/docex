@@ -68,7 +68,8 @@ def _get_client():
     global _client
     if _client is None:
         import anthropic
-        _client = anthropic.Anthropic()
+        import ai_client
+        _client = ai_client.client("audit_report")
     return _client
 
 

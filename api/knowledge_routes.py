@@ -381,7 +381,8 @@ def suggest_folder(body: SuggestFolderRequest) -> dict:
 
         import anthropic
 
-        client = anthropic.Anthropic()
+        import ai_client
+        client = ai_client.client("knowledge_folders")
         resp = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=300,

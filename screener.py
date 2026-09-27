@@ -43,7 +43,8 @@ def _get_client() -> anthropic.Anthropic:
     """
     global _client
     if _client is None:
-        _client = anthropic.Anthropic()
+        import ai_client
+        _client = ai_client.client("extraction")
     return _client
 
 _SYSTEM_PROMPT = """You are a document extraction specialist for NGO partner screening in Nigeria.

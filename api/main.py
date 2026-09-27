@@ -372,6 +372,17 @@ app.add_middleware(_RequestIDMiddleware)
 # request without them having to describe it.
 
 
+import observability as _observability  # noqa: E402 — pure module; Sentry is imported lazily inside it
+
+
+@app.exception_handler(_observability.LimitExceeded)
+async def _ai_limit(request, exc):  # noqa: ANN001
+    """A daily AI cap was hit (see ai_client). The person gets the reason and
+    when it resets, not "something went wrong" — nothing is broken."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=429, content={"detail": str(exc), "ai_limit": True})
+
+
 @app.exception_handler(Exception)
 async def _safe_error(request, exc):  # noqa: ANN001
     from fastapi.responses import JSONResponse
@@ -718,7 +729,8 @@ _followup_client: "anthropic.Anthropic | None" = None
 def _get_followup_client() -> "anthropic.Anthropic":
     global _followup_client
     if _followup_client is None:
-        _followup_client = anthropic.Anthropic()
+        import ai_client
+        _followup_client = ai_client.client("followups")
     return _followup_client
 
 
