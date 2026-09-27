@@ -132,17 +132,22 @@ def test_an_unknown_bank_is_said_plainly() -> None:
     check("says the bank wasn't recognised", c and "recognis" in c.message.lower(), c.message if c else "")
 
 
-def test_no_provider_means_a_single_clear_warning() -> None:
-    print("\nNo verification service configured: one warning, not a wall of errors")
+def test_no_provider_means_no_noise_on_requests() -> None:
+    print("\nNo verification service yet: requests carry no warning; the self-check says why")
     saved = pv._resolve
     pv._resolve = None
     try:
         # An account never looked up before (a known one is served from the
         # org's recent checks, which is the point of keeping them).
         req = _vendor("pv", "New Vendor Ltd", "0222222222", "GTBank", amount=3000.0)
-        c = _pc(req)
-        check("warning", c and c.result == rq.CheckResult.WARNING, str(c))
-        check("says checking isn't set up", c and "not set up" in c.message.lower(), c.message if c else "")
+        # A warning on every request that nobody can act on teaches approvers
+        # to ignore warnings — the opposite of what the check is for.
+        check("no payee check on the request", _pc(req) is None, str(_pc(req)))
+        import self_check
+        os.environ.pop("PAYSTACK_SECRET_KEY", None)
+        r = self_check._check_paystack_key()
+        check("self-check warns: switched on but not running", r.status == "warn", f"{r.status}: {r.summary}")
+        check("and says what to do", "PAYSTACK_SECRET_KEY" in (r.fix_hint or ""), r.fix_hint or "")
     finally:
         pv._resolve = saved
 
@@ -204,7 +209,7 @@ if __name__ == "__main__":
     test_a_batch_is_checked_person_by_person_and_quickly()
     test_a_known_account_is_not_looked_up_twice()
     test_an_unknown_bank_is_said_plainly()
-    test_no_provider_means_a_single_clear_warning()
+    test_no_provider_means_no_noise_on_requests()
     test_flag_off_means_no_check_and_no_calls()
     test_bank_names_become_bank_codes()
     test_the_form_can_check_an_account_as_it_is_typed()

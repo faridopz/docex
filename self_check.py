@@ -117,8 +117,33 @@ def _check_anthropic_key() -> CheckResult:
     )
 
 
+def _payee_check_switched_on() -> bool:
+    try:
+        import org_config
+        return org_config.feature_enabled(
+            (os.environ.get("DOCEX_ORG") or "default").strip() or "default", "payee_account_check")
+    except Exception:  # noqa: BLE001 — a diagnostic must not crash on config
+        return False
+
+
 def _check_paystack_key() -> CheckResult:
     key = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
+    if not key and _payee_check_switched_on():
+        # The org turned account checking on, so requests are being raised
+        # on the assumption it runs. It doesn't: say so, once, here.
+        return CheckResult(
+            id="env-paystack-key",
+            category="environment",
+            title="Bank account checking",
+            status="warn",
+            summary="Switched on for this organisation but not running — no payee account is being checked",
+            evidence="payee_account_check is on; PAYSTACK_SECRET_KEY not set",
+            fix_hint=(
+                "Add the live Paystack secret key as PAYSTACK_SECRET_KEY in the "
+                "instance environment. Until then, payment requests carry no "
+                "account check (they are never blocked by its absence)."
+            ),
+        )
     if not key:
         # NOT a failure. Bank Verify is an optional module that many
         # instances deliberately do not run, and the route already answers

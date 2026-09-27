@@ -200,11 +200,11 @@ def check_requisition(org_id: str, req) -> Optional[object]:
         results.append(r)
 
     if all(r["status"] == "not_configured" for r in results):
-        return rq.PolicyCheck(
-            code="PAYEE_ACCOUNT_VERIFIED", name="Bank account in the payee's name",
-            result=rq.CheckResult.WARNING, policy_value="bank's name matches the payee",
-            actual_value="not checked",
-            message="Bank account checking is not set up for this organisation, so no account was checked.")
+        # No provider yet: nothing was checked, so the request carries no
+        # check at all. A warning on every request that nobody can act on
+        # teaches approvers to ignore warnings. The system self-check reports
+        # it once, to the admin, with the fix.
+        return None
 
     problems = [r for r in results if r["status"] != "verified"]
     blocks = org_config.feature_enabled(org, "payee_check_blocks")
