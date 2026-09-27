@@ -136,7 +136,8 @@ def _parse_budget_lines(raw: str) -> list[rq.BudgetLine]:
 
 
 def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
-            title: str, body: str = "", to_user: Optional[str] = None) -> None:
+            title: str, body: str = "", to_user: Optional[str] = None,
+            mail_kind: str = "", step_label: str = "", reason: str = "") -> None:
     """Best-effort. The requisition or payment this fires after has already
     succeeded and been saved — a notification failing must never look like
     the underlying operation failed, so this swallows its own errors rather
@@ -163,6 +164,16 @@ def _notify(ctx: Ctx, req: rq.Requisition, *, kind: str, department: str,
                   actor=ctx.user_id, org_id=ctx.org_id, to_user=to_user)
     except Exception:
         pass
+    # And by email, to the people who must act (requisition_mail decides
+    # who, and whether email is on for this org at all).
+    try:
+        import requisition_mail
+        note = body if (mail_kind or kind) in {"returned", "declined", "held"} else ""
+        requisition_mail.notify(ctx.org_id, req, mail_kind or kind, department=department,
+                                to_user=to_user or "", actor=ctx.user_id,
+                                step_label=step_label, note=note, reason=reason)
+    except Exception:
+        pass
 
 
 def _notify_current_step(ctx: Ctx, req: rq.Requisition, wf: rq.RequisitionWorkflow) -> None:
@@ -178,7 +189,43 @@ def _notify_current_step(ctx: Ctx, req: rq.Requisition, wf: rq.RequisitionWorkfl
         return
     _notify(ctx, req, kind="assigned", department=step.department,
             title=f"{req.ref}: {step.label or step.key}",
-            body=f"{req.vendor_name} — {req.amount:,.2f} {req.currency}.")
+            body=f"{req.vendor_name} — {req.amount:,.2f} {req.currency}.",
+            step_label=step.label or step.key)
+
+
+def _notify_submitted(ctx: Ctx, req: rq.Requisition) -> None:
+    """Everything that happens when a request enters the approval chain:
+    the first step is told, and the org's copy rules fire. Used by BOTH ways
+    in — one-step create and draft → submit. It used to live only in the
+    first, so a submitted draft (every request with documents) told nobody."""
+    wf = rq.get_workflow(ctx.org_id)
+    _notify_current_step(ctx, req, wf)
+    # CC fires once, here, at submission — not on every later step
+    # change. NEEM's own process adds the AED/Director of Operations
+    # to the copy list once, when a pack is forwarded; it does not
+    # re-notify them at every intermediate review.
+    for rule in rq.cc_recipients(wf, req.amount):
+        why = f"at or above {rule.min_amount:,.0f}"
+        cc_body = (f"{req.vendor_name} — {req.amount:,.2f} {req.currency}. "
+                   f"{rule.label or rule.department or 'You'} "
+                   f"{'is' if not rule.emails or rule.department else 'are'} copied "
+                   f"because this is {why}.")
+        # A department gets ONE broadcast notification — everyone in
+        # it shares that department's feed, so firing one per person
+        # would just duplicate it for anyone who happens to log in.
+        if rule.department:
+            _notify(ctx, req, kind="cc", department=rule.department,
+                    title=f"{req.ref}: copied on a new requisition", body=cc_body, reason=why)
+        # Each named individual gets their OWN notification, addressed
+        # to them personally (to_user) — they see it regardless of
+        # which department they're in, or whether they're in one at
+        # all. Deliberately not deduplicated against the department
+        # loop above: NEEM's own ask was "the AED, by name", which
+        # this makes true even for someone outside the CC'd department.
+        for email in rule.emails:
+            _notify(ctx, req, kind="cc", department=rule.department,
+                    title=f"{req.ref}: copied on a new requisition", body=cc_body,
+                    to_user=email.strip().lower(), reason=why)
 
 
 # ─── serialisers ────────────────────────────────────────────────────────────
@@ -443,33 +490,8 @@ async def create_requisition_endpoint(
                     status_code=422, detail=f"Could not raise requisition: {exc}"
                 ) from exc
 
-            wf = rq.get_workflow(ctx.org_id)
-            _notify_current_step(ctx, req, wf)
-            # CC fires once, here, at submission — not on every later step
-            # change. NEEM's own process adds the AED/Director of Operations
-            # to the copy list once, when a pack is forwarded; it does not
-            # re-notify them at every intermediate review.
-            for rule in rq.cc_recipients(wf, req.amount):
-                cc_body = (f"{req.vendor_name} — {req.amount:,.2f} {req.currency}. "
-                           f"{rule.label or rule.department or 'You'} "
-                           f"{'is' if not rule.emails or rule.department else 'are'} copied "
-                           f"because this is at or above {rule.min_amount:,.0f}.")
-                # A department gets ONE broadcast notification — everyone in
-                # it shares that department's feed, so firing one per person
-                # would just duplicate it for anyone who happens to log in.
-                if rule.department:
-                    _notify(ctx, req, kind="cc", department=rule.department,
-                            title=f"{req.ref}: copied on a new requisition", body=cc_body)
-                # Each named individual gets their OWN notification, addressed
-                # to them personally (to_user) — they see it regardless of
-                # which department they're in, or whether they're in one at
-                # all. Deliberately not deduplicated against the department
-                # loop above: NEEM's own ask was "the AED, by name", which
-                # this makes true even for someone outside the CC'd department.
-                for email in rule.emails:
-                    _notify(ctx, req, kind="cc", department=rule.department,
-                            title=f"{req.ref}: copied on a new requisition", body=cc_body,
-                            to_user=email.strip().lower())
+            if req.status != rq.ReqStatus.DRAFT:
+                _notify_submitted(ctx, req)
 
             return slot.store(_detail_out(req))
     except idempotency.IdempotencyConflict as exc:
@@ -1144,6 +1166,7 @@ async def submit_draft_endpoint(req_id: str, ctx: Ctx = Depends(request_context)
         req = rq.submit_draft(ctx.org_id, req_id, actor=ctx.user_id)
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _notify_submitted(ctx, req)
     return _detail_out(req)
 
 
@@ -1203,9 +1226,11 @@ async def decide_endpoint(
     if req.status == rq.ReqStatus.IN_REVIEW:
         _notify_current_step(ctx, req, rq.get_workflow(ctx.org_id))
     elif req.status in {rq.ReqStatus.DECLINED, rq.ReqStatus.RETURNED}:
+        # To the person who raised it (and their department's feed).
         _notify(ctx, req, kind="returned", department=req.department,
                 title=f"{req.ref}: {req.status.value}",
-                body=notes or f"{decision} at the {dec.value} step.")
+                body=notes or f"{decision} at the {dec.value} step.",
+                to_user=req.submitted_by, mail_kind=req.status.value)
 
     return _detail_out(req)
 
@@ -1232,7 +1257,7 @@ async def place_on_hold_endpoint(
 
     _notify(ctx, req, kind="held", department=req.department,
             title=f"{req.ref}: on hold",
-            body=req.hold_reason or "")
+            body=req.hold_reason or "", to_user=req.submitted_by)
     return _detail_out(req)
 
 
@@ -2062,7 +2087,8 @@ async def pay_endpoint(
             if paid_req is not None:
                 _notify(ctx, paid_req, kind="paid", department=paid_req.department,
                         title=f"{paid_req.ref}: paid",
-                        body=f"{txn.amount:,.2f} {txn.currency} — ref {txn.bank_reference or '(none)'}.")
+                        body=f"{txn.amount:,.2f} {txn.currency} — ref {txn.bank_reference or '(none)'}.",
+                        to_user=paid_req.submitted_by)
 
             return slot.store(_txn_out(txn))
     except idempotency.IdempotencyConflict as exc:

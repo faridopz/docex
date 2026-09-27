@@ -119,6 +119,7 @@
     "documents_require_files": false,
     "bank_verification": false,
     "payee_account_check": false,
-    "payee_check_blocks": false
+    "payee_check_blocks": false,
+    "email_notifications": false
   }
 }
