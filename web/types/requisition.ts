@@ -246,6 +246,8 @@ export interface Requisition extends RequisitionSummary {
   audit_log: AuditEntry[];
   /** False means the audit log was tampered with — show it loudly. */
   audit_chain_valid: boolean;
+  /** Plain-English reason when the record can't be trusted; "" when it can. */
+  audit_problem?: string;
 }
 
 /** Frozen at payment. Nothing here can change again. */

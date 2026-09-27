@@ -658,10 +658,13 @@ export default function RequisitionDetailPage() {
           <div className="flex gap-3 rounded-lg border border-red-300 bg-red-50 p-4">
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
             <div>
-              <p className="text-sm font-semibold text-red-900">Audit chain does not verify</p>
+              <p className="text-sm font-semibold text-red-900">This record was changed outside DOCex</p>
+              {req.audit_problem ? (
+                <p className="mt-0.5 text-sm font-medium text-red-900">{req.audit_problem}</p>
+              ) : null}
               <p className="mt-0.5 text-sm text-red-800">
-                This record&rsquo;s history has been altered outside the application. Do not act on
-                it — raise it with whoever administers this instance.
+                Do not approve or pay it. It cannot be paid until this is resolved — raise it with
+                whoever administers this instance.
               </p>
             </div>
           </div>

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import hmac
 import os
 import threading
@@ -242,6 +243,11 @@ class AuditEntry(BaseModel):
     detail: str = ""
     prev_hash: str = ""                  # chains entries so tampering shows up
     hash: str = ""
+    # Fingerprint of the payment details (amount, account, payees...) when
+    # this entry was written. Signed with the entry, so a changed amount or
+    # account after the fact no longer matches. "" on entries written before
+    # this existed; those verify under the old format.
+    fp: str = ""
 
 
 class WorkflowStep(BaseModel):
@@ -566,6 +572,40 @@ def _next_txn_ref(org_id: str) -> str:
         return f"TRANS-{nxt:04d}"
 
 
+_AUDIT_HEADS = "requisition_audit_heads"
+
+
+def _cents(v) -> int:
+    return int(round(float(v or 0) * 100))
+
+
+def payment_fingerprint(req: Requisition) -> str:
+    """A hash of everything that decides who gets paid and how much.
+
+    Amounts in whole kobo/cents so float noise can never change it. Payee
+    order counts: the schedule the bank sees is an ordered list.
+    """
+    doc = {
+        "amount": _cents(req.amount), "currency": req.currency or "",
+        "vendor_name": req.vendor_name or "", "vendor_account": req.vendor_account or "",
+        "vendor_bank_name": req.vendor_bank_name or "", "project_code": req.project_code or "",
+        "grant_code": req.grant_code or "",
+        "payees": [[p.name or "", p.account_number or "", p.bank_name or "", _cents(p.amount)]
+                   for p in (req.payees or [])],
+    }
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _entry_body(req_id: str, e, prev: str) -> str:
+    if e.fp:
+        return f"v2|{req_id}|{e.seq}|{e.at}|{e.actor}|{e.event}|{e.detail}|{e.fp}|{prev}"
+    return f"{req_id}|{e.seq}|{e.at}|{e.actor}|{e.event}|{e.detail}|{prev}"
+
+
+def _head_sig(req_id: str, seq: int, h: str) -> str:
+    return _sign(f"head|{req_id}|{seq}|{h}")
+
+
 def _audit(
     req: Requisition,
     event: str,
@@ -576,25 +616,55 @@ def _audit(
 ) -> Requisition:
     """Append one hash-chained audit entry. Never edits an existing entry."""
     prev = req.audit_log[-1].hash if req.audit_log else ""
-    seq = len(req.audit_log) + 1
-    at = _now_iso()
-    body = f"{req.id}|{seq}|{at}|{actor}|{event}|{detail}|{prev}"
-    req.audit_log.append(AuditEntry(
-        seq=seq, at=at, actor=actor, department=department,
-        event=event, detail=detail, prev_hash=prev, hash=_sign(body),
-    ))
+    entry = AuditEntry(seq=len(req.audit_log) + 1, at=_now_iso(), actor=actor,
+                       department=department, event=event, detail=detail,
+                       prev_hash=prev, fp=payment_fingerprint(req))
+    entry.hash = _sign(_entry_body(req.id, entry, prev))
+    req.audit_log.append(entry)
     return req
 
 
+def audit_problem(req: Requisition) -> str:
+    """Why this requisition's record cannot be trusted, or "" if it can.
+
+    Checks, in order: there is a log at all; every entry is signed and
+    linked to the one before; once entries carry payment fingerprints, none
+    after them lacks one (no downgrade); the payment details now are the
+    ones the latest entry signed; and the log ends where the signed chain
+    head (kept beside the record) says it ends — so entries removed from
+    the end are caught too.
+    """
+    if not req.audit_log:
+        return "The audit log is missing."
+    prev, seen_fp, last_fp = "", False, ""
+    for e in req.audit_log:
+        if seen_fp and not e.fp:
+            return f"Audit entry {e.seq} is in an older format than the entries before it."
+        if e.prev_hash != prev or e.hash != _sign(_entry_body(req.id, e, prev)):
+            return f"Audit entry {e.seq} was altered."
+        if e.fp:
+            seen_fp, last_fp = True, e.fp
+        prev = e.hash
+    if last_fp and last_fp != payment_fingerprint(req):
+        return ("The payment details (amount, account or payees) were changed "
+                "without being recorded in the audit trail.")
+    org = (req.org_id or "").strip()
+    if org:
+        head = store.get_store().get(org, _AUDIT_HEADS, req.id)
+        last = req.audit_log[-1]
+        if head:
+            if head.get("sig") != _head_sig(req.id, int(head.get("seq", 0)), head.get("hash", "")):
+                return "The audit trail's signed end-marker was altered."
+            if int(head["seq"]) != last.seq or head["hash"] != last.hash:
+                return "Audit entries were removed from the end of the trail."
+        elif seen_fp:
+            return "The audit trail's signed end-marker is missing."
+    return ""
+
+
 def verify_audit_chain(req: Requisition) -> bool:
-    """Recompute the hash chain. False means an entry was altered on disk."""
-    prev = ""
-    for entry in req.audit_log:
-        body = f"{req.id}|{entry.seq}|{entry.at}|{entry.actor}|{entry.event}|{entry.detail}|{prev}"
-        if entry.prev_hash != prev or entry.hash != _sign(body):
-            return False
-        prev = entry.hash
-    return True
+    """True when the audit trail, and the payment details it signed, are intact."""
+    return audit_problem(req) == ""
 
 
 # ─── workflow config ────────────────────────────────────────────────────────
@@ -1637,6 +1707,13 @@ def decide(
         raise RequisitionError(f"{req.ref} is {req.status.value} and cannot be changed.")
     if req.status != ReqStatus.IN_REVIEW:
         raise RequisitionError(f"{req.ref} is not awaiting review (status: {req.status.value}).")
+    # Approving a record changed outside the app would put a signature on
+    # details nobody raised. Returning or declining it stays possible.
+    if decision == Decision.APPROVED:
+        problem = audit_problem(req)
+        if problem:
+            raise RequisitionError(f"{req.ref} cannot be approved: {problem} "
+                                   "Return or decline it, and tell your administrator.")
 
     wf = get_workflow(org)
     step = _step(wf, req.current_step or "")
@@ -2199,6 +2276,13 @@ def mark_paid(
     req = get_requisition(org, req_id)
     if req is None:
         raise RequisitionError(f"Requisition '{req_id}' not found.")
+    # Never pay on a record that doesn't match what was approved. This is the
+    # last point at which a changed account or amount can be stopped.
+    problem = audit_problem(req)
+    if problem:
+        raise RequisitionError(
+            f"{req.ref} cannot be paid: its record has changed since it was approved. "
+            f"{problem} Nothing was paid; contact your administrator.")
     if req.status != ReqStatus.APPROVED:
         raise RequisitionError(
             f"{req.ref} must be fully approved before payment (status: {req.status.value})."
@@ -2266,7 +2350,15 @@ def mark_paid(
 
 def _save(org_id: str, req: Requisition) -> Requisition:
     req.updated_at = _now_iso()
+    if not req.org_id:
+        req.org_id = org_id
     store.get_store().put(org_id, _REQUISITIONS, req.id, req.model_dump())
+    # The signed end of the chain, kept beside the record: removing entries
+    # from the end of the log no longer leaves a shorter chain that verifies.
+    if req.audit_log:
+        last = req.audit_log[-1]
+        store.get_store().put(org_id, _AUDIT_HEADS, req.id, {
+            "seq": last.seq, "hash": last.hash, "sig": _head_sig(req.id, last.seq, last.hash)})
     return req
 
 

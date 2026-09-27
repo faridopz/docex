@@ -326,7 +326,8 @@ def _detail_out(r: rq.Requisition) -> dict:
         "attachments": [_attachment_out(a) for a in r.attachments],
         "compliance": _compliance_out(r.compliance) if r.compliance else None,
         "audit_log": [_audit_out(e) for e in r.audit_log],
-        "audit_chain_valid": rq.verify_audit_chain(r),
+        "audit_chain_valid": not (problem := rq.audit_problem(r)),
+        "audit_problem": problem,
     }
 
 
