@@ -102,7 +102,7 @@ check("refusal names the feature flag", "requisition_export" in r.json()["detail
 r = client.get(f"/requisitions/{req_id}/export.xlsx", headers=ph)
 check("flag off: xlsx export refused", r.status_code == 400)
 
-r = client.get("/requisitions/export/log.xlsx", headers=ph, params={"start": "2020-01-01", "end": "2030-01-01"})
+r = client.get("/requisitions/export/log.xlsx", headers=ah, params={"start": "2020-01-01", "end": "2030-01-01"})
 check("flag off: log export refused", r.status_code == 400)
 
 org_config.set_features("default", requisition_export=True)
@@ -160,6 +160,8 @@ check("nonexistent requisition PDF 404s", r.status_code == 404)
 r = client.get("/requisitions/does-not-exist/export.xlsx", headers=ph)
 check("nonexistent requisition xlsx 404s", r.status_code == 404)
 
+# The period log covers the whole organisation, so since WO-59 it is
+# downloaded by the approval chain (here the admin), not programme staff.
 # ─── log export: date-bounded correctly ────────────────────────────────────
 
 import datetime as dt
@@ -181,7 +183,7 @@ far_past_end = (today - dt.timedelta(days=399)).isoformat()
 # their own machine actually means.
 local_offset_minutes = int((dt.datetime.now() - dt.datetime.utcnow()).total_seconds() // 60) * -1
 
-r = client.get("/requisitions/export/log.xlsx", headers=ph,
+r = client.get("/requisitions/export/log.xlsx", headers=ah,
                 params={"start": today_s, "end": tomorrow_s,
                         "tz_offset_minutes": local_offset_minutes})
 check("log export (today..tomorrow) succeeds", r.status_code == 200)
@@ -189,18 +191,18 @@ wb2 = load_workbook(io.BytesIO(r.content))
 log_values = [c.value for row in wb2["Requisition Log"].iter_rows() for c in row]
 check("today's requisition IS in the in-range log", req_ref in log_values)
 
-r = client.get("/requisitions/export/log.xlsx", headers=ph,
+r = client.get("/requisitions/export/log.xlsx", headers=ah,
                 params={"start": far_past_start, "end": far_past_end,
                         "tz_offset_minutes": local_offset_minutes})
 check("empty range 404s", r.status_code == 404)
 
 # ─── malformed / inverted dates ─────────────────────────────────────────────
 
-r = client.get("/requisitions/export/log.xlsx", headers=ph,
+r = client.get("/requisitions/export/log.xlsx", headers=ah,
                 params={"start": "not-a-date", "end": today_s})
 check("malformed start date refused", r.status_code == 400)
 
-r = client.get("/requisitions/export/log.xlsx", headers=ph,
+r = client.get("/requisitions/export/log.xlsx", headers=ah,
                 params={"start": today_s, "end": yesterday_s})
 check("end before start refused", r.status_code == 400)
 
@@ -208,10 +210,18 @@ check("end before start refused", r.status_code == 400)
 
 client.post("/auth/register", headers=ah, json={
     "email": "viewer@neem.org", "name": "Viewer", "password": "viewer-passphrase",
-    "department": "compliance", "role": "viewer"})
+    "department": "program", "role": "viewer"})
 vh = hdr("viewer@neem.org", "viewer-passphrase")
 r = client.get(f"/requisitions/{req_id}/export.pdf", headers=vh)
 check("a plain viewer can export what they can already see", r.status_code == 200)
+
+# ...and not what they can't (WO-59): another department's request is 404.
+client.post("/auth/register", headers=ah, json={
+    "email": "outsider@neem.org", "name": "Outsider", "password": "outsider-passphrase",
+    "department": "compliance", "role": "viewer"})
+oh = hdr("outsider@neem.org", "outsider-passphrase")
+r = client.get(f"/requisitions/{req_id}/export.pdf", headers=oh)
+check("another department's request can't be exported", r.status_code == 404)
 
 if _fail:
     print(f"\n{_fail} check(s) FAILED.")

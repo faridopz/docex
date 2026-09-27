@@ -349,7 +349,85 @@ def _summary_out(r: rq.Requisition) -> dict:
     }
 
 
-def _detail_out(r: rq.Requisition) -> dict:
+# ─── who sees which request ─────────────────────────────────────────────────
+#
+# Every signed-in user used to be able to list every payment in the
+# organisation and open any one of them, bank account included. The people
+# who run the approval chain still see everything; everyone else sees what
+# they raised and what their own department raised. A hidden request answers
+# 404, exactly like one that doesn't exist.
+
+
+def _handles_money(ctx: Ctx) -> bool:
+    """Admins and the org's own finance department(s) — the same rule that
+    guards full bank details on the payee schedule."""
+    import payment_voucher
+    return ctx.role == "admin" or (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
+
+
+def _sees_everything(ctx: Ctx) -> bool:
+    """The approval chain: money handlers, admins, and any department that
+    owns a workflow step or is copied on large requests. Read from the org's
+    own workflow, so it follows whatever the client calls its departments."""
+    if _handles_money(ctx):
+        return True
+    dept = (ctx.department or "").strip().lower()
+    if not dept:
+        return False
+    wf = rq.get_workflow(ctx.org_id)
+    owners = {(s.department or "").strip().lower() for s in wf.steps}
+    owners |= {(getattr(c, "department", "") or "").strip().lower() for c in wf.cc_rules}
+    return dept in owners
+
+
+def _may_view(ctx: Ctx, req: rq.Requisition) -> bool:
+    if _sees_everything(ctx):
+        return True
+    me = (ctx.user_id or "").strip().lower()
+    dept = (ctx.department or "").strip().lower()
+    if (req.submitted_by or "").strip().lower() == me:
+        return True
+    if dept and (req.department or "").strip().lower() == dept:
+        return True
+    return any((a.actor or "").strip().lower() == me for a in req.approvals)
+
+
+def _visible_or_404(ctx: Ctx, req_id: str) -> rq.Requisition:
+    req = rq.get_requisition(ctx.org_id, req_id)
+    if req is None or not _may_view(ctx, req):
+        raise HTTPException(status_code=404, detail="Requisition not found.")
+    return req
+
+
+def _require_org_view(ctx: Ctx) -> None:
+    """Organisation-wide views — payments, audit, the period log."""
+    if not _sees_everything(ctx):
+        raise HTTPException(
+            status_code=403,
+            detail="This view covers every payment in the organisation. It is open to Finance, "
+                   "the approvers and administrators.")
+
+
+def _mask_account(number: str) -> str:
+    digits = (number or "").strip()
+    if len(digits) <= 4:
+        return digits
+    return "••••••" + digits[-4:]
+
+
+def _detail_out(r: rq.Requisition, ctx: Optional[Ctx] = None) -> dict:
+    out = _detail_out_full(r)
+    if ctx is None or _handles_money(ctx):
+        return out
+    if (r.submitted_by or "").strip().lower() == (ctx.user_id or "").strip().lower():
+        return out
+    out["vendor_account"] = _mask_account(out.get("vendor_account") or "")
+    for p in out.get("payees") or []:
+        p["account_number"] = _mask_account(p.get("account_number") or "")
+    return out
+
+
+def _detail_out_full(r: rq.Requisition) -> dict:
     return {
         **_summary_out(r),
         "vendor_account": r.vendor_account,
@@ -523,6 +601,8 @@ async def list_requisitions_endpoint(
         ctx.org_id, status=status_enum, step=step,
         department=department, grant_code=grant_code,
     )
+    if not _sees_everything(ctx):
+        rows = [r for r in rows if _may_view(ctx, r)]
     return {"total": len(rows), "requisitions": [_summary_out(r) for r in rows]}
 
 
@@ -618,10 +698,12 @@ async def audit_findings_endpoint(
     several payments, a stage escalated past, approvals at 3am, gaps in the
     reference sequence.
 
-    Readable by any signed-in user, like the rest of the audit surface: an
-    organisation that hides its own control findings from its own staff is
-    not running a control.
+    Readable by the approval chain (Finance, step owners, admins). It used
+    to be open to every signed-in user, but the findings name payees and
+    accounts across the whole organisation — the same data the requisition
+    list no longer shows to programme staff (WO-59).
     """
+    _require_org_view(ctx)
     report = audit_findings.run_audit_tests(
         ctx.org_id, tz_offset_minutes=tz_offset_minutes,
     )
@@ -666,6 +748,7 @@ async def audit_report_endpoint(
     ended cannot produce new figures. `refresh=true` forces a rewrite.
     """
     _export_gate(ctx)
+    _require_org_view(ctx)
     import datetime as _dt
     try:
         start_d = _dt.date.fromisoformat(start)
@@ -737,6 +820,7 @@ async def audit_annexes_endpoint(
     statement, which is what an annex is for; the full number is what lets
     someone pay it.
     """
+    _require_org_view(ctx)
     _export_gate(ctx)
     import datetime as _dt
     try:
@@ -818,6 +902,9 @@ async def document_permissions_endpoint(ctx: Ctx = Depends(request_context)):
         # reconciliation and audit to the people who do that work, and not to
         # everyone who raises a request.
         "handles_money": may_see_bank_details,
+        # Whether this person sees every request in the organisation (the
+        # approval chain) or only their own and their department's.
+        "sees_everything": _sees_everything(ctx),
     }
 
 
@@ -888,6 +975,7 @@ async def export_requisition_log_endpoint(
     (Date.getTimezoneOffset()), so the frontend sends it and this shifts the
     boundary to match, no matter which org or which timezone is asking.
     """
+    _require_org_view(ctx)
     _export_gate(ctx)
     import datetime as _dt
     try:
@@ -958,10 +1046,8 @@ async def set_workflow_endpoint(
 
 @router.get("/requisitions/{req_id}")
 async def get_requisition_endpoint(req_id: str, ctx: Ctx = Depends(request_context)):
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
-    return _detail_out(req)
+    req = _visible_or_404(ctx, req_id)
+    return _detail_out(req, ctx)
 
 
 @router.get("/requisitions/{req_id}/export.pdf")
@@ -971,9 +1057,7 @@ async def export_requisition_pdf_endpoint(req_id: str, ctx: Ctx = Depends(reques
     the requisition itself: exporting what you can already see grants no
     new access."""
     _export_gate(ctx)
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
     content = requisition_export.requisition_pdf(req)
     return Response(
         content=content, media_type="application/pdf",
@@ -1006,9 +1090,7 @@ async def export_requisition_voucher_endpoint(req_id: str,
         raise HTTPException(
             status_code=404,
             detail="Payment voucher export is not enabled for this organisation.")
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
 
     import payment_voucher
 
@@ -1051,9 +1133,7 @@ async def export_payee_schedule_endpoint(req_id: str,
             detail="The payee schedule contains full bank account numbers, so only "
                    f"{', '.join(allowed)} or an administrator can download it.")
 
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
     refusal = payment_voucher.schedule_refusal(req)
     if refusal:
         raise HTTPException(status_code=409, detail=f"No payee schedule for {req.ref}: {refusal}")
@@ -1084,9 +1164,7 @@ async def export_requisition_xlsx_endpoint(req_id: str, ctx: Ctx = Depends(reque
     """The same content as the PDF, one sheet per section — for pasting
     into a working file rather than filing as-is."""
     _export_gate(ctx)
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
     content = requisition_export.requisition_xlsx(req)
     return StreamingResponse(
         io.BytesIO(content),
@@ -1151,7 +1229,7 @@ async def update_draft_endpoint(
         req = rq.update_draft(ctx.org_id, req_id, actor=ctx.user_id, **fields)
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 @router.post("/requisitions/{req_id}/submit")
@@ -1167,7 +1245,7 @@ async def submit_draft_endpoint(req_id: str, ctx: Ctx = Depends(request_context)
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _notify_submitted(ctx, req)
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 @router.delete("/requisitions/{req_id}/draft")
@@ -1232,7 +1310,7 @@ async def decide_endpoint(
                 body=notes or f"{decision} at the {dec.value} step.",
                 to_user=req.submitted_by, mail_kind=req.status.value)
 
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 # ─── hold / release ─────────────────────────────────────────────────────────
@@ -1258,7 +1336,7 @@ async def place_on_hold_endpoint(
     _notify(ctx, req, kind="held", department=req.department,
             title=f"{req.ref}: on hold",
             body=req.hold_reason or "", to_user=req.submitted_by)
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 @router.post("/requisitions/{req_id}/release-hold")
@@ -1279,7 +1357,7 @@ async def release_hold_endpoint(
     # Back in front of an approver — same "your turn" notification any other
     # arrival at a step gets, not a special case.
     _notify_current_step(ctx, req, rq.get_workflow(ctx.org_id))
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 # ─── comments ────────────────────────────────────────────────────────────
@@ -1293,6 +1371,7 @@ async def add_comment_endpoint(
 ):
     """Add a message to the requisition's discussion thread. Not role-gated
     and not restricted by status — see requisitions.add_comment()."""
+    _visible_or_404(ctx, req_id)
     try:
         req = rq.add_comment(ctx.org_id, req_id, actor=ctx.user_id,
                               department=ctx.department, text=text)
@@ -1310,7 +1389,7 @@ async def add_comment_endpoint(
                 title=f"{req.ref}: new comment",
                 body=text.strip()[:200])
 
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 def _step_department(ctx: Ctx, req: rq.Requisition) -> str:
@@ -1350,9 +1429,7 @@ async def upload_attachment_endpoint(
 
     # Fail before touching storage if the flag is off or the requisition
     # doesn't exist — no point uploading bytes that will just be discarded.
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
     try:
         import org_config
         if not org_config.feature_enabled(ctx.org_id, "requisition_attachments"):
@@ -1390,7 +1467,7 @@ async def upload_attachment_endpoint(
         # cross-backend rollback for a race this narrow.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 @router.get("/requisitions/{req_id}/attachments/{attachment_id}")
@@ -1401,9 +1478,7 @@ async def download_attachment_endpoint(
     the backend supports one (Supabase Storage in production); streams the
     bytes directly when it doesn't (local disk in dev — see
     attachments.LocalDiskAttachmentBackend)."""
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
     att = next((a for a in req.attachments if a.id == attachment_id), None)
     if att is None:
         raise HTTPException(status_code=404, detail="Attachment not found.")
@@ -1527,9 +1602,7 @@ async def run_compliance_check_endpoint(
     except ImportError:  # pragma: no cover
         raise HTTPException(status_code=400, detail="Compliance checks are not available.")
 
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
 
     wf = rq.get_workflow(ctx.org_id)
     chosen_rulebook_id = (rulebook_id or "").strip() or (wf.rulebook_id or "").strip()
@@ -1625,7 +1698,7 @@ async def run_compliance_check_endpoint(
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 @router.post("/requisitions/{req_id}/route")
@@ -1658,7 +1731,7 @@ async def route_requisition_endpoint(
     # out is the same stall the escalation was meant to break.
     wf = rq.get_workflow(ctx.org_id)
     _notify_current_step(ctx, req, wf)
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 # ─── emailed sign-off: escalate, delegate, or send to someone outside ──────
@@ -1709,9 +1782,7 @@ async def send_options_endpoint(req_id: str, ctx: Ctx = Depends(request_context)
     for people who could actually act on THIS requisition, which is what a
     submitter legitimately needs to route their own payment.
     """
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
 
     wf = rq.get_workflow(ctx.org_id)
     engaged = rq._steps_for(wf, req.amount)
@@ -1780,9 +1851,7 @@ async def request_requisition_signoff(
     it can be copied and sent by hand when SMTP isn't configured. A demo where
     the link is unreachable teaches people the feature doesn't work.
     """
-    req = rq.get_requisition(ctx.org_id, req_id)
-    if req is None:
-        raise HTTPException(status_code=404, detail="Requisition not found.")
+    req = _visible_or_404(ctx, req_id)
 
     email = (body.approver_email or "").strip().lower()
     if not looks_like_email(email):
@@ -2043,7 +2112,7 @@ async def resubmit_endpoint(
         req = rq.resubmit(ctx.org_id, req_id, actor=ctx.user_id, notes=notes)
     except rq.RequisitionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _detail_out(req)
+    return _detail_out(req, ctx)
 
 
 # ─── payment ────────────────────────────────────────────────────────────────
@@ -2104,6 +2173,7 @@ async def list_transactions_endpoint(
     project_code: Optional[str] = None,
     ctx: Ctx = Depends(request_context),
 ):
+    _require_org_view(ctx)
     rows = rq.list_transactions(ctx.org_id, grant_code=grant_code, project_code=project_code)
     return {
         "total": len(rows),
@@ -2124,6 +2194,7 @@ async def list_transactions_endpoint(
 @router.get("/payments/{txn_id}")
 async def get_transaction_endpoint(txn_id: str, ctx: Ctx = Depends(request_context)):
     """Immutable transaction detail — the screen an auditor opens."""
+    _require_org_view(ctx)
     txn = rq.get_transaction(ctx.org_id, txn_id)
     if txn is None:
         raise HTTPException(status_code=404, detail="Transaction not found.")
@@ -2139,4 +2210,5 @@ async def audit_summary_endpoint(ctx: Ctx = Depends(request_context)):
     The auditor's first screen: totals, every policy exception, and whether
     each one carries a written reason and a named authority.
     """
+    _require_org_view(ctx)
     return rq.audit_summary(ctx.org_id)

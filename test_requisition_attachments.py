@@ -163,7 +163,7 @@ check("unknown attachment id 404s", r.status_code == 404)
 
 client.post("/auth/register", headers=ah, json={
     "email": "compliance@neem.org", "name": "Compliance", "password": "compliance-passphrase",
-    "department": "compliance", "role": "viewer"})
+    "department": "program", "role": "viewer"})  # same department: WO-59 hides other departments' requests; the point here is that no ROLE is needed
 ch = hdr("compliance@neem.org", "compliance-passphrase")
 
 r = client.post(f"/requisitions/{req_id}/attachments", headers=ch,

@@ -67,7 +67,10 @@ client.post("/auth/register", headers=ah, json={
 fh = hdr("finance@neem.org", "finance-passphrase")
 
 # A viewer with no stake in the requisition at all — proves comments are
-# genuinely open, not restricted to the current step's department.
+# genuinely open, not restricted to the current step's department. Since
+# WO-59 a request is only visible to its own department and the approval
+# chain, so Compliance is made part of the chain below (copied on large
+# requests) — it still has no step, no role and no decision on this one.
 client.post("/auth/register", headers=ah, json={
     "email": "bystander@neem.org", "name": "Bystander", "password": "bystander-passphrase",
     "department": "compliance", "role": "viewer"})
@@ -75,6 +78,7 @@ bh = hdr("bystander@neem.org", "bystander-passphrase")
 
 r = client.put("/requisitions/workflow", headers=ah, json={
     "steps": [{"key": "finance", "label": "Finance", "department": "finance"}],
+    "cc_rules": [{"min_amount": 10000000, "department": "compliance", "label": "Compliance"}],
 })
 check("workflow saved", r.status_code == 200)
 

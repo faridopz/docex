@@ -113,11 +113,11 @@ def test_a_submitted_requisition_cannot_be_edited() -> None:
     print("\nOnce submitted, the figures are frozen for the approver")
     d = rq.submit_draft(ORG, new_draft().id, actor="amina@draftco.org")
     expect_error("editing a submitted requisition is refused",
-                 lambda: rq.update_draft(ORG, d.id, actor="x", amount=1))
+                 lambda: rq.update_draft(ORG, d.id, actor="amina@draftco.org", amount=1))
     expect_error("deleting a submitted requisition is refused",
-                 lambda: rq.discard_draft(ORG, d.id, actor="x"))
+                 lambda: rq.discard_draft(ORG, d.id, actor="amina@draftco.org"))
     try:
-        rq.update_draft(ORG, d.id, actor="x", amount=1)
+        rq.update_draft(ORG, d.id, actor="amina@draftco.org", amount=1)
     except rq.RequisitionError as exc:
         check("the refusal explains why", "approver" in str(exc).lower())
 
@@ -126,12 +126,12 @@ def test_incomplete_drafts_cannot_be_submitted() -> None:
     print("\nAn incomplete draft is caught at submit, not by an approver")
     d = new_draft(vendor_name="", amount=0)
     expect_error("no vendor is refused",
-                 lambda: rq.submit_draft(ORG, d.id, actor="a"))
-    rq.update_draft(ORG, d.id, actor="a", vendor_name="Someone Ltd")
+                 lambda: rq.submit_draft(ORG, d.id, actor="amina@draftco.org"))
+    rq.update_draft(ORG, d.id, actor="amina@draftco.org", vendor_name="Someone Ltd")
     expect_error("zero amount is refused",
-                 lambda: rq.submit_draft(ORG, d.id, actor="a"))
-    rq.update_draft(ORG, d.id, actor="a", amount=1000)
-    ok = rq.submit_draft(ORG, d.id, actor="a")
+                 lambda: rq.submit_draft(ORG, d.id, actor="amina@draftco.org"))
+    rq.update_draft(ORG, d.id, actor="amina@draftco.org", amount=1000)
+    ok = rq.submit_draft(ORG, d.id, actor="amina@draftco.org")
     check("submits once complete", ok.status == rq.ReqStatus.IN_REVIEW)
 
 
@@ -148,7 +148,7 @@ def test_drafts_never_count_as_duplicates() -> None:
     check("a second draft is not flagged as a duplicate", not dups)
 
     # But once one is submitted, the next real one should notice.
-    rq.submit_draft(ORG, a.id, actor="a")
+    rq.submit_draft(ORG, a.id, actor="amina@draftco.org")
     live = rq.create_requisition(
         ORG, submitted_by="a", department="program",
         vendor_name="Repeat Ltd", amount=77_000, category="supplies")
@@ -161,10 +161,10 @@ def test_drafts_never_count_as_duplicates() -> None:
 def test_discarding() -> None:
     print("\nDrafts can be thrown away; records cannot")
     d = new_draft()
-    check("discarded", rq.discard_draft(ORG, d.id, actor="a") is True)
+    check("discarded", rq.discard_draft(ORG, d.id, actor="amina@draftco.org") is True)
     check("gone", rq.get_requisition(ORG, d.id) is None)
     check("discarding nothing is not an error",
-          rq.discard_draft(ORG, "no-such-id", actor="a") is False)
+          rq.discard_draft(ORG, "no-such-id", actor="amina@draftco.org") is False)
 
 
 def main() -> int:

@@ -1610,6 +1610,19 @@ _DRAFT_EDITABLE = (
 )
 
 
+def _require_submitter(req: "Requisition", actor: str) -> None:
+    """Only the person who raised a request may change, send or discard it.
+
+    Drafts and returned requests are editable — and the fields include the
+    payee's bank account. Nothing checked WHO was editing, so any colleague
+    could change the account on a request that had just been returned and
+    send it back into the chain under the original submitter's name.
+    """
+    if (actor or "").strip().lower() != (req.submitted_by or "").strip().lower():
+        raise RequisitionError(
+            f"{req.ref} was raised by someone else. Only the person who raised it can change or send it.")
+
+
 def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisition:
     """Edit a draft and re-run its policy checks.
 
@@ -1625,6 +1638,7 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
     req = get_requisition(org, req_id)
     if req is None:
         raise RequisitionError(f"No requisition {req_id}.")
+    _require_submitter(req, actor)
     # DRAFT or RETURNED. A returned requisition is one an approver has
     # explicitly handed back saying "fix this and send it again" — and until
     # now the engine refused to let the submitter change anything, with an
@@ -1718,6 +1732,7 @@ def submit_draft(org_id: str, req_id: str, *, actor: str) -> Requisition:
     req = get_requisition(org, req_id)
     if req is None:
         raise RequisitionError(f"No requisition {req_id}.")
+    _require_submitter(req, actor)
     if req.status != ReqStatus.DRAFT:
         raise RequisitionError(f"{req.ref} has already been submitted.")
     if not req.vendor_name.strip():
@@ -1742,6 +1757,7 @@ def discard_draft(org_id: str, req_id: str, *, actor: str) -> bool:
     req = get_requisition(org, req_id)
     if req is None:
         return False
+    _require_submitter(req, actor)
     if req.status != ReqStatus.DRAFT:
         raise RequisitionError(
             f"{req.ref} is {req.status.value} and part of the record. "
@@ -2325,6 +2341,7 @@ def resubmit(org_id: str, req_id: str, *, actor: str, notes: str = "") -> Requis
     req = get_requisition(org, req_id)
     if req is None:
         raise RequisitionError(f"Requisition '{req_id}' not found.")
+    _require_submitter(req, actor)
     if req.status != ReqStatus.RETURNED:
         raise RequisitionError(f"Only a returned requisition can be resubmitted (status: {req.status.value}).")
     req.checks = run_policy_checks(org, req)

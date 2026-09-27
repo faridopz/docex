@@ -133,7 +133,7 @@ ph = hdr("program@neem.org", "program-passphrase")
 
 client.post("/auth/register", headers=ah, json={
     "email": "viewer@neem.org", "name": "Viewer", "password": "viewer-passphrase",
-    "department": "compliance", "role": "viewer"})
+    "department": "program", "role": "viewer"})  # same department: WO-59 hides other departments' requests; the point here is that no ROLE is needed
 vh = hdr("viewer@neem.org", "viewer-passphrase")
 
 r = client.put("/requisitions/workflow", headers=ah, json={
