@@ -69,6 +69,21 @@ export function friendlyError(status: number, rawBody: string): FriendlyError {
         message: "That email and password don't match an account.",
       };
     }
+    // Two-step sign-in. The server's own sentence is the right one to show
+    // ("Enter the 6-digit code…", "That code is not right…"); falling through
+    // to the generic 401 told a person at the sign-in form that their
+    // session had expired, when they had no session yet.
+    if (lower.includes("6-digit code") || lower.includes("that code is not right")
+        || lower.includes("recovery code")) {
+      let detail = raw;
+      try {
+        const parsed = JSON.parse(raw) as { detail?: unknown };
+        if (typeof parsed.detail === "string") detail = parsed.detail;
+      } catch {
+        /* not JSON — use as-is */
+      }
+      return { status, reason: "auth", raw, message: detail };
+    }
     if (lower.includes("account is disabled")) {
       return {
         status,

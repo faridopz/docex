@@ -277,7 +277,11 @@ app.add_middleware(
     # every response header it is not told it may read. Downloads name
     # themselves via Content-Disposition — the voucher and payee schedule by
     # their PV number — and without this the file saved as a fallback name.
-    expose_headers=["Content-Disposition"],
+    # X-DOCex-MFA tells the sign-in screen to show the 6-digit code box.
+    # Without it listed here the browser hid it, the screen never showed the
+    # box, and an administrator with two-step sign-in could not sign in at
+    # all ("Your session has expired" on every attempt — 28 Sep 2026).
+    expose_headers=["Content-Disposition", "X-DOCex-MFA"],
 )
 
 # GZip compression — shrinks JSON responses ~60-80% on payloads over 1KB.

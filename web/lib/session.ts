@@ -160,7 +160,10 @@ export async function apiFetch<T>(
       // The sign-in screen needs to tell "wrong password" apart from "now show
       // the code box". A header rather than string-matching the message,
       // because error wording changes and a login flow should not depend on it.
-      mfaRequired: res.headers.get("X-DOCex-MFA") === "required",
+      // The header is the signal; the sentence is a fallback in case anything
+      // between here and the API strips the header again (see api/main.py).
+      mfaRequired:
+        res.headers.get("X-DOCex-MFA") === "required" || /6-digit code/i.test(raw),
     });
   }
   // 204 / empty bodies
