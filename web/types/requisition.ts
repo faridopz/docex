@@ -117,6 +117,8 @@ export interface WorkflowStep {
   key: string;
   label: string;
   department: string;
+  /** Budget-holder step: owned by whichever department raised the request. */
+  requester_department?: boolean;
   /** This step only engages at or above this amount. */
   min_amount: number;
   can_override: boolean;
@@ -148,6 +150,8 @@ export interface RequisitionWorkflow {
   /** Per-category document checklist. A category with no entry here falls
    * back to required_documents (the org-wide list). Keyed by category name. */
   documents_by_category: Record<string, string[]>;
+  /** Extra documents once the amount reaches a band (e.g. 3 quotes from N200,001). */
+  documents_by_amount?: { min_amount: number; documents: string[]; categories: string[]; label: string }[];
   duplicate_window_days: number;
   /** Ceiling on payees in one multi-payee requisition (a workshop stipend
    * list, a beneficiary payout run). */

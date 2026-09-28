@@ -130,3 +130,34 @@ export function withArticle(phrase: string): string {
   if (/^[A-Z]{2,}$/.test(first)) return `${/^[AEFHILMNORSX]/.test(first) ? "an" : "a"} ${p}`;
   return `${/^[aeiou]/i.test(p) ? "an" : "a"} ${p}`;
 }
+
+
+/**
+ * The documents a payment needs — the category's pack plus any value-band
+ * documents its amount reaches. Mirrors requisitions.required_documents_for
+ * exactly, so the form asks for what the server will check.
+ */
+export function requiredDocumentsFor(
+  wf: {
+    required_documents: string[];
+    documents_by_category?: Record<string, string[]>;
+    documents_by_amount?: { min_amount: number; documents: string[]; categories: string[] }[];
+  } | null | undefined,
+  category: string,
+  amount?: number | null,
+): string[] {
+  if (!wf) return [];
+  const want = (category || "").trim().toLowerCase();
+  const packs = wf.documents_by_category ?? {};
+  const hit = Object.keys(packs).find((k) => k.trim().toLowerCase() === want);
+  const base = [...(hit ? packs[hit] : wf.required_documents)];
+  if (amount == null || !Number.isFinite(amount)) return base;
+  const bands = [...(wf.documents_by_amount ?? [])].sort((a, b) => a.min_amount - b.min_amount);
+  for (const band of bands) {
+    if (Math.round(amount * 100) < Math.round(band.min_amount * 100)) continue;
+    const cats = new Set((band.categories ?? []).map((c) => c.trim().toLowerCase()));
+    if (cats.size && !cats.has(want)) continue;
+    for (const d of band.documents) if (!base.includes(d)) base.push(d);
+  }
+  return base;
+}

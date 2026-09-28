@@ -255,9 +255,36 @@ class WorkflowStep(BaseModel):
     key: str                             # "compliance"
     label: str = ""                      # "Compliance Review"
     department: str = ""                 # which department owns it
+    # Budget-holder step: owned, request by request, by the department that
+    # RAISED the request (its head confirms the need and the delivery before
+    # Finance checks compliance). `department` is ignored when this is set.
+    requester_department: bool = False
     min_amount: float = 0.0              # only engages at/above this amount
     can_override: bool = False           # may this step release a FAIL?
     override_limit: Optional[float] = None  # max amount it may override up to
+
+
+class AmountDocuments(BaseModel):
+    """Documents required once a payment reaches `min_amount`."""
+    min_amount: float
+    documents: list[str] = Field(default_factory=list)
+    # Empty = every category. Otherwise only these (case-insensitive).
+    categories: list[str] = Field(default_factory=list)
+    label: str = ""                      # "3 quotations from N200,001"
+
+
+def step_owner(step: Optional["WorkflowStep"], req: Optional["Requisition"] = None) -> str:
+    """The department that must act at `step` for this request.
+
+    Usually the step's own department. For a budget-holder step it is the
+    department that raised the request — so Programmes' requests go to the
+    Programme Manager and HR's to the HR head, from one workflow.
+    """
+    if step is None:
+        return ""
+    if getattr(step, "requester_department", False):
+        return (getattr(req, "department", "") or "") if req is not None else ""
+    return step.department or ""
 
 
 class CCRule(BaseModel):
@@ -307,6 +334,11 @@ class RequisitionWorkflow(BaseModel):
     # which trains people to ignore the check — and an ignored check is worse
     # than no check. A category with no entry falls back to required_documents.
     documents_by_category: dict[str, list[str]] = Field(default_factory=dict)
+    # Value bands: extra documents once the amount reaches a threshold — three
+    # quotations from N200,001, a tender above N7m. Added ON TOP of the
+    # category pack, optionally only for some categories (a per diem is not
+    # procured). Every procurement policy we have read ties evidence to value.
+    documents_by_amount: list["AmountDocuments"] = Field(default_factory=list)
     duplicate_window_days: int = 30
     # Compliance rulebook (compliance.py / api/compliance_routes.py) this
     # org's requisitions are checked against when an approver runs a
@@ -736,7 +768,7 @@ def unroutable_steps(org_id: str, wf: RequisitionWorkflow) -> list[str]:
     return [
         f"{s.label or s.key} → '{s.department}'"
         for s in wf.steps
-        if s.department and s.department not in known
+        if not s.requester_department and s.department and s.department not in known
     ]
 
 
@@ -762,7 +794,9 @@ def validate_workflow(org_id: str, wf: RequisitionWorkflow) -> list[str]:
             errors.append(f"Duplicate workflow step key '{key}'.")
         seen_keys.add(key)
         dept = (step.department or "").strip()
-        if not dept:
+        if step.requester_department:
+            pass  # owned by whichever department raised the request
+        elif not dept:
             errors.append(f"Step '{key}' has no department.")
         elif dept not in known:
             errors.append(
@@ -808,7 +842,8 @@ def get_workflow(org_id: str) -> RequisitionWorkflow:
     return RequisitionWorkflow.model_validate(raw) if raw else default_workflow(org)
 
 
-def required_documents_for(wf: RequisitionWorkflow, category: str) -> list[str]:
+def required_documents_for(wf: RequisitionWorkflow, category: str,
+                           amount: Optional[float] = None) -> list[str]:
     """The document pack for this kind of payment.
 
     A goods purchase needs a GRN; a workshop needs an attendance list and a
@@ -820,10 +855,20 @@ def required_documents_for(wf: RequisitionWorkflow, category: str) -> list[str]:
     an organisation that has not configured packs is unaffected.
     """
     want = (category or "").strip().lower()
-    for key, docs in (wf.documents_by_category or {}).items():
-        if key.strip().lower() == want:
-            return list(docs)
-    return list(wf.required_documents)
+    base = next((list(docs) for key, docs in (wf.documents_by_category or {}).items()
+                 if key.strip().lower() == want), list(wf.required_documents))
+    if amount is None:
+        return base
+    for band in sorted(wf.documents_by_amount or [], key=lambda b: b.min_amount):
+        if _money(amount) < _money(band.min_amount):
+            continue
+        cats = {c.strip().lower() for c in band.categories}
+        if cats and want not in cats:
+            continue
+        for d in band.documents:
+            if d not in base:
+                base.append(d)
+    return base
 
 
 def _steps_for(wf: RequisitionWorkflow, amount: float) -> list[WorkflowStep]:
@@ -952,7 +997,7 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
         ))
 
     # 7. Required documents present — for THIS kind of payment
-    required = required_documents_for(wf, req.category)
+    required = required_documents_for(wf, req.category, req.amount)
     if required:
         checks.append(_documents_check(org, wf, req, required))
 
@@ -1868,10 +1913,11 @@ def decide(
     # Deliberately no administrator bypass. An admin who needs to unstick a
     # requisition sitting with the wrong department should reassign it — a
     # visible, recorded act — not silently stand in for that department.
-    if department and step.department and department != step.department:
+    owner = step_owner(step, req)
+    if department and owner and department != owner:
         raise RequisitionError(
-            f"{req.ref} is with {step.department} ({step.label or step.key}); "
-            f"you are in {department}. Only {step.department} can act at this step."
+            f"{req.ref} is with {owner} ({step.label or step.key}); "
+            f"you are in {department}. Only {owner} can act at this step."
         )
 
     # ─── nobody approves their own request ──────────────────────────────────
@@ -1938,12 +1984,12 @@ def decide(
     at = _now_iso()
     payload = f"{req.id}|{step.key}|{actor}|{decision.value}|{at}|{','.join(overrides)}"
     req.approvals.append(Approval(
-        step=step.key, department=department or step.department, actor=actor,
+        step=step.key, department=department or step_owner(step, req), actor=actor,
         decision=decision, notes=notes.strip(), at=at,
         overrides=overrides, signature=_sign(payload),
     ))
     _audit(req, f"step_{decision.value}", actor=actor,
-           department=department or step.department,
+           department=department or step_owner(step, req),
            detail=f"{step.label or step.key}: {decision.value}" + (f" — {notes.strip()}" if notes.strip() else ""))
 
     # ─── advance / stop ─────────────────────────────────────────────────────
@@ -2028,17 +2074,18 @@ def place_on_hold(
     # Same department boundary as decide(): only whoever the requisition is
     # actually sitting with may pause it. See the long comment in decide()
     # for why this is not admin-bypassable.
-    if department and step.department and department != step.department:
+    owner = step_owner(step, req)
+    if department and owner and department != owner:
         raise RequisitionError(
-            f"{req.ref} is with {step.department} ({step.label or step.key}); "
-            f"you are in {department}. Only {step.department} can act at this step."
+            f"{req.ref} is with {owner} ({step.label or step.key}); "
+            f"you are in {department}. Only {owner} can act at this step."
         )
 
     req.status = ReqStatus.ON_HOLD
     req.hold_reason = reason.strip()
     req.held_by = actor
     req.held_at = _now_iso()
-    _audit(req, "held", actor=actor, department=department or step.department,
+    _audit(req, "held", actor=actor, department=department or step_owner(step, req),
            detail=f"{step.label or step.key}: on hold — {req.hold_reason}")
     return _save(org, req)
 
@@ -2062,10 +2109,11 @@ def release_hold(
 
     wf = get_workflow(org)
     step = _step(wf, req.current_step or "")
-    if step is not None and department and step.department and department != step.department:
+    owner = step_owner(step, req)
+    if step is not None and department and owner and department != owner:
         raise RequisitionError(
-            f"{req.ref} is with {step.department} ({step.label or step.key}); "
-            f"you are in {department}. Only {step.department} can act at this step."
+            f"{req.ref} is with {owner} ({step.label or step.key}); "
+            f"you are in {department}. Only {owner} can act at this step."
         )
 
     prior_reason = req.hold_reason or "(no reason recorded)"
@@ -2075,7 +2123,7 @@ def release_hold(
     req.held_at = None
     where = f"Resumed at {step.label or step.key}" if step is not None else "Resumed"
     _audit(req, "hold_released",
-           actor=actor, department=department or (step.department if step else ""),
+           actor=actor, department=department or step_owner(step, req),
            detail=f"{where} (was held: {prior_reason})" + (f" — {notes.strip()}" if notes.strip() else ""))
     return _save(org, req)
 
@@ -2175,7 +2223,7 @@ def add_attachment(
     # released block keeps the name and reason of whoever released it.
     if doc_type and req.status in _DOCS_RECHECK_STATUSES:
         wf = get_workflow(org)
-        required = required_documents_for(wf, req.category)
+        required = required_documents_for(wf, req.category, req.amount)
         current = next((c for c in req.checks if c.code == "DOCS_COMPLETE"), None)
         if required and current is not None and not current.overridden:
             fresh = _documents_check(org, wf, req, required)

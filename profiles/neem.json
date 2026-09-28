@@ -223,7 +223,59 @@
       "wht_remittance": [
         "remittance_evidence"
       ]
-    }
+    },
+    "_documents_by_amount_source": "Neem Procurement Policy p6 'FULL AND OPEN COMPETITION' table (same source as _thresholds_as_written). CONFIRM with NEEM: (1) the N200,001 band conflicts with the Finance Processes deck (see _confirm_before_go_live); (2) which categories are procured — listed here are goods and contracted services only; per diem, DSA, advances, salaries are not procured.",
+    "documents_by_amount": [
+      {
+        "min_amount": 200001,
+        "documents": [
+          "three_quotes"
+        ],
+        "categories": [
+          "equipment",
+          "furniture_fittings",
+          "consultancy",
+          "independent_contractor",
+          "venue",
+          "client_support_food",
+          "transportation_airfare"
+        ],
+        "label": "Minimum 3 quotes (N200,001 – N2,000,000)"
+      },
+      {
+        "min_amount": 2000001,
+        "documents": [
+          "procurement_committee_recommendation"
+        ],
+        "categories": [
+          "equipment",
+          "furniture_fittings",
+          "consultancy",
+          "independent_contractor",
+          "venue",
+          "client_support_food",
+          "transportation_airfare"
+        ],
+        "label": "Procurement committee recommendation (from N2,000,001)"
+      },
+      {
+        "min_amount": 7000001,
+        "documents": [
+          "five_quotes",
+          "tender_evaluation_minutes"
+        ],
+        "categories": [
+          "equipment",
+          "furniture_fittings",
+          "consultancy",
+          "independent_contractor",
+          "venue",
+          "client_support_food",
+          "transportation_airfare"
+        ],
+        "label": "Minimum 5 quotes and competitive tender (above N7,000,000)"
+      }
+    ]
   },
   "grants": [],
   "admin": {
@@ -334,8 +386,13 @@
     "block_project_after_days": 0,
     "collective_default_count": 2,
     "recover_at_month_end": true,
-    "open_for_categories": ["advance", "dsa"],
-    "activity_end_categories": ["dsa"],
+    "open_for_categories": [
+      "advance",
+      "dsa"
+    ],
+    "activity_end_categories": [
+      "dsa"
+    ],
     "_categories_source": "Slide 10: advances are retired within 5 working days of payment; DSA within 5 working days after the trip. Their category list names both 'advance' and 'dsa'. Confirm no other category is an advance (e.g. petty_cash).",
     "_dsa_note": "DSA runs the same clock but from the END of the trip — 'retired within 5 working days or 7 days after the event/trip has been concluded'. A travel approval form must exist BEFORE the trip.",
     "_confirm": "collective_default_count is set to 2 as a working assumption. Their policy says 'a collective default' without defining how many. Ask."

@@ -594,11 +594,17 @@ export default function OrgSettingsPage() {
                             className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
                           />
                           <select
-                            value={s.department}
-                            onChange={(e) => patchStep(i, { department: e.target.value })}
+                            value={s.requester_department ? "@requester" : s.department}
+                            onChange={(e) =>
+                              patchStep(i, e.target.value === "@requester"
+                                ? { department: "", requester_department: true }
+                                : { department: e.target.value, requester_department: false })}
                             className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
                           >
                             <option value="">Select department…</option>
+                            {/* The budget holder: the head of whichever department raised
+                                the request confirms the need before Finance checks it. */}
+                            <option value="@requester">The requester&rsquo;s own department (budget holder)</option>
                             {departments.map((d) => (
                               <option key={d.key} value={d.key}>
                                 {d.name}

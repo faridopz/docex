@@ -185,9 +185,10 @@ def _notify_current_step(ctx: Ctx, req: rq.Requisition, wf: rq.RequisitionWorkfl
     if not req.current_step:
         return
     step = next((s for s in wf.steps if s.key == req.current_step), None)
-    if step is None or not step.department:
+    owner = rq.step_owner(step, req)
+    if step is None or not owner:
         return
-    _notify(ctx, req, kind="assigned", department=step.department,
+    _notify(ctx, req, kind="assigned", department=owner,
             title=f"{req.ref}: {step.label or step.key}",
             body=f"{req.vendor_name} — {req.amount:,.2f} {req.currency}.",
             step_label=step.label or step.key)
@@ -337,10 +338,11 @@ def _people(org_id: str) -> dict[str, str]:
         return {}
 
 
-def _step_departments(org_id: str) -> dict[str, str]:
-    """workflow step key → the department that owns it."""
+def _step_departments(org_id: str) -> dict:
+    """workflow step key → the step (its owner is resolved per request, since
+    a budget-holder step belongs to whichever department raised it)."""
     try:
-        return {st.key: st.department for st in rq.get_workflow(org_id).steps}
+        return {st.key: st for st in rq.get_workflow(org_id).steps}
     except Exception:
         return {}
 
@@ -353,7 +355,8 @@ def _summary_out(r: rq.Requisition, names: Optional[dict[str, str]] = None,
         # Who it is with right now, as a department key the screen turns into
         # the org's own name ("With Finance / Audit") — people ask "who has
         # it?", not "which step key is current?".
-        "current_department": (step_depts or {}).get(r.current_step or "", "") if r.current_step else "",
+        "current_department": (rq.step_owner((step_depts or {}).get(r.current_step or ""), r)
+                               if r.current_step else ""),
         "id": r.id,
         "ref": r.ref,
         "vendor_name": r.vendor_name,
@@ -443,7 +446,7 @@ def _detail_out(r: rq.Requisition, ctx: Optional[Ctx] = None) -> dict:
     out = _detail_out_full(r)
     if ctx is not None:
         if r.current_step and not out.get("current_department"):
-            out["current_department"] = _step_departments(ctx.org_id).get(r.current_step, "")
+            out["current_department"] = rq.step_owner(_step_departments(ctx.org_id).get(r.current_step), r)
         user = auth.get_by_email(r.submitted_by or "", ctx.org_id)
         if user is not None and user.name:
             out["submitted_by_name"] = user.name
@@ -943,13 +946,18 @@ async def document_permissions_endpoint(ctx: Ctx = Depends(request_context)):
 async def pending_for_me_endpoint(ctx: Ctx = Depends(request_context)):
     """Everything currently waiting on the signed-in user's department."""
     wf = rq.get_workflow(ctx.org_id)
-    my_steps = {s.key for s in wf.steps if s.department == ctx.department}
+    # A budget-holder step is "mine" when I hold an approving role and the
+    # request came from my department.
+    holds_budget = ctx.role in ("approver", "admin")
+    my_steps = {s.key for s in wf.steps
+                if s.department == ctx.department or (s.requester_department and holds_budget)}
 
     rows = [
         r for r in rq.list_requisitions(ctx.org_id, status=rq.ReqStatus.IN_REVIEW)
         if r.current_step in my_steps
+        and rq.step_owner(next((s for s in wf.steps if s.key == r.current_step), None), r) == ctx.department
     ]
-    names, depts = _people(ctx.org_id), {st.key: st.department for st in wf.steps}
+    names, depts = _people(ctx.org_id), {st.key: st for st in wf.steps}
     return {
         "department": ctx.department,
         "steps": sorted(my_steps),
@@ -1312,6 +1320,17 @@ async def decide_endpoint(
     """
     require_role(ctx, "reviewer", "approver", "admin")
 
+    # A budget-holder step is the department head's call, not any colleague's:
+    # a programme officer must not approve a fellow officer's request.
+    _cur = rq.get_requisition(ctx.org_id, req_id)
+    if _cur is not None and _cur.current_step:
+        _st = next((s for s in rq.get_workflow(ctx.org_id).steps if s.key == _cur.current_step), None)
+        if _st is not None and _st.requester_department and ctx.role not in ("approver", "admin") \
+                and decision == "approved":
+            raise HTTPException(
+                status_code=403,
+                detail="Only your department's budget holder (an approver) can approve at this step.")
+
     try:
         dec = rq.Decision(decision)
     except ValueError:
@@ -1429,7 +1448,7 @@ def _step_department(ctx: Ctx, req: rq.Requisition) -> str:
         return ""
     wf = rq.get_workflow(ctx.org_id)
     step = next((s for s in wf.steps if s.key == req.current_step), None)
-    return step.department if step else ""
+    return rq.step_owner(step, req)
 
 
 # ─── attachments ────────────────────────────────────────────────────────────
@@ -1828,15 +1847,15 @@ async def send_options_endpoint(req_id: str, ctx: Ctx = Depends(request_context)
         stages.append({
             "key": step.key,
             "label": step.label or step.key,
-            "department": step.department,
+            "department": rq.step_owner(step, req),
             "direction": ("forward" if current_index >= 0 and i > current_index else "back"),
         })
 
     # People who could act, newest-relevant first: the department that owns
     # the current step, then the departments owning other stages, then anyone
     # else in the organisation.
-    owning = {s.department for s in engaged if s.department}
-    current_dept = next((s.department for s in engaged if s.key == req.current_step), "")
+    owning = {rq.step_owner(s, req) for s in engaged} - {""}
+    current_dept = next((rq.step_owner(s, req) for s in engaged if s.key == req.current_step), "")
     people = []
     try:
         for u in auth.list_public(ctx.org_id):
@@ -2118,7 +2137,7 @@ async def act_on_requisition_signoff(token: str, body: _SignoffActIn, request: R
             org, req.id,
             decision=decision,
             actor=email,
-            department=step.department,
+            department=rq.step_owner(step, req),
             notes=(f"{note} " if note else "") + f"[signed off by email from {ip}]",
         )
     except rq.RequisitionError as exc:

@@ -30,6 +30,7 @@ import { listDepartments } from "@/lib/erpApi";
 import { listBankAccounts, suggestAccount, type BankAccount } from "@/lib/bankAccountsApi";
 import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
 import { FixAndResend } from "@/components/erp/FixAndResend";
+import { useDepartmentNames } from "@/lib/orgNames";
 import {
   addRequisitionComment,
   decideRequisition,
@@ -53,7 +54,7 @@ import {
   type SignoffRequestResult,
 } from "@/lib/requisitionApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
-import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
+import { dateTime, humanise, money, relativeTime, requiredDocumentsFor } from "@/lib/requisitionFormat";
 import type {
   Decision,
   PolicyCheck,
@@ -250,8 +251,14 @@ export default function RequisitionDetailPage() {
       });
   }, [req?.status, req?.project_code]);
   const currentStep = workflow?.steps.find((s) => s.key === req?.current_step) ?? null;
+  // Who must act now. A budget-holder step belongs to the department that
+  // raised the request, so the step's own department field is blank there.
+  const ownerOf = (st: { department: string; requester_department?: boolean } | null) =>
+    st ? (st.requester_department ? req?.department ?? "" : st.department) : "";
+  const currentOwner = req?.current_department || ownerOf(currentStep);
   const myTurn = Boolean(
-    isOpen && currentStep && user && user.department === currentStep.department,
+    isOpen && currentStep && user && user.department === currentOwner &&
+      (!currentStep.requester_department || user.role === "approver" || user.role === "admin"),
   );
   const iRaisedIt = Boolean(user && req && user.email === req.submitted_by);
   const amount = req?.amount ?? 0;
@@ -545,7 +552,7 @@ export default function RequisitionDetailPage() {
             </div>
             <p className="mt-1 text-sm text-gray-600">
               {money(req.amount, req.currency)} to {req.vendor_name}
-              {currentStep && isOpen ? ` — with ${deptName(currentStep.department)}` : ""}
+              {currentStep && isOpen ? ` — with ${deptName(currentOwner)}` : ""}
             </p>
           </div>
           <div className="text-right text-xs text-gray-500">
@@ -755,7 +762,7 @@ export default function RequisitionDetailPage() {
                 canRelease={mayRelease(currentStep)}
                 releasers={releasers.map((st) => ({ key: st.key, label: st.label }))}
                 iRaisedIt={iRaisedIt}
-                departmentName={deptName(currentStep.department)}
+                departmentName={deptName(currentOwner)}
                 onPassTo={passTo}
                 passBusy={routeBusy}
                 busy={busy}
@@ -789,8 +796,8 @@ export default function RequisitionDetailPage() {
                 </a>
               ) : null}
               <p className="mt-3 text-xs text-amber-800">
-                It is with {deptName(currentStep.department)} now. Attached documents are checked again the moment
-                you add them; anything else, ask {deptName(currentStep.department)} to return it so you can edit it.
+                It is with {deptName(currentOwner)} now. Attached documents are checked again the moment
+                you add them; anything else, ask {deptName(currentOwner)} to return it so you can edit it.
               </p>
             </div>
           ) : (
@@ -798,7 +805,7 @@ export default function RequisitionDetailPage() {
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
               <p className="text-gray-700">
                 <span className="font-medium text-gray-900">With {currentStep.label}.</span>{" "}
-                Waiting on {deptName(currentStep.department)} to decide. You&rsquo;ll be
+                Waiting on {deptName(currentOwner)} to decide. You&rsquo;ll be
                 notified when it moves; comments below reach everyone on it.
               </p>
             </div>
@@ -932,10 +939,7 @@ export default function RequisitionDetailPage() {
                 <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3">
                   {(() => {
                     // Required for THIS category, minus what is already here.
-                    const want = (req.category || "").trim().toLowerCase();
-                    const packs = workflow?.documents_by_category ?? {};
-                    const key = Object.keys(packs).find((k) => k.trim().toLowerCase() === want);
-                    const required = key ? packs[key] : workflow?.required_documents ?? [];
+                    const required = requiredDocumentsFor(workflow, req.category || "", req.amount);
                     const have = new Set(req.attachments.map((a) => a.document_type).filter(Boolean));
                     const missing = required.filter((d) => !have.has(d));
                     if (!required.length) return null;
@@ -1339,7 +1343,7 @@ export default function RequisitionDetailPage() {
                       .map((s) => (
                         <option key={s.key} value={s.key}>
                           {s.label || humanise(s.key)}
-                          {s.department ? ` · ${humanise(s.department)}` : ""}
+                          {s.requester_department ? " · the requesting department's budget holder" : s.department ? ` · ${humanise(s.department)}` : ""}
                         </option>
                       ))}
                   </select>
@@ -1793,6 +1797,7 @@ function ApprovalRoute({
   req: Requisition;
   workflow: RequisitionWorkflow;
 }) {
+  const deptName = useDepartmentNames();
   if (!workflow.steps.length) {
     return (
       <p className="text-sm text-gray-500">
@@ -1887,7 +1892,9 @@ function ApprovalRoute({
 
               {/* Who owns this stage — the question this card exists for. */}
               <p className={engaged ? "text-xs text-gray-600" : "text-xs text-gray-400"}>
-                {step.department ? humanise(step.department) : "No department assigned"}
+                {step.requester_department
+                  ? `${deptName(req.department)} (budget holder)`
+                  : step.department ? deptName(step.department) : "No department assigned"}
                 {step.can_override ? " · may release a blocking check" : ""}
               </p>
 

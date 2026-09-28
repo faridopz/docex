@@ -22,7 +22,7 @@ import {
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { checkAccount, listBanks, type AccountCheck, type BankOption } from "@/lib/payeeCheckApi";
 import { getAdvancePolicy } from "@/lib/advancesApi";
-import { humanise, money, withArticle } from "@/lib/requisitionFormat";
+import { humanise, money, requiredDocumentsFor, withArticle } from "@/lib/requisitionFormat";
 import { useDepartmentNames } from "@/lib/orgNames";
 import type {
   BudgetLine,
@@ -325,13 +325,9 @@ export default function NewRequisitionPage() {
   // the organisation-wide list. Mirrors requisitions.required_documents_for —
   // the form used to show only the org-wide list while the server enforced
   // the pack, so a correctly filled request was blocked on submit.
-  const requiredDocs: string[] = (() => {
-    if (!workflow) return [];
-    const want = category.trim().toLowerCase();
-    const packs = workflow.documents_by_category ?? {};
-    const hit = Object.keys(packs).find((k) => k.trim().toLowerCase() === want);
-    return hit ? packs[hit] : workflow.required_documents;
-  })();
+  const requiredDocs: string[] = requiredDocumentsFor(
+    workflow, category, Number(String(amount).replace(/,/g, "")) || null,
+  );
 
   function toggleDocument(doc: string) {
     setDocuments((prev) => (prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc]));

@@ -184,7 +184,9 @@ def validate_profile(profile: dict) -> ValidationReport:
             rep.errors.append(f"Duplicate workflow step key '{key}'.")
         step_keys.add(key)
         dept = str(s.get("department") or "").strip()
-        if not dept:
+        if s.get("requester_department"):
+            pass  # routed per request to the raiser's own department
+        elif not dept:
             rep.errors.append(f"Workflow step '{key}' has no department.")
         elif known is not None and dept not in known:
             rep.errors.append(f"Workflow step '{key}' routes to unknown department '{dept}'.")
@@ -197,6 +199,12 @@ def validate_profile(profile: dict) -> ValidationReport:
             )
     if wf and not steps:
         rep.warnings.append("workflow has no steps; the org will fall back to defaults.")
+
+    for i, band in enumerate(wf.get("documents_by_amount") or []):
+        if not isinstance(band, dict) or not band.get("documents"):
+            rep.errors.append(f"workflow.documents_by_amount[{i}] lists no documents.")
+        elif float(band.get("min_amount") or 0) <= 0:
+            rep.errors.append(f"workflow.documents_by_amount[{i}] needs a min_amount above zero.")
 
     max_amount = wf.get("max_amount")
     if max_amount is not None and float(max_amount) <= 0:
@@ -314,6 +322,8 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
             # were written to replace.
             documents_by_category=wf.get("documents_by_category",
                                          current.documents_by_category),
+            documents_by_amount=[requisitions.AmountDocuments(**b) for b in wf["documents_by_amount"]]
+                                if "documents_by_amount" in wf else current.documents_by_amount,
             duplicate_window_days=int(wf.get("duplicate_window_days", current.duplicate_window_days)),
             max_payees=int(wf.get("max_payees", current.max_payees)),
             cc_rules=([requisitions.CCRule(**r) for r in wf["cc_rules"]]
@@ -565,10 +575,17 @@ def diff_profile(profile: dict) -> list[str]:
         import requisitions
         cur = requisitions.get_workflow(org)
         for key in ("max_amount", "allowed_categories", "forbidden_vendors", "approved_vendors",
-                    "required_documents", "documents_by_category", "duplicate_window_days",
+                    "required_documents", "documents_by_category", "documents_by_amount",
+                    "duplicate_window_days",
                     "max_payees", "rulebook_id"):
-            if key in wf and wf[key] != getattr(cur, key):
-                out.append(f"workflow.{key}: {_short(getattr(cur, key))} → {_short(wf[key])}")
+            have = getattr(cur, key)
+            if key == "documents_by_amount":
+                have = [b.model_dump() for b in have]
+                want = [requisitions.AmountDocuments(**b).model_dump() for b in wf.get(key) or []]
+            else:
+                want = wf.get(key)
+            if key in wf and want != have:
+                out.append(f"workflow.{key}: {_short(have)} → {_short(want)}")
         if wf.get("steps"):
             have_s = [(s.key, s.department) for s in cur.steps]
             want_s = [(s["key"], s.get("department")) for s in wf["steps"]]
