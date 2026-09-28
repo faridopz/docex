@@ -9,7 +9,7 @@
  * The export endpoints return plain CSV text, not JSON, so they use a
  * dedicated fetch here rather than the shared apiFetch() JSON helper.
  */
-import { getToken } from "@/lib/session";
+import { authedFetch as sessionFetch } from "@/lib/session";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -38,10 +38,7 @@ export type ExportSummary = {
 };
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const token = getToken();
-  const headers = new Headers(init.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  const res = await sessionFetch(`${BASE}${path}`, init);
   if (!res.ok) {
     const raw = await res.text().catch(() => "");
     let message = raw;

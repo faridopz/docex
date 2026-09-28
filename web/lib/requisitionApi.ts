@@ -10,7 +10,7 @@
  * original record instead of raising a second requisition or paying twice.
  * This is the one guarantee a finance system cannot do without.
  */
-import { apiFetch, BASE, getToken } from "@/lib/session";
+import { apiFetch, authedFetch, BASE, getToken } from "@/lib/session";
 import type {
   AuditSummary,
   BudgetLine,
@@ -255,7 +255,7 @@ export async function downloadRequisitionAttachment(
   reqId: string, attachmentId: string,
 ): Promise<Blob> {
   const token = getToken();
-  const res = await fetch(
+  const res = await authedFetch(
     `${BASE}/requisitions/${encodeURIComponent(reqId)}/attachments/${encodeURIComponent(attachmentId)}`,
     { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
   );
@@ -491,6 +491,9 @@ export type DocumentPermissions = {
   payee_schedule: boolean;
   /** The org's finance department(s) or an admin. */
   handles_money?: boolean;
+  /** The approval chain sees every request; everyone else their own and
+   *  their department's (WO-59). */
+  sees_everything?: boolean;
 };
 
 export async function getDocumentPermissions(): Promise<DocumentPermissions> {
@@ -503,7 +506,7 @@ export async function getDocumentPermissions(): Promise<DocumentPermissions> {
  * person, so that sentence is what gets thrown, not raw JSON. */
 export async function downloadNamed(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
   const token = getToken();
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authedFetch(`${BASE}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
   if (!res.ok) {
@@ -539,7 +542,7 @@ export async function downloadRequisitionExport(
   id: string, format: "pdf" | "xlsx",
 ): Promise<Blob> {
   const token = getToken();
-  const res = await fetch(
+  const res = await authedFetch(
     `${BASE}/requisitions/${encodeURIComponent(id)}/export.${format}`,
     { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
   );
@@ -564,7 +567,7 @@ export async function downloadRequisitionLog(start: string, end: string): Promis
   const q = new URLSearchParams({
     start, end, tz_offset_minutes: String(new Date().getTimezoneOffset()),
   });
-  const res = await fetch(`${BASE}/requisitions/export/log.xlsx?${q.toString()}`, {
+  const res = await authedFetch(`${BASE}/requisitions/export/log.xlsx?${q.toString()}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
   if (!res.ok) {

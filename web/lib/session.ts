@@ -50,6 +50,43 @@ export function clearSession(): void {
   }
 }
 
+// Screens anyone may open without signing in. A 401 there is a real answer
+// (a bad link, a wrong password), not an expired session to bounce from.
+const PUBLIC_PREFIXES = ["/login", "/setup", "/approve", "/checkin", "/tour", "/change-password"];
+
+/**
+ * The session has ended (12 hours, or signed out elsewhere). Clear it and go
+ * to the sign-in screen, saying why and coming back here afterwards.
+ *
+ * Before this, a 401 only cleared storage: the screen kept its signed-in
+ * state, so somebody who left a tab open overnight met a page of errors
+ * ("Could not load…") and no hint that signing in again would fix it.
+ */
+export function sessionExpired(): void {
+  clearSession();
+  if (typeof window === "undefined") return;
+  const path = window.location.pathname;
+  if (path === "/" || PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return;
+  const next = encodeURIComponent(path + window.location.search);
+  window.location.replace(`/login?expired=1&next=${next}`);
+}
+
+/**
+ * A raw authenticated fetch for downloads and other non-JSON calls. Every
+ * wrapper in lib/ goes through this or apiFetch, so an expired session is
+ * handled the same way whichever screen notices it first.
+ */
+export async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Authorization")) {
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401 && headers.has("Authorization")) sessionExpired();
+  return res;
+}
+
 /**
  * fetch() wrapper that injects the bearer token and maps errors to friendly
  * messages. `auth: false` skips the token (login/register bootstrap).
@@ -80,7 +117,10 @@ export async function apiFetch<T>(
   }
 
   if (res.status === 401) {
-    clearSession();
+    // Only a request that carried a session can have an expired one; a wrong
+    // password at sign-in is also a 401 and must stay on the form.
+    if (h.has("Authorization")) sessionExpired();
+    else clearSession();
   }
   // Two server-side gates return 403 on a session that is otherwise perfectly
   // valid: a one-time password that has to be replaced, and a required second

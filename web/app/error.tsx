@@ -54,7 +54,7 @@ export default function ErrorBoundary({
             Try again
           </Button>
           <Link
-            href="/"
+            href="/dashboard"
             className="text-sm font-medium text-gray-600 hover:text-gray-900"
           >
             Back to home →

@@ -27,13 +27,28 @@ export default function LoginPage() {
   // Whether this instance has been set up. Starts null (unknown) so the
   // "set up a workspace" link never flashes before we know it is wrong.
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  // Arrived here because a session ran out mid-work (lib/session.ts
+  // sessionExpired): say so, and go back to that screen after signing in.
+  const [expired, setExpired] = useState(false);
+  const [next, setNext] = useState("/dashboard");
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      setExpired(q.get("expired") === "1");
+      const n = q.get("next") || "";
+      // Same-site paths only — never an open redirect.
+      if (n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/login")) setNext(n);
+    } catch {
+      /* no window — keep defaults */
+    }
+  }, []);
 
   useEffect(() => {
     if (!ready || !user) return;
     // Somebody still on the one-time password an administrator gave them: the
     // API will refuse the dashboard anyway, so send them somewhere that works.
-    router.replace(user.must_change_password ? "/change-password" : "/dashboard");
-  }, [ready, user, router]);
+    router.replace(user.must_change_password ? "/change-password" : next);
+  }, [ready, user, router, next]);
 
   // A brand-new instance has no accounts yet — send the first person to setup
   // rather than a sign-in form they could never pass.
@@ -70,7 +85,7 @@ export default function LoginPage() {
     }
     if (res.mustChangePassword) router.push("/change-password");
     else if (res.mfaSetupRequired) router.push("/settings/security?setup=1");
-    else router.push("/dashboard");
+    else router.push(next);
   }
 
   return (
@@ -148,6 +163,11 @@ export default function LoginPage() {
               </div>
             )}
 
+            {expired && !error && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                Your sign-in has expired (they last 12 hours). Sign in again to carry on where you were.
+              </p>
+            )}
             {error && (
               <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
                 {error}
