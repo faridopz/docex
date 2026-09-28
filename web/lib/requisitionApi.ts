@@ -195,6 +195,23 @@ export async function decideRequisition(id: string, input: DecideInput): Promise
   });
 }
 
+/** Correct a draft or a returned request. Only the fields given are changed;
+ * the server re-runs every check and records old → new in the audit log. */
+export async function updateRequisitionDraft(
+  id: string,
+  fields: Partial<Record<
+    | "vendor_name" | "amount" | "category" | "project_code" | "grant_code"
+    | "vendor_account" | "vendor_bank_name" | "vendor_tin" | "vendor_phone_or_email"
+    | "description",
+    string | number
+  >>,
+): Promise<Requisition> {
+  return apiFetch(`/requisitions/${encodeURIComponent(id)}/draft`, {
+    method: "PUT",
+    body: form(fields),
+  });
+}
+
 export async function resubmitRequisition(id: string, notes = ""): Promise<Requisition> {
   return apiFetch(`/requisitions/${encodeURIComponent(id)}/resubmit`, {
     method: "POST",

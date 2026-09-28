@@ -22,7 +22,8 @@ import {
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { checkAccount, listBanks, type AccountCheck, type BankOption } from "@/lib/payeeCheckApi";
 import { getAdvancePolicy } from "@/lib/advancesApi";
-import { humanise, money } from "@/lib/requisitionFormat";
+import { humanise, money, withArticle } from "@/lib/requisitionFormat";
+import { useDepartmentNames } from "@/lib/orgNames";
 import type {
   BudgetLine,
   Payee,
@@ -118,6 +119,7 @@ function parseBulkPayees(text: string): PayeeRow[] {
  * first requisition rather than raising a duplicate.
  */
 export default function NewRequisitionPage() {
+  const deptName = useDepartmentNames();
   const [workflow, setWorkflow] = useState<RequisitionWorkflow | null>(null);
   const [multiPayeeEnabled, setMultiPayeeEnabled] = useState(false);
 
@@ -565,14 +567,14 @@ export default function NewRequisitionPage() {
       <AppShell>
         <div className="mx-auto max-w-3xl space-y-6 py-6 sm:px-6 lg:px-8">
           <div>
-            <p className="text-sm text-gray-500">Requisition raised</p>
+            <p className="text-sm text-gray-500">Payment request sent</p>
             <h1 className="mt-0.5 text-2xl font-bold tracking-tight text-gray-900">{result.ref}</h1>
             <p className="mt-1 text-sm text-gray-600">
               {money(result.amount, result.currency)}{" "}
               {result.payees.length
                 ? `across ${result.payees.length} ${result.payees.length === 1 ? "payee" : "payees"} — "${result.vendor_name}"`
                 : `to ${result.vendor_name}`}
-              {result.current_step ? ` — now with ${humanise(result.current_step)}` : ""}
+              {result.current_department ? ` — now with ${deptName(result.current_department)}` : ""}
             </p>
           </div>
 
@@ -692,7 +694,7 @@ export default function NewRequisitionPage() {
               href="/requisitions"
               className="rounded-lg px-3.5 py-2 text-sm font-medium text-gray-600 transition hover:text-gray-900"
             >
-              Back to requisitions
+              Back to payment requests
             </Link>
           </div>
         </div>
@@ -719,7 +721,8 @@ export default function NewRequisitionPage() {
           </p>
         </div>
 
-        {workflow ? <PolicySummary workflow={workflow} requiredCount={requiredDocs.length} /> : null}
+        {/* "Who approves" is shown once, beside the Send button, where it
+            follows the amount typed. A second copy used to sit up here. */}
 
         {multiPayeeEnabled ? (
           <div className="mt-4 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
@@ -974,7 +977,7 @@ export default function NewRequisitionPage() {
               label="Documents this payment needs"
               hint={
                 category
-                  ? `What your policy asks for on a ${humanise(category).toLowerCase()} payment. Attach each one — a missing document comes back as a blocking check.`
+                  ? `What your policy asks for on ${withArticle(humanise(category).toLowerCase())} payment. Attach each one — a missing document comes back as a blocking check.`
                   : "Choose a category above to see exactly which documents it needs."
               }
             >
@@ -1232,31 +1235,6 @@ function Field({
       {hint ? <span className="mb-1.5 block text-xs text-gray-500">{hint}</span> : null}
       {children}
     </label>
-  );
-}
-
-/**
- * Who this will go to, in the org's own words. It used to read "Ceiling
- * ₦100,000,000 · 2 required documents · Duplicate window 30 days · 4 approval
- * steps" — accurate, and meaningless to the person filling the form. The
- * documents list and the checks below already cover the rest.
- */
-function PolicySummary({ workflow }: { workflow: RequisitionWorkflow; requiredCount: number }) {
-  const always = workflow.steps.filter((st) => !st.min_amount);
-  const large = workflow.steps.filter((st) => st.min_amount);
-  if (!always.length) return null;
-  return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
-      <span className="font-medium text-gray-900">After you send it: </span>
-      {always.map((st) => st.label).join(" → ")}
-      {large.length ? (
-        <span className="text-gray-500">
-          {" "}
-          ({large.map((st) => `${st.label} as well from ${money(st.min_amount ?? 0, workflow.currency)}`).join("; ")})
-        </span>
-      ) : null}
-      . You are notified if it comes back to you and when it is paid.
-    </div>
   );
 }
 

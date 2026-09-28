@@ -108,8 +108,25 @@ export function agingLabel(iso?: string | null): { label: string; tone: string }
 
 /** "compliance_review" → "Compliance review". Steps are org-defined, so we
  *  can't hard-code labels; this makes an arbitrary key readable. */
+// Short forms people write in capitals. "Dsa", "Grn" and "Wht remittance"
+// read as typos to a finance officer.
+const ACRONYMS = new Set(["dsa", "grn", "wht", "vat", "tin", "po", "pv", "lpo", "rfq", "rfp", "tor", "ed", "aed", "ngo", "hq", "id"]);
+
 export function humanise(key?: string | null): string {
   if (!key) return "—";
-  const s = key.replace(/[_-]+/g, " ").trim();
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  const words = key.replace(/[_-]+/g, " ").trim().split(/\s+/);
+  const out = words.map((w, i) => {
+    if (ACRONYMS.has(w.toLowerCase())) return w.toUpperCase();
+    return i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w;
+  });
+  return out.join(" ");
+}
+
+/** "an equipment", "a venue" — for sentences built from category names. */
+export function withArticle(phrase: string): string {
+  const p = phrase.trim();
+  if (!p) return p;
+  const first = p.split(/\s+/)[0];
+  if (/^[A-Z]{2,}$/.test(first)) return `${/^[AEFHILMNORSX]/.test(first) ? "an" : "a"} ${p}`;
+  return `${/^[aeiou]/i.test(p) ? "an" : "a"} ${p}`;
 }

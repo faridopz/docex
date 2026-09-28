@@ -29,6 +29,7 @@ import { useAuth } from "@/lib/auth";
 import { listDepartments } from "@/lib/erpApi";
 import { listBankAccounts, suggestAccount, type BankAccount } from "@/lib/bankAccountsApi";
 import { PolicyCheckList, ReqStatusBadge } from "@/components/erp/PolicyChecks";
+import { FixAndResend } from "@/components/erp/FixAndResend";
 import {
   addRequisitionComment,
   decideRequisition,
@@ -44,7 +45,6 @@ import {
   payRequisition,
   placeRequisitionOnHold,
   releaseRequisitionHold,
-  resubmitRequisition,
   requestRequisitionSignoff,
   routeRequisition,
   runComplianceCheck,
@@ -211,7 +211,6 @@ export default function RequisitionDetailPage() {
   const isOpen =
     req != null && ["submitted", "in_review"].includes(req.status);
   const canPay = req?.status === "approved";
-  const canResubmit = req?.status === "returned";
   const isHeld = req?.status === "on_hold";
   const canHold = req?.status === "in_review" && holdEnabled;
 
@@ -307,20 +306,6 @@ export default function RequisitionDetailPage() {
       await load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Could not record that payment.");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function resubmit() {
-    if (!req) return;
-    setBusy("resubmit");
-    setActionError(null);
-    try {
-      setReq(await resubmitRequisition(req.id, notes));
-      setNotes("");
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Could not resubmit.");
     } finally {
       setBusy("");
     }
@@ -581,7 +566,7 @@ export default function RequisitionDetailPage() {
                   ) : (
                     <Download className="h-3 w-3" />
                   )}
-                  PDF
+                  Audit pack (PDF)
                 </button>
                 <button
                   type="button"
@@ -594,7 +579,7 @@ export default function RequisitionDetailPage() {
                   ) : (
                     <Download className="h-3 w-3" />
                   )}
-                  Excel
+                  Audit pack (Excel)
                 </button>
               </div>
             ) : null}
@@ -615,7 +600,7 @@ export default function RequisitionDetailPage() {
                       type="button"
                       onClick={() => handleDocument("voucher")}
                       disabled={docBusy !== ""}
-                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-brand-300 bg-brand-50 px-2 py-1 text-xs font-semibold text-brand-800 transition hover:bg-brand-100 disabled:opacity-50"
                     >
                       {docBusy === "voucher" ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -713,6 +698,39 @@ export default function RequisitionDetailPage() {
               </div>
             </div>
           </div>
+        ) : null}
+
+        {/* Returned or still a draft: the reason first, then the fix. */}
+        {req.status === "returned" || req.status === "draft" ? (
+          (() => {
+            const ret = [...req.approvals].reverse().find((a) => a.decision === "returned");
+            const returnedBy = ret
+              ? {
+                  name: `${deptName(ret.department)} (${ret.actor})`,
+                  at: relativeTime(ret.at),
+                  note: ret.notes || "",
+                }
+              : null;
+            if (iRaisedIt) {
+              return (
+                <FixAndResend
+                  req={req}
+                  categories={workflow?.allowed_categories ?? []}
+                  returnedBy={returnedBy}
+                  onDone={(r) => setReq(r)}
+                />
+              );
+            }
+            return returnedBy ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <p className="font-semibold">
+                  Returned to {req.submitted_by_name || req.submitted_by} by {returnedBy.name} · {returnedBy.at}
+                </p>
+                {returnedBy.note ? <p className="mt-1">“{returnedBy.note}”</p> : null}
+                <p className="mt-1 text-xs text-amber-800">It comes back to the first approver when they send it again.</p>
+              </div>
+            ) : null;
+          })()
         ) : null}
 
         {/* The one thing the person at the current step came to do, first. */}
@@ -1166,32 +1184,6 @@ export default function RequisitionDetailPage() {
                 {actionError ? (
                   <p className="mt-3 text-sm text-red-700">{actionError}</p>
                 ) : null}
-              </Card>
-            ) : null}
-
-            {canResubmit ? (
-              <Card title="Resubmit" subtitle="Re-runs every policy check and re-routes it">
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={3}
-                  placeholder="What did you fix?"
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                />
-                <button
-                  type="button"
-                  onClick={resubmit}
-                  disabled={busy !== ""}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:opacity-50"
-                >
-                  {busy === "resubmit" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RotateCcw className="h-4 w-4" />
-                  )}
-                  Resubmit
-                </button>
-                {actionError ? <p className="mt-3 text-sm text-red-700">{actionError}</p> : null}
               </Card>
             ) : null}
 

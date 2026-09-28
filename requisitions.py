@@ -1610,6 +1610,45 @@ _DRAFT_EDITABLE = (
 )
 
 
+_CHANGE_LABELS = {
+    "vendor_name": "payee", "amount": "amount", "category": "category",
+    "project_code": "project code", "grant_code": "grant", "vendor_account": "bank account",
+    "vendor_bank_name": "bank", "vendor_tin": "TIN", "vendor_phone_or_email": "payee contact",
+    "payment_type": "payment type", "description": "description", "activity_end": "trip end date",
+}
+
+
+def _describe_change(key: str, old, new, currency: str = "NGN") -> str:
+    """One readable audit phrase per changed field: "amount ₦120,000.00 → ₦95,000.00".
+
+    An auditor's first question when a figure moves between approvals is
+    "from what, to what?" — a list of field names does not answer it. Bank
+    account numbers are shown by their last four digits only; the full
+    number is on the request itself, and an audit log is not the place to
+    copy it.
+    """
+    label = _CHANGE_LABELS.get(key, key.replace("_", " "))
+    if key == "amount":
+        return f"{label} {_fmt_money(old, currency)} → {_fmt_money(new, currency)}"
+    if key == "vendor_account":
+        tail = lambda v: ("…" + str(v)[-4:]) if v else "blank"
+        return f"{label} {tail(old)} → {tail(new)}"
+    if key in ("payees", "budget_lines", "receipt_ids", "documents"):
+        return f"{label} updated"
+    if key == "description":
+        return f"{label} edited"
+    fmt = lambda v: (str(v) if v not in (None, "") else "blank")
+    return f"{label} {fmt(old)} → {fmt(new)}"
+
+
+def _fmt_money(v, currency: str = "NGN") -> str:
+    try:
+        mark = "₦" if (currency or "NGN").upper() == "NGN" else f"{currency} "
+        return f"{mark}{float(v or 0):,.2f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def _require_submitter(req: "Requisition", actor: str) -> None:
     """Only the person who raised a request may change, send or discard it.
 
@@ -1660,6 +1699,7 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
     was_returned = req.status == ReqStatus.RETURNED
 
     changed: list[str] = []
+    before: dict = {}
     for key, value in fields.items():
         if value is None or key not in _DRAFT_EDITABLE:
             continue
@@ -1674,6 +1714,7 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
                     f"payment_type must be 'full', 'advance', or 'balance', not '{value}'."
                 )
         if getattr(req, key) != value:
+            before[key] = getattr(req, key)
             setattr(req, key, value)
             changed.append(key)
 
@@ -1710,7 +1751,8 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
         _audit(req, "draft_edited", actor=actor, department=req.department,
                detail=(("Corrected after being returned: "
                         if was_returned else "Changed: ")
-                       + ", ".join(sorted(changed))))
+                       + "; ".join(_describe_change(k, before.get(k), getattr(req, k), req.currency)
+                                   for k in sorted(changed))))
         req.checks = run_policy_checks(org, req)
         fails = len([c for c in req.checks if c.result == CheckResult.FAIL])
         warns = len([c for c in req.checks if c.result == CheckResult.WARNING])

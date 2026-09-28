@@ -202,6 +202,11 @@ def _pv_number_locked(req, org_id: str, *, when: Optional[dt.datetime] = None) -
               .replace("{donor}", getattr(req, "grant_code", None) or "")
               .replace("{MONYY}", period)
               .replace("{seq}", f"{seq:02d}"))
+    # A request with no project or donor would otherwise print "NF/HQ///SEP26"
+    # — the empty parts are dropped rather than shown as gaps.
+    sep = "/" if "/" in fmt else ""
+    if sep:
+        number = sep.join(part for part in number.split(sep) if part != "")
 
     st.put(org, _VOUCHER_NUMBERS, req.id,
            {"pv_number": number, "requisition_ref": getattr(req, "ref", ""),
@@ -260,10 +265,16 @@ def _approvals_by_step(req) -> dict[str, tuple[str, str]]:
         if decision != "approved":
             continue
         step = str(getattr(a, "step", "") or getattr(a, "step_key", "") or "")
+        dept = str(getattr(a, "department", "") or "")
         actor = str(getattr(a, "actor", "") or "")
         at = str(getattr(a, "at", "") or "")[:10]
-        if step:
-            out[step] = (actor, at)
+        # Keyed by step AND by department. A template names its signature
+        # sources the way people think of them ("finance", "aed"); the org's
+        # workflow may key its steps differently ("finance-audit-review"), and
+        # matching only the step key left NEEM's live voucher unsigned.
+        for key in (step, dept):
+            if key and key not in out:
+                out[key] = (actor, at)
     return out
 
 
@@ -300,6 +311,18 @@ def _lines_for(req, codes: dict) -> list[VoucherLine]:
                         amount=float(getattr(req, "amount", 0.0) or 0.0))]
 
 
+def _words(req) -> str:
+    stored = str(getattr(req, "amount_in_words", "") or "")
+    if stored:
+        return stored
+    try:
+        import requisitions as _rq
+        return _rq.amount_in_words(float(getattr(req, "amount", 0.0) or 0.0),
+                                   str(getattr(req, "currency", "NGN") or "NGN"))
+    except Exception:
+        return ""
+
+
 def build_voucher(req, org_id: str, *, when: Optional[dt.datetime] = None) -> Voucher:
     """Assemble the voucher. Pure apart from the PV number allocation.
 
@@ -317,15 +340,30 @@ def build_voucher(req, org_id: str, *, when: Optional[dt.datetime] = None) -> Vo
     total = round(sum(l.amount for l in lines), 2)
 
     approvals = _approvals_by_step(req)
+
+    def _person(email: str) -> str:
+        """The name people sign with; the address only when no name is known."""
+        if not email:
+            return ""
+        try:
+            import auth as _auth
+            u = _auth.get_by_email(email, org_id)
+            if u is not None and (u.name or "").strip():
+                return u.name.strip()
+        except Exception:  # a name is a nicety — never fail a voucher over it
+            pass
+        return email
+
     sigs: list[VoucherSignature] = []
     for role in tpl.get("signature_roles") or []:
         source = str(role.get("source") or "")
         name = date = ""
         if source == "submitter":
-            name = str(getattr(req, "submitted_by", "") or "")
+            name = _person(str(getattr(req, "submitted_by", "") or ""))
             date = str(getattr(req, "submitted_at", "") or "")[:10]
         elif source and source in approvals:
             name, date = approvals[source]
+            name = _person(name)
         sigs.append(VoucherSignature(label=str(role.get("label") or ""),
                                      name=name, date=date))
 
@@ -355,7 +393,9 @@ def build_voucher(req, org_id: str, *, when: Optional[dt.datetime] = None) -> Vo
         lines=lines,
         total=total,
         currency=str(getattr(req, "currency", "NGN") or "NGN"),
-        amount_in_words=str(getattr(req, "amount_in_words", "") or ""),
+        # Computed here. The requisition has no stored "amount in words" — the
+        # voucher read one anyway and printed a blank line on every voucher.
+        amount_in_words=_words(req),
         certification=str(tpl.get("certification") or ""),
         signatures=sigs,
         source_ref=str(getattr(req, "ref", "") or ""),

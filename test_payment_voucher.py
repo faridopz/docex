@@ -429,6 +429,64 @@ def test_the_flag_actually_hides_the_endpoint() -> None:
           other.status_code == 200, str(other.status_code))
 
 
+# ─── found live, 28 Sep 2026 (WO-64) ────────────────────────────────────────
+
+
+class _BareReq(_Req):
+    """The real Requisition has no amount_in_words attribute — the fake above
+    did, which is how a blank "Amount In Words" line shipped unnoticed."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        del self.amount_in_words
+
+
+class _DeptApproval(_Approval):
+    def __init__(self, step, department, actor, decision="approved", at="2026-09-20T10:00:00+00:00"):
+        super().__init__(step, actor, decision, at)
+        self.department = department
+
+
+def test_amount_in_words_is_printed_from_the_amount() -> None:
+    print("\nAmount In Words is computed from the amount, not read from a field that doesn't exist")
+    org = _fresh("alpha", NEEM_TEMPLATE)
+    v = pv.build_voucher(_BareReq(id="r-words", amount=850000.0), org)
+    check("words present", v.amount_in_words.lower().startswith("eight hundred fifty thousand"),
+          v.amount_in_words)
+
+
+def test_empty_pv_segments_do_not_print_as_slashes() -> None:
+    print("\nNo project or donor: the PV number drops the empty parts instead of printing ///")
+    org = _fresh("alpha", NEEM_TEMPLATE)
+    when = dt.datetime(2026, 9, 23, tzinfo=dt.timezone.utc)
+    n = pv.build_voucher(_BareReq(id="r-empty", project_code="", grant_code=None), org, when=when).pv_number
+    check("no doubled slashes", "//" not in n, n)
+    check("still carries org, month, PV and sequence", n == "NF/HQ/SEP26/PV/01", n)
+
+
+def test_signatures_match_on_department_when_step_keys_differ() -> None:
+    print("\nA template naming departments still fills when the org's step keys are different")
+    org = _fresh("alpha", NEEM_TEMPLATE)
+    req = _BareReq(id="r-dept", approvals=[
+        _DeptApproval("finance-audit-review", "finance", "chinenye@neem"),
+        _DeptApproval("aed-approval", "aed", "aed@neem"),
+    ])
+    by = {s.label: s for s in pv.build_voucher(req, org).signatures}
+    check("Checked by (finance) filled", by["Checked by"].name.startswith("chinenye"), by["Checked by"].name)
+    check("Approved by (aed) filled", by["Approved by"].name.startswith("aed"), by["Approved by"].name)
+
+
+def test_people_are_named_not_emailed() -> None:
+    print("\nA signature line shows the person's name when the system knows it")
+    import auth as A
+    from pathlib import Path
+    A._SECRET_FILE = Path(_TMP) / ".s"
+    A._secret_cache = None
+    org = _fresh("alpha", NEEM_TEMPLATE)
+    A.create_user("amina@neem.org", "Amina Bello", "correct-horse-battery", "program", "reviewer", org_id=org)
+    by = {s.label: s for s in pv.build_voucher(_BareReq(id="r-name", submitted_by="amina@neem.org"), org).signatures}
+    check("Prepared by: Amina Bello", by["Prepared by"].name == "Amina Bello", by["Prepared by"].name)
+
+
 if __name__ == "__main__":
     print("WO-41 — payment voucher export")
     test_the_letterhead_is_never_hardcoded()
@@ -448,6 +506,10 @@ if __name__ == "__main__":
     test_a_double_click_prints_the_number_that_is_stored()
     test_drafts_and_declined_payments_cannot_become_vouchers()
     test_the_flag_actually_hides_the_endpoint()
+    test_amount_in_words_is_printed_from_the_amount()
+    test_empty_pv_segments_do_not_print_as_slashes()
+    test_signatures_match_on_department_when_step_keys_differ()
+    test_people_are_named_not_emailed()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)
 

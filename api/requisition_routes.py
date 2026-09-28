@@ -442,6 +442,8 @@ def _mask_account(number: str) -> str:
 def _detail_out(r: rq.Requisition, ctx: Optional[Ctx] = None) -> dict:
     out = _detail_out_full(r)
     if ctx is not None:
+        if r.current_step and not out.get("current_department"):
+            out["current_department"] = _step_departments(ctx.org_id).get(r.current_step, "")
         user = auth.get_by_email(r.submitted_by or "", ctx.org_id)
         if user is not None and user.name:
             out["submitted_by_name"] = user.name
@@ -599,7 +601,7 @@ async def create_requisition_endpoint(
             if req.status != rq.ReqStatus.DRAFT:
                 _notify_submitted(ctx, req)
 
-            return slot.store(_detail_out(req))
+            return slot.store(_detail_out(req, ctx))
     except idempotency.IdempotencyConflict as exc:
         # 409: the first attempt is still running. Retrying shortly is correct;
         # submitting again with a new key would create the duplicate.
