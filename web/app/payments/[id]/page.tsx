@@ -78,7 +78,7 @@ export default function PaymentDetailPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-4xl space-y-6">
+      <div className="mx-auto max-w-5xl space-y-6 py-6 sm:px-6 lg:px-8">
         <Link
           href="/payments"
           className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 transition hover:text-gray-900"

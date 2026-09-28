@@ -7,18 +7,17 @@ import {
   Banknote,
   CheckCircle2,
   Clock,
-  Download,
   Loader2,
   ShieldAlert,
   XCircle,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import {
-  downloadRequisitionLog,
   listRequisitions,
-  triggerBlobDownload,
 } from "@/lib/requisitionApi";
 import { agingLabel, money } from "@/lib/requisitionFormat";
+import { useDepartmentNames } from "@/lib/orgNames";
+import { ViewSwitch } from "@/components/erp/ViewSwitch";
 import type { RequisitionSummary } from "@/types/requisition";
 
 /**
@@ -36,10 +35,13 @@ import type { RequisitionSummary } from "@/types/requisition";
  * Columns map 1:1 onto the engine's own statuses, so every requisition has
  * exactly one home and nothing is silently dropped:
  *
- *   Needs attention  draft / returned / on hold, or a blocking check nobody
- *                    has released — in every case the ball is with the
- *                    requester, not an approver
- *   With approvers   submitted / in review
+ *   Needs attention  draft / returned / on hold — not moving until someone
+ *                    acts on it outside the normal chain
+ *   With approvers   in review, including requests with a blocking check:
+ *                    those are still with an approver (who must return or
+ *                    release them), so they sort first and say so in red.
+ *                    Filing them under Needs attention left "With
+ *                    approvers" reading 0 while Finance had four on its desk.
  *   Approved         cleared every step, waiting to be paid
  *   Paid             terminal, transaction frozen
  *   Declined         terminal, rejected
@@ -60,7 +62,7 @@ const COLUMNS: {
   {
     key: "needs_attention",
     title: "Needs attention",
-    hint: "Blocked, on hold, returned, or not yet submitted",
+    hint: "Returned, on hold, or not yet sent",
     icon: ShieldAlert,
     accent: "text-rose-600",
   },
@@ -94,12 +96,8 @@ const COLUMNS: {
   },
 ];
 
-/** Which column a requisition belongs in.
- *
- * An unreleased blocking check outranks the workflow status on purpose: a
- * requisition can sit in "in_review" with a FAIL nobody has released, and on
- * a board whose job is to show what needs a human, that belongs under Needs
- * attention rather than looking like it is progressing normally. */
+/** Which column a requisition belongs in — by who has it, not by whether a
+ * check failed (see the header comment). */
 function columnFor(r: RequisitionSummary): ColumnKey {
   if (r.status === "paid") return "paid";
   if (r.status === "declined") return "declined";
@@ -107,29 +105,28 @@ function columnFor(r: RequisitionSummary): ColumnKey {
   if (r.status === "draft" || r.status === "returned" || r.status === "on_hold") {
     return "needs_attention";
   }
-  if (r.blocking_count > 0) return "needs_attention";
   return "in_approval";
 }
 
 /** The one line that says why this card is where it is. */
-function stageLabel(r: RequisitionSummary): string {
+function stageLabel(r: RequisitionSummary, deptNameFor: (key?: string | null) => string): string {
   if (r.status === "on_hold") return "On hold";
-  if (r.status === "returned") return "Returned to submitter";
+  if (r.status === "returned") return `Returned to ${r.submitted_by_name || r.submitted_by}`;
   if (r.status === "draft") return "Draft — not submitted";
   if (r.status === "paid") return "Paid";
   if (r.status === "declined") return "Declined";
-  if (r.blocking_count > 0) {
-    return `${r.blocking_count} check${r.blocking_count === 1 ? "" : "s"} blocking`;
-  }
   if (r.status === "approved") return "Ready for payment";
-  return r.current_step ? `With ${r.current_step.replace(/_/g, " ")}` : "In review";
+  const withWho = r.current_department ? `With ${deptNameFor(r.current_department)}` : "In review";
+  if (r.blocking_count > 0) {
+    return `${withWho} · ${r.blocking_count} blocking check${r.blocking_count === 1 ? "" : "s"}`;
+  }
+  return withWho;
 }
 
 export default function PaymentPipelinePage() {
+  const deptName = useDepartmentNames();
   const [rows, setRows] = useState<RequisitionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState<"" | "week" | "month">("");
-  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,91 +156,26 @@ export default function PaymentPipelinePage() {
       declined: [],
     };
     for (const r of rows ?? []) g[columnFor(r)].push(r);
+    // Within "With approvers", anything a check is blocking comes first.
+    g.in_approval.sort((a, b) => Number(b.blocking_count > 0) - Number(a.blocking_count > 0));
     return g;
   }, [rows]);
 
   const currency = rows?.[0]?.currency ?? "NGN";
 
-  /** Export the log for the current week or month — the audit sweep, from
-   *  the same screen that shows the pipeline, rather than a separate page. */
-  async function handleExport(period: "week" | "month") {
-    setExporting(period);
-    setExportError(null);
-    try {
-      const now = new Date();
-      let start: Date;
-      if (period === "week") {
-        // Monday of the current week — NEEM's payment run is weekly and
-        // memos are due Monday/Tuesday, so the week starts Monday, not Sunday.
-        const day = (now.getDay() + 6) % 7;
-        start = new Date(now);
-        start.setDate(now.getDate() - day);
-      } else {
-        start = new Date(now.getFullYear(), now.getMonth(), 1);
-      }
-      const iso = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-          d.getDate(),
-        ).padStart(2, "0")}`;
-      const blob = await downloadRequisitionLog(iso(start), iso(now));
-      triggerBlobDownload(blob, `requisition-log-${iso(start)}-to-${iso(now)}.xlsx`);
-    } catch (e) {
-      setExportError(
-        e instanceof Error ? e.message : "Could not export the log.",
-      );
-    } finally {
-      setExporting("");
-    }
-  }
-
   return (
-    <AppShell active="pipeline">
-      <div className="mx-auto max-w-7xl">
+    <AppShell active="requisitions">
+      <div className="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
         <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-              Payment pipeline
-            </h1>
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900">Payment requests</h1>
             <p className="mt-1 max-w-2xl text-sm text-gray-600">
-              Every payment request and exactly where it sits — from raised, through
-              approval, to paid. No chasing an email thread to find a payment&rsquo;s
-              status.
+              Every request and who has it — from raised, through approval, to paid.
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => handleExport("week")}
-                disabled={exporting !== ""}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
-              >
-                {exporting === "week" ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Download className="h-3.5 w-3.5" />
-                )}
-                This week
-              </button>
-              <button
-                type="button"
-                onClick={() => handleExport("month")}
-                disabled={exporting !== ""}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
-              >
-                {exporting === "month" ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Download className="h-3.5 w-3.5" />
-                )}
-                This month
-              </button>
-            </div>
-            <p className="text-[11px] text-gray-400">Export the log for audit</p>
-            {exportError ? (
-              <p className="text-[11px] text-red-700">{exportError}</p>
-            ) : null}
-          </div>
+          {/* The log download lives on the list (and in Audit); the board
+              is the same requests seen by who has them. */}
+          <ViewSwitch current="board" />
         </div>
 
         {error ? (
@@ -308,8 +240,12 @@ export default function PaymentPipelinePage() {
                               {r.vendor_name}
                             </p>
                             <div className="mt-2 flex items-center justify-between gap-2">
-                              <span className="truncate text-[11px] font-medium capitalize text-gray-600">
-                                {stageLabel(r)}
+                              <span
+                                className={`text-[11px] font-medium leading-snug ${
+                                  r.status === "in_review" && r.blocking_count > 0 ? "text-rose-700" : "text-gray-600"
+                                }`}
+                              >
+                                {stageLabel(r, deptName)}
                               </span>
                               {aging ? (
                                 <span className={`shrink-0 text-[10px] font-semibold ${aging.tone}`}>

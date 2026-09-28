@@ -563,7 +563,7 @@ export default function NewRequisitionPage() {
 
     return (
       <AppShell>
-        <div className="mx-auto max-w-3xl space-y-6">
+        <div className="mx-auto max-w-3xl space-y-6 py-6 sm:px-6 lg:px-8">
           <div>
             <p className="text-sm text-gray-500">Requisition raised</p>
             <h1 className="mt-0.5 text-2xl font-bold tracking-tight text-gray-900">{result.ref}</h1>
@@ -710,11 +710,12 @@ export default function NewRequisitionPage() {
           <option key={b.code} value={b.name} />
         ))}
       </datalist>
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-3xl py-6 sm:px-6 lg:px-8">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">New payment requisition</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">New payment request</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Policy checks run as soon as you submit, so you see any problem before an approver does.
+            Fill this in once. It is checked against your organisation&rsquo;s rules the moment you send
+            it, so you can fix anything before an approver sees it.
           </p>
         </div>
 
@@ -1074,7 +1075,10 @@ export default function NewRequisitionPage() {
             </div>
           ) : null}
 
-          {complianceEnabled ? (
+          {/* Only when there is a policy to pick. With none uploaded this
+              block used to send staff to the Compliance screen — an
+              administrator's screen they cannot open. */}
+          {complianceEnabled && rulebooks.length > 0 ? (
             <div className="rounded-lg border border-gray-200 bg-gray-50/70 p-4">
               <div className="flex items-start gap-2">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
@@ -1188,7 +1192,7 @@ export default function NewRequisitionPage() {
                   ? "Reading them against your policy…"
                   : submitting
                     ? "Running policy checks…"
-                    : "Submit requisition"}
+                    : "Send for approval"}
             </button>
             <Link
               href="/requisitions"
@@ -1231,27 +1235,27 @@ function Field({
   );
 }
 
-/** The org's own spend policy, stated up front rather than discovered later. */
-function PolicySummary({ workflow, requiredCount }: { workflow: RequisitionWorkflow; requiredCount: number }) {
-  const bits: string[] = [];
-  if (workflow.max_amount) {
-    bits.push(`Ceiling ${money(workflow.max_amount, workflow.currency)}`);
-  }
-  if (requiredCount) {
-    bits.push(`${requiredCount} required documents`);
-  }
-  if (workflow.duplicate_window_days) {
-    bits.push(`Duplicate window ${workflow.duplicate_window_days} days`);
-  }
-  const steps = workflow.steps.length;
-  if (steps) bits.push(`${steps} approval ${steps === 1 ? "step" : "steps"}`);
-
-  if (!bits.length) return null;
-
+/**
+ * Who this will go to, in the org's own words. It used to read "Ceiling
+ * ₦100,000,000 · 2 required documents · Duplicate window 30 days · 4 approval
+ * steps" — accurate, and meaningless to the person filling the form. The
+ * documents list and the checks below already cover the rest.
+ */
+function PolicySummary({ workflow }: { workflow: RequisitionWorkflow; requiredCount: number }) {
+  const always = workflow.steps.filter((st) => !st.min_amount);
+  const large = workflow.steps.filter((st) => st.min_amount);
+  if (!always.length) return null;
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Your spend policy</p>
-      <p className="mt-1 text-sm text-gray-700">{bits.join(" · ")}</p>
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+      <span className="font-medium text-gray-900">After you send it: </span>
+      {always.map((st) => st.label).join(" → ")}
+      {large.length ? (
+        <span className="text-gray-500">
+          {" "}
+          ({large.map((st) => `${st.label} as well from ${money(st.min_amount ?? 0, workflow.currency)}`).join("; ")})
+        </span>
+      ) : null}
+      . You are notified if it comes back to you and when it is paid.
     </div>
   );
 }

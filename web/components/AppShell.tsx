@@ -6,11 +6,10 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Banknote,
   BookOpen,
+  Home,
   CalendarCheck,
   FileSearch,
-  KeyRound,
   Landmark,
-  Percent,
   Layers,
   Scale,
   Timer,
@@ -21,7 +20,6 @@ import {
   Send,
   Settings,
   ShieldCheck,
-  Users,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
@@ -54,6 +52,7 @@ export type NavSection =
   | "requisitions"
   | "advances"
   | "pipeline"
+  | "settings"
   | "payments"
   | "audit"
   | "reconciliation"
@@ -103,19 +102,15 @@ const NAV_GROUPS: NavGroup[] = [
     module: "compliance",
     label: "Compliance & Finance",
     items: [
-      { section: "dashboard", label: "Dashboard", href: "/dashboard", icon: LayoutGrid, match: ["/dashboard", "/transactions"] },
-      { section: "requisitions", label: "Requisitions", href: "/requisitions", icon: Send, match: ["/requisitions"] },
+      { section: "dashboard", label: "Home", href: "/dashboard", icon: Home, match: ["/dashboard", "/transactions"] },
+      // One place for payment requests, with a List ⇄ Board switch on the
+      // page. The board used to be a separate "Pipeline" item showing the
+      // same records, which made three screens (this, Pipeline, Dashboard)
+      // answer the same question.
+      { section: "requisitions", label: "Payment requests", href: "/requisitions", icon: Send, match: ["/requisitions"] },
       // Everyone: staff see the advances they must retire (before one stops
       // their next payment); Finance sees everyone's and settles them.
       { section: "advances", label: "Advances", href: "/advances", icon: Wallet, match: ["/advances"], flag: "advance_retirement", audience: "everyone" },
-      // The payment pipeline. Sits directly under Requisitions because it is
-      // the same data seen a different way — every card on it IS a
-      // requisition. It used to live in the settings footer, pointing at
-      // /compliance/board, where it was fed by compliance checks and so could
-      // not see a single requisition: the one screen titled "every payment"
-      // was blind to the payment engine. Daily working view, so it belongs in
-      // the working nav, not below a divider with Security and Org settings.
-      { section: "pipeline", label: "Pipeline", href: "/requisitions/board", icon: LayoutGrid, match: ["/requisitions/board"] , audience: "approvers" },
       { section: "payments", label: "Payments", href: "/payments", icon: Banknote, match: ["/payments"] , audience: "approvers" },
       { section: "audit", label: "Audit", href: "/audit", icon: ScrollText, match: ["/audit"] , audience: "approvers" },
       // Month end. Sits next to Audit deliberately: reconciliation is the
@@ -146,7 +141,9 @@ const NAV_GROUPS: NavGroup[] = [
       // installs that still rely on these screens turn `legacy_intake` on.
       { section: "submit", label: "Submit requisition", href: "/compliance/submit", icon: Send, match: ["/compliance/submit"], flag: "legacy_intake" , audience: "everyone" },
       { section: "retire", label: "Retire advance", href: "/compliance/retire", icon: Wallet, match: ["/compliance/retire"], flag: "legacy_intake" , audience: "everyone" },
-      { section: "compliance", label: "Compliance", href: "/compliance", icon: ShieldCheck, match: ["/compliance"] , audience: "admin" },
+      // Compliance (the uploaded policy rulebooks) is set up by an
+      // administrator and then runs from inside each payment request, so it
+      // lives under Settings rather than in the daily menu.
       { section: "verify", label: "Bank Verify", href: "/verify", icon: Landmark, match: ["/verify"] , audience: "money" , flag: "bank_verification"},
       // Flagged: not every client runs participant-payment events. TA Connect
       // does; a client doing only internal finance ops has no use for it.
@@ -269,7 +266,7 @@ export function AppShell({
       ),
     }))
     .filter((g) => g.items.length > 0);
-  const complianceOn = enabledModules.includes("compliance");
+
 
   // Demo gate: every page rendered inside AppShell requires a signed-in demo
   // user. Public pages (landing, tour, /approve, /checkin) don't use AppShell,
@@ -347,76 +344,28 @@ export function AppShell({
               audit summary. Two different systems, both called audit, three
               items apart. This is the policy-check history, so it says so —
               and it sits under Compliance, which is the policy area. */}
-          {complianceOn && isAdmin && (
-            <Link
-              href="/compliance/checks"
-              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-            >
-              <ScrollText className="h-4 w-4 shrink-0 text-gray-400" />
-              Policy check history
-            </Link>
-          )}
-          {isAdmin && (
+          {/* One way into settings. There used to be up to eight links here
+              for an administrator — org, departments, people, withholding,
+              bank accounts, QuickBooks, security, policy history — which
+              pushed the working menu off a laptop screen. They live on one
+              page now (/settings), grouped by what they are for. */}
           <Link
-            href="/settings/org"
-            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+            href={isAdmin ? "/settings" : "/settings/security"}
+            aria-current={pathname.startsWith("/settings") || pathname.startsWith("/compliance/checks") ? "page" : undefined}
+            className={cn(
+              "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition",
+              pathname.startsWith("/settings") || pathname.startsWith("/compliance/checks")
+                ? "bg-brand-50 text-brand-700"
+                : "text-gray-600 hover:bg-gray-50 hover:text-gray-900",
+            )}
           >
-            <Settings className="h-4 w-4 shrink-0 text-gray-400" />
-            Org settings
+            {isAdmin ? (
+              <Settings className="h-4 w-4 shrink-0 text-gray-400" />
+            ) : (
+              <ShieldCheck className="h-4 w-4 shrink-0 text-gray-400" />
+            )}
+            {isAdmin ? "Settings" : "Sign-in & security"}
           </Link>
-          )}
-          {isAdmin && (
-          <Link
-            href="/settings/departments"
-            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-          >
-            <Users className="h-4 w-4 shrink-0 text-gray-400" />
-            Departments &amp; team
-          </Link>
-          )}
-          {isAdmin && clientConfig.features["withholding_tax"] === true && (
-            <Link
-              href="/settings/withholding"
-              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-            >
-              <Percent className="h-4 w-4 shrink-0 text-gray-400" />
-              Withholding tax
-            </Link>
-          )}
-          {isAdmin && clientConfig.features["bank_reconciliation"] === true && (
-            <Link
-              href="/settings/accounts"
-              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-            >
-              <Landmark className="h-4 w-4 shrink-0 text-gray-400" />
-              Bank accounts
-            </Link>
-          )}
-          {isAdmin && clientConfig.features["accounting_export"] === true && (
-            <Link
-              href="/settings/accounting"
-              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-            >
-              <Banknote className="h-4 w-4 shrink-0 text-gray-400" />
-              QuickBooks handoff
-            </Link>
-          )}
-          <Link
-            href="/settings/security"
-            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-          >
-            <ShieldCheck className="h-4 w-4 shrink-0 text-gray-400" />
-            Security
-          </Link>
-          {user.role === "admin" && (
-            <Link
-              href="/settings/users"
-              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
-            >
-              <KeyRound className="h-4 w-4 shrink-0 text-gray-400" />
-              People &amp; access
-            </Link>
-          )}
 
           <div className="mt-2 flex items-center justify-between gap-2 rounded-lg px-2.5 py-2">
             <div className="min-w-0">

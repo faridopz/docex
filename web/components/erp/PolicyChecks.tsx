@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ShieldAlert, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -102,18 +103,18 @@ export function PolicyCheckRow({
           <p className="mt-1 text-sm text-gray-600">{check.message}</p>
         ) : null}
 
-        {check.policy_value || check.actual_value ? (
+        {check.result !== "pass" && (check.policy_value || check.actual_value) ? (
           <dl className="mt-1.5 flex flex-wrap gap-x-6 gap-y-0.5 text-xs text-gray-500">
             {check.policy_value ? (
               <div className="flex gap-1.5">
                 <dt className="font-medium text-gray-400">Policy</dt>
-                <dd>{check.policy_value}</dd>
+                <dd>{readableValue(check.policy_value)}</dd>
               </div>
             ) : null}
             {check.actual_value ? (
               <div className="flex gap-1.5">
                 <dt className="font-medium text-gray-400">Requested</dt>
-                <dd>{check.actual_value}</dd>
+                <dd>{readableValue(check.actual_value)}</dd>
               </div>
             ) : null}
           </dl>
@@ -160,18 +161,72 @@ export function PolicyCheckList({
   const rank = (c: PolicyCheck) =>
     c.result === "fail" && !c.overridden ? 0 : c.overridden ? 1 : c.result === "warning" ? 2 : 3;
   const ordered = [...checks].sort((a, b) => rank(a) - rank(b));
+  // Passed checks are the reassuring majority and used to fill half the page
+  // with "Vendor is acceptable under policy". One line says it; they open on
+  // request, for the auditor who wants to see each one.
+  const passed = ordered.filter((c) => rank(c) === 3);
+  const rest = ordered.filter((c) => rank(c) !== 3);
 
   return (
-    <ul className="space-y-2">
-      {ordered.map((c) => (
-        <PolicyCheckRow
-          key={c.code}
-          check={c}
-          selectable={selectable}
-          selected={selectedCodes?.includes(c.code)}
-          onToggle={onToggle}
-        />
-      ))}
-    </ul>
+    <div className="space-y-2">
+      {rest.length ? (
+        <ul className="space-y-2">
+          {rest.map((c) => (
+            <PolicyCheckRow
+              key={c.code}
+              check={c}
+              selectable={selectable}
+              selected={selectedCodes?.includes(c.code)}
+              onToggle={onToggle}
+            />
+          ))}
+        </ul>
+      ) : null}
+      {passed.length ? <PassedChecks checks={passed} /> : null}
+    </div>
   );
+}
+
+function PassedChecks({ checks }: { checks: PolicyCheck[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left text-sm font-medium text-emerald-900"
+      >
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+        {checks.length} check{checks.length === 1 ? "" : "s"} passed
+        <span className="ml-auto text-xs font-normal text-emerald-700">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open ? (
+        <ul className="mt-2 space-y-1.5 pl-6 text-sm text-gray-700">
+          {checks.map((c) => (
+            <li key={c.code}>
+              <span className="font-medium text-gray-900">{c.name || c.code}</span>
+              {c.message ? <span className="text-gray-600"> — {c.message}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** Values are stored exactly as the engine compared them — "100000000.0
+ *  NGN", or the full list of 24 category keys. Readable, not reformatted:
+ *  long lists are shortened, underscores become spaces. */
+function readableValue(v: string | null): string {
+  if (!v) return "";
+  const parts = v.split(",").map((x) => x.trim()).filter(Boolean);
+  const tidy = (x: string) =>
+    x
+      .replace(/_/g, " ")
+      .replace(/^(\d+(?:\.\d+)?)(\s|$)/, (_m, n: string, sp: string) =>
+        Number(n).toLocaleString("en-NG", { maximumFractionDigits: 2 }) + sp,
+      );
+  if (parts.length > 6) return `${parts.slice(0, 5).map(tidy).join(", ")} and ${parts.length - 5} more`;
+  return parts.map(tidy).join(", ");
 }

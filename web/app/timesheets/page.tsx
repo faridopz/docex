@@ -134,7 +134,7 @@ export default function TimesheetsPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-4xl space-y-6 pb-16">
+      <div className="mx-auto max-w-5xl space-y-6 pb-16 py-6 sm:px-6 lg:px-8">
         <header>
           <h1 className="text-xl font-semibold text-gray-900">Timesheets</h1>
           <p className="mt-1 text-sm text-gray-600">

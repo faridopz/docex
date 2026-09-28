@@ -124,7 +124,7 @@ export default function AccountingSettingsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-4 py-8 md:px-8">
-        <h1 className="text-xl font-semibold text-gray-900">QuickBooks handoff</h1>
+        <h1 className="text-xl font-semibold text-gray-900">QuickBooks</h1>
         <p className="mt-1 text-sm text-gray-500">
           DOCex owns approval and evidence; QuickBooks owns the books. This maps your
           categories and projects to your chart of accounts, then exports what's

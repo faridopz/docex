@@ -56,6 +56,7 @@ import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { dateTime, humanise, money, relativeTime } from "@/lib/requisitionFormat";
 import type {
   Decision,
+  PolicyCheck,
   Requisition,
   RequisitionWorkflow,
   RulebookSummary,
@@ -541,13 +542,13 @@ export default function RequisitionDetailPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-4xl space-y-6">
+      <div className="mx-auto max-w-5xl space-y-6 py-6 sm:px-6 lg:px-8">
         <Link
           href="/requisitions"
           className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 transition hover:text-gray-900"
         >
           <ArrowLeft className="h-4 w-4" />
-          Requisitions
+          Payment requests
         </Link>
 
         {/* Header — the four facts a decision rests on. */}
@@ -559,13 +560,13 @@ export default function RequisitionDetailPage() {
             </div>
             <p className="mt-1 text-sm text-gray-600">
               {money(req.amount, req.currency)} to {req.vendor_name}
-              {req.current_step ? ` — with ${humanise(req.current_step)}` : ""}
+              {currentStep && isOpen ? ` — with ${deptName(currentStep.department)}` : ""}
             </p>
           </div>
           <div className="text-right text-xs text-gray-500">
-            <p>Raised by {req.submitted_by}</p>
+            <p title={req.submitted_by}>Raised by {req.submitted_by_name || req.submitted_by}</p>
             <p>
-              {humanise(req.department)} · {relativeTime(req.submitted_at)}
+              {deptName(req.department)} · {relativeTime(req.submitted_at)}
             </p>
             {exportEnabled ? (
               <div className="mt-2 flex justify-end gap-2">
@@ -614,7 +615,7 @@ export default function RequisitionDetailPage() {
                       type="button"
                       onClick={() => handleDocument("voucher")}
                       disabled={docBusy !== ""}
-                      className="inline-flex items-center gap-1 rounded-md border border-brand-600 bg-brand-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-brand-700 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50"
                     >
                       {docBusy === "voucher" ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -721,6 +722,9 @@ export default function RequisitionDetailPage() {
               <DecisionPanel
                 stepLabel={currentStep.label}
                 blockingCount={blocking.length}
+                blockingChecks={blocking}
+                selectedCodes={selected}
+                onToggle={toggle}
                 allBlockingSelected={allBlockingSelected}
                 selectedCount={selected.length}
                 notes={notes}
@@ -740,6 +744,36 @@ export default function RequisitionDetailPage() {
                 onDecide={decide}
                 error={actionError}
               />
+            </div>
+          ) : iRaisedIt && blocking.length > 0 ? (
+            // The person who raised it is the only one who can fix most
+            // blocking checks (a missing invoice, a missing project code), yet
+            // this box used to tell them only that Finance was deciding. Say
+            // what to do, in their words, and where.
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
+              <p className="font-semibold text-amber-900">
+                {blocking.length === 1 ? "One thing needs fixing" : `${blocking.length} things need fixing`} before this can be approved
+              </p>
+              <ul className="mt-2 space-y-1 text-amber-900">
+                {blocking.map((c) => (
+                  <li key={c.code} className="flex gap-2">
+                    <span aria-hidden>•</span>
+                    <span>{c.message}</span>
+                  </li>
+                ))}
+              </ul>
+              {attachmentsEnabled && blocking.some((c) => c.code === "DOCS_COMPLETE") ? (
+                <a
+                  href="#attachments"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+                >
+                  Attach the documents
+                </a>
+              ) : null}
+              <p className="mt-3 text-xs text-amber-800">
+                It is with {deptName(currentStep.department)} now. Attached documents are checked again the moment
+                you add them; anything else, ask {deptName(currentStep.department)} to return it so you can edit it.
+              </p>
             </div>
           ) : (
             <div className="flex items-start gap-3 rounded-lg border border-gray-200 bg-white p-4 text-sm">
@@ -831,6 +865,7 @@ export default function RequisitionDetailPage() {
 
             {attachmentsEnabled ? (
               <Card
+                id="attachments"
                 title="Attachments"
                 subtitle="The real files — invoices, memos, receipts — not just a checklist label"
               >
@@ -938,10 +973,12 @@ export default function RequisitionDetailPage() {
               </Card>
             ) : null}
 
-            {complianceEnabled ? (
+            {/* Hidden until there is a policy to check against (or a result to
+                show): with none uploaded it was a card with a greyed-out button. */}
+            {complianceEnabled && (rulebooks.length > 0 || req.compliance) ? (
               <Card
-                title="Compliance rulebook check"
-                subtitle="AI-assisted check against the org's policy rulebook — alongside, not instead of, the checks above"
+                title="Check against your policy document"
+                subtitle="Reads the attached files against your uploaded policy — alongside the automatic checks, never instead of them"
               >
                 {req.compliance ? (
                   <div className="space-y-3">
@@ -1515,6 +1552,9 @@ function DecisionPanel({
   onPassTo,
   passBusy,
   blockingCount,
+  blockingChecks,
+  selectedCodes,
+  onToggle,
   allBlockingSelected,
   selectedCount,
   notes,
@@ -1536,6 +1576,11 @@ function DecisionPanel({
   onPassTo: (stepKey: string) => void;
   passBusy: boolean;
   blockingCount: number;
+  /** The blocking checks themselves, named here — the full list sits below
+   *  the panel, and "tick every blocking check above" pointed at nothing. */
+  blockingChecks: PolicyCheck[];
+  selectedCodes: string[];
+  onToggle: (code: string) => void;
   allBlockingSelected: boolean;
   selectedCount: number;
   notes: string;
@@ -1579,6 +1624,11 @@ function DecisionPanel({
             {blockingCount} {blockingCount === 1 ? "check blocks" : "checks block"} this payment, and
             this step can&rsquo;t release {blockingCount === 1 ? "it" : "them"}.
           </p>
+          <ul className="mt-2 space-y-1 text-sm text-amber-900">
+            {blockingChecks.map((c) => (
+              <li key={c.code}>• {c.message || c.name}</li>
+            ))}
+          </ul>
           <p className="mt-1 text-sm text-amber-900">
             {releasers.length
               ? `Only ${releasers.map((r) => r.label).join(" or ")} can release a blocking check on this amount. Return it for the submitter to fix, or pass it on to decide.`
@@ -1612,14 +1662,32 @@ function DecisionPanel({
             {blockingCount} {blockingCount === 1 ? "check blocks" : "checks block"} this payment
           </p>
           <p className="mt-1 text-sm text-red-800">
-            To approve anyway, tick every blocking check above, then say why and under whose
-            authority. This is recorded against your name and read at audit.
+            To approve anyway, tick each one, then say why and under whose authority. This is
+            recorded against your name and read at audit. Or return it for the submitter to fix.
           </p>
+          <ul className="mt-2 space-y-1.5">
+            {blockingChecks.map((c) => (
+              <li key={c.code}>
+                <label className="flex items-start gap-2 text-sm text-red-900">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-red-300 text-red-600 focus:ring-red-500"
+                    checked={selectedCodes.includes(c.code)}
+                    onChange={() => onToggle(c.code)}
+                  />
+                  <span>
+                    <span className="font-medium">{c.name}</span>
+                    {c.message ? <span className="text-red-800"> — {c.message}</span> : null}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
 
           <p className="mt-2.5 text-xs font-medium text-red-900">
             {allBlockingSelected
               ? `All ${blockingCount} selected.`
-              : `${selectedCount} of ${blockingCount} selected — tick the rest above.`}
+              : `${selectedCount} of ${blockingCount} ticked.`}
           </p>
 
           <div className="mt-3 space-y-3">
@@ -1906,16 +1974,18 @@ function CopiedCard({
 // ─── small pieces ───────────────────────────────────────────────────────────
 
 function Card({
+  id,
   title,
   subtitle,
   children,
 }: {
+  id?: string;
   title: string;
   subtitle?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-4">
+    <section id={id} className="scroll-mt-20 rounded-lg border border-gray-200 bg-white p-4">
       <div className="mb-3">
         <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
         {subtitle ? <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p> : null}

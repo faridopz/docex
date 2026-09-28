@@ -204,6 +204,10 @@ export interface RequisitionSummary {
   grant_code: string | null;
   department: string;
   submitted_by: string;
+  /** The submitter's name for display; falls back to the email. */
+  submitted_by_name?: string;
+  /** Department key the request is with now ("" when not in the chain). */
+  current_department?: string;
   submitted_at: string;
   status: ReqStatus;
   current_step: string | null;

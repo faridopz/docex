@@ -191,6 +191,18 @@ def test_permissions_endpoint_tells_the_screen() -> None:
     check("ED: sees_everything true", p.get("sees_everything") is True, str(p))
 
 
+def test_rows_say_who_raised_it_and_who_has_it() -> None:
+    print("\nEach row names the person who raised it and the department it is with")
+    c = _client()
+    rows = c.get("/requisitions", headers=_h(c, "femi@acme.org")).json()["requisitions"]
+    amina = next(r for r in rows if r["submitted_by"] == "amina@acme.org" and r["status"] == "in_review")
+    check("name, not just the address", amina["submitted_by_name"] == "Amina", str(amina.get("submitted_by_name")))
+    check("with Finance, as a department key", amina["current_department"] == "finance",
+          str(amina.get("current_department")))
+    d = c.get(f"/requisitions/{amina['id']}", headers=_h(c, "femi@acme.org")).json()
+    check("the detail view names her too", d.get("submitted_by_name") == "Amina")
+
+
 if __name__ == "__main__":
     print("Who can see which payment")
     org_config.apply_profile(copy.deepcopy(PROFILE))
@@ -202,5 +214,6 @@ if __name__ == "__main__":
     test_account_numbers_are_masked_for_non_finance()
     test_org_wide_views_are_for_the_chain()
     test_permissions_endpoint_tells_the_screen()
+    test_rows_say_who_raised_it_and_who_has_it()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)

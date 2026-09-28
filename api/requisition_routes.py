@@ -328,8 +328,32 @@ def _audit_out(e: rq.AuditEntry) -> dict:
     }
 
 
-def _summary_out(r: rq.Requisition) -> dict:
+def _people(org_id: str) -> dict[str, str]:
+    """email → display name, for showing "Raised by Amina" rather than an
+    address. One read of the org's users per response, not one per row."""
+    try:
+        return {u.email.strip().lower(): (u.name or u.email) for u in auth._iter_all(org_id)}
+    except Exception:  # a name is a nicety; never fail a page over it
+        return {}
+
+
+def _step_departments(org_id: str) -> dict[str, str]:
+    """workflow step key → the department that owns it."""
+    try:
+        return {st.key: st.department for st in rq.get_workflow(org_id).steps}
+    except Exception:
+        return {}
+
+
+def _summary_out(r: rq.Requisition, names: Optional[dict[str, str]] = None,
+                 step_depts: Optional[dict[str, str]] = None) -> dict:
+    who = (r.submitted_by or "").strip().lower()
     return {
+        "submitted_by_name": (names or {}).get(who) or r.submitted_by,
+        # Who it is with right now, as a department key the screen turns into
+        # the org's own name ("With Finance / Audit") — people ask "who has
+        # it?", not "which step key is current?".
+        "current_department": (step_depts or {}).get(r.current_step or "", "") if r.current_step else "",
         "id": r.id,
         "ref": r.ref,
         "vendor_name": r.vendor_name,
@@ -417,6 +441,10 @@ def _mask_account(number: str) -> str:
 
 def _detail_out(r: rq.Requisition, ctx: Optional[Ctx] = None) -> dict:
     out = _detail_out_full(r)
+    if ctx is not None:
+        user = auth.get_by_email(r.submitted_by or "", ctx.org_id)
+        if user is not None and user.name:
+            out["submitted_by_name"] = user.name
     if ctx is None or _handles_money(ctx):
         return out
     if (r.submitted_by or "").strip().lower() == (ctx.user_id or "").strip().lower():
@@ -603,7 +631,8 @@ async def list_requisitions_endpoint(
     )
     if not _sees_everything(ctx):
         rows = [r for r in rows if _may_view(ctx, r)]
-    return {"total": len(rows), "requisitions": [_summary_out(r) for r in rows]}
+    names, depts = _people(ctx.org_id), _step_departments(ctx.org_id)
+    return {"total": len(rows), "requisitions": [_summary_out(r, names, depts) for r in rows]}
 
 
 @router.post("/requisitions/payees/preview")
@@ -918,11 +947,12 @@ async def pending_for_me_endpoint(ctx: Ctx = Depends(request_context)):
         r for r in rq.list_requisitions(ctx.org_id, status=rq.ReqStatus.IN_REVIEW)
         if r.current_step in my_steps
     ]
+    names, depts = _people(ctx.org_id), {st.key: st.department for st in wf.steps}
     return {
         "department": ctx.department,
         "steps": sorted(my_steps),
         "total": len(rows),
-        "requisitions": [_summary_out(r) for r in rows],
+        "requisitions": [_summary_out(r, names, depts) for r in rows],
     }
 
 
