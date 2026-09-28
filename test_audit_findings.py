@@ -237,6 +237,20 @@ f = finding(HOURS, "OUT_OF_HOURS")
 check("out-of-hours is low severity, not an accusation", f.severity == "low")
 check("it says plainly that it is usually nothing", "usually nothing" in f.why.lower())
 
+# A request RETURNED at 3am was reported as "approved outside working hours"
+# (found in the September experience audit). Returning or declining is not
+# approving; only approvals are counted.
+HOURS2 = "hours-org-2"
+rq.set_workflow(HOURS2, wf.model_copy(update={"org_id": HOURS2}))
+req2 = rq.create_requisition(HOURS2, submitted_by="a@x.org", department="program",
+                             vendor_name="Night Return Ltd", amount=50_000)
+rq.decide(HOURS2, req2.id, decision=rq.Decision.RETURNED,
+          actor="night@x.org", department="finance", notes="attach the quote")
+raw2 = store.get_store().get(HOURS2, "requisitions", req2.id)
+raw2["approvals"][0]["at"] = "2026-09-13T03:00:00+00:00"   # a Sunday
+store.get_store().put(HOURS2, "requisitions", req2.id, raw2)
+check("a 3am RETURN is not reported as an out-of-hours approval", "OUT_OF_HOURS" not in codes(HOURS2))
+
 # ─── ordering and shape ────────────────────────────────────────────────────
 
 report = af.run_audit_tests(ORG)

@@ -345,6 +345,11 @@ def _test_out_of_hours(
     hits: list[str] = []
     for req in reqs:
         for a in req.approvals:
+            # Only approvals. A request returned or declined late at night is
+            # not "approved outside working hours", and saying so would send
+            # an auditor after a decision that released no money.
+            if a.decision != rq.Decision.APPROVED:
+                continue
             when = _local(a.at, offset_minutes)
             if when is None:
                 continue
