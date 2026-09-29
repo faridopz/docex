@@ -22,10 +22,9 @@
 #      staging key that leaks must not open the real system.
 #
 #   4. Seed it with fake data:
-#        DOCEX_DATABASE_URL='<staging url>' DOCEX_ORG=neem \
-#          python3 org_config.py apply profiles/neem.json
-#        DOCEX_DATABASE_URL='<staging url>' DOCEX_ORG=neem \
-#          python3 demo_seed.py --reset
+#        DOCEX_DATABASE_URL='<staging url>' DOCEX_ORG=demo \
+#          python3 demo_seed.py --reset --password '<demo password>'
+#      (the fictional demo organisation; it applies profiles/demo.json itself)
 #
 # ─── how it is used ────────────────────────────────────────────────────────
 #
@@ -62,7 +61,7 @@ services:
         sync: false
 
       - key: DOCEX_ORG
-        value: neem
+        value: demo
 
       # Deliberately NOT "production". This is what keeps the two apart in
       # Sentry, so a staging crash never looks like a client incident.

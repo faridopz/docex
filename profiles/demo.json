@@ -1,0 +1,272 @@
+{
+  "_comment": "A FICTIONAL organisation for demos, Loom recordings and 'try it yourself' logins. Nothing here describes a real NGO. It runs on the same engine as every client — one engine, one config per client — and is seeded by demo_seed.py. Email addresses use the reserved .example domain, so nothing can ever be sent to a real inbox.",
+  "org_id": "demo",
+  "name": "Riverbend Health Foundation",
+  "currency": "NGN",
+  "departments": [
+    {
+      "key": "program",
+      "name": "Programmes",
+      "order": 10,
+      "description": "Raises payment requests for field activities"
+    },
+    {
+      "key": "hr",
+      "name": "HR & Admin",
+      "order": 15,
+      "description": "Office running costs, staff welfare, training"
+    },
+    {
+      "key": "finance",
+      "name": "Finance",
+      "order": 20,
+      "description": "Checks every request against policy and pays it"
+    },
+    {
+      "key": "ed",
+      "name": "Executive Director",
+      "order": 30,
+      "description": "Approves requests of ₦1,000,000 and above",
+      "is_final_authority": true
+    }
+  ],
+  "state_owners": {
+    "submitted": "program",
+    "intake": "program",
+    "compliance_review": "finance",
+    "finance_review": "finance",
+    "approval": "ed",
+    "paid": "finance"
+  },
+  "workflow": {
+    "steps": [
+      {
+        "key": "budget-holder",
+        "label": "Budget holder approval",
+        "requester_department": true
+      },
+      {
+        "key": "finance",
+        "label": "Finance review",
+        "department": "finance",
+        "can_override": true,
+        "override_limit": 250000
+      },
+      {
+        "key": "ed",
+        "label": "Executive Director approval",
+        "department": "ed",
+        "min_amount": 1000000,
+        "can_override": true,
+        "override_limit": 50000000
+      }
+    ],
+    "max_amount": 50000000,
+    "cc_rules": [],
+    "allowed_categories": [
+      "venue",
+      "transport",
+      "training",
+      "supplies",
+      "consultancy",
+      "advance",
+      "dsa",
+      "utilities",
+      "equipment",
+      "stipends"
+    ],
+    "required_documents": [
+      "memo",
+      "invoice"
+    ],
+    "forbidden_vendors": [],
+    "approved_vendors": [],
+    "duplicate_window_days": 30,
+    "documents_by_category": {
+      "venue": [
+        "memo",
+        "invoice",
+        "attendance_list"
+      ],
+      "transport": [
+        "memo",
+        "invoice"
+      ],
+      "training": [
+        "memo",
+        "invoice",
+        "attendance_list"
+      ],
+      "supplies": [
+        "memo",
+        "invoice"
+      ],
+      "consultancy": [
+        "memo",
+        "invoice",
+        "contract"
+      ],
+      "advance": [
+        "memo",
+        "advance_request_form"
+      ],
+      "dsa": [
+        "memo",
+        "travel_approval_form"
+      ],
+      "utilities": [
+        "invoice"
+      ],
+      "equipment": [
+        "memo",
+        "invoice",
+        "purchase_order"
+      ],
+      "stipends": [
+        "memo",
+        "payment_sheet"
+      ]
+    },
+    "_flow": "The common NGO flow found in the 28 Sep research: the raiser's own manager (budget holder) confirms the need, Finance checks it against policy, the ED approves the large ones.",
+    "documents_by_amount": [
+      {
+        "min_amount": 500001,
+        "documents": [
+          "three_quotes"
+        ],
+        "categories": [
+          "supplies",
+          "equipment",
+          "venue",
+          "consultancy",
+          "training"
+        ],
+        "label": "3 quotations from ₦500,001"
+      },
+      {
+        "min_amount": 5000001,
+        "documents": [
+          "tender_minutes"
+        ],
+        "categories": [
+          "supplies",
+          "equipment",
+          "venue",
+          "consultancy",
+          "training"
+        ],
+        "label": "Competitive tender above ₦5,000,000"
+      }
+    ]
+  },
+  "grants": [
+    {
+      "project_code": "GF-TB-26",
+      "donor": "Global Fund",
+      "title": "Community TB case finding",
+      "value": 48000000,
+      "start_date": "2026-01-01",
+      "end_date": "2026-12-31"
+    },
+    {
+      "project_code": "MNH-26",
+      "donor": "Maternal Health Trust",
+      "title": "Safe delivery outreach",
+      "value": 30000000,
+      "start_date": "2026-03-01",
+      "end_date": "2027-02-28"
+    },
+    {
+      "project_code": "YTH-24",
+      "donor": "Youth Futures Fund",
+      "title": "Adolescent health (closed)",
+      "value": 12000000,
+      "start_date": "2024-01-01",
+      "end_date": "2024-12-31"
+    }
+  ],
+  "modules": [
+    "compliance"
+  ],
+  "features": {
+    "attendance_payments": false,
+    "kobo_sync": false,
+    "tin_verification": true,
+    "bank_reconciliation": true,
+    "timesheets": false,
+    "advance_aging": false,
+    "legacy_intake": false,
+    "payroll": false,
+    "vendor_register": true,
+    "accounting_export": true,
+    "withholding_tax": false,
+    "advance_retirement": true,
+    "multi_payee_requisitions": true,
+    "compliance_payment_record": true,
+    "requisition_hold": true,
+    "requisition_export": true,
+    "requisition_attachments": true,
+    "requisition_compliance_check": false,
+    "voucher_export": true,
+    "payee_schedule_export": true,
+    "documents_require_files": true,
+    "bank_verification": false,
+    "payee_account_check": false,
+    "payee_check_blocks": false,
+    "email_notifications": false
+  },
+  "_features_note": "Off on purpose: email (no sending domain yet), the Paystack account check (needs a live key), the AI policy-document check (needs an uploaded policy and model credit) and timesheets (not part of the story the demo tells).",
+  "advance_policy": {
+    "enabled": true,
+    "retirement_days": 7,
+    "working_days": 5,
+    "use_working_days": true,
+    "warn_days_before": 2,
+    "block_staff_after_days": 0,
+    "block_project_after_days": 0,
+    "collective_default_count": 2,
+    "recover_at_month_end": true,
+    "open_for_categories": [
+      "advance",
+      "dsa"
+    ],
+    "activity_end_categories": [
+      "dsa"
+    ]
+  },
+  "voucher_template": {
+    "title": "Payment Voucher",
+    "letterhead": {
+      "org_name": "Riverbend Health Foundation",
+      "rc_number": "DEMO-000",
+      "address_lines": [
+        "12 Example Close,",
+        "Abuja (demonstration address)"
+      ]
+    },
+    "certification": "I certify that the above account is correct, that the services have been duly performed or the goods correctly received, and that the expenditure was incurred in the interest of Riverbend Health Foundation's work.",
+    "signature_roles": [
+      {
+        "label": "Prepared by",
+        "source": "submitter"
+      },
+      {
+        "label": "Checked by",
+        "source": "finance"
+      },
+      {
+        "label": "Approved by",
+        "source": "ed"
+      },
+      {
+        "label": "Received by",
+        "source": ""
+      }
+    ],
+    "pv_number_format": "{org}/{project_code}/{MONYY}/PV/{seq}",
+    "pv_org_prefix": "RHF",
+    "pv_location": "HQ",
+    "account_codes": {}
+  },
+  "_admin_note": "People are created by demo_seed.py, never by this file, so no password is ever written here. Every demo password comes from --password or DEMO_PASSWORD."
+}

@@ -1,345 +1,424 @@
 #!/usr/bin/env python3
 """
-Seed a realistic NEEM demo. One command, repeatable, safe to re-run.
+Seed the demo organisation — Riverbend Health Foundation, a made-up NGO — with
+eight weeks of payment requests in every state a recording or sales call needs.
 
-    python demo_seed.py                  # seed + create the demo login
-    python demo_seed.py --reset          # wipe demo data first, then seed
+    DOCEX_ORG=demo DOCEX_DB=./demo.db python3 demo_seed.py --password '…'
+    DOCEX_ORG=demo DOCEX_DB=./demo.db python3 demo_seed.py --password '…' --reset
+    (or set DEMO_PASSWORD instead of --password)
 
-Why this exists: empty screens demo badly. A queue with nothing in it, an
-audit page reading "0 exceptions", a payments list with no rows — none of that
-shows what the product does. This populates every screen with data an NGO
-finance officer would recognise, and deliberately leaves ONE requisition
-sitting in the approval queue with a blocking check, so the override flow can
-be walked live rather than described.
+Rules this file keeps, and why:
 
-Everything here is fictional. Vendors, staff and grant codes are invented.
+* It writes to the organisation "demo" and nowhere else. Run with DOCEX_ORG
+  set to a real client and it stops before touching anything: a seeder that
+  can fill a client's live system with fake payments is a data incident
+  waiting to happen.
+* No password is written here or in profiles/demo.json. Every demo login gets
+  the one you pass in.
+* Everything is fictional. Email addresses use the reserved ".example"
+  domain, so no notification can ever reach a real inbox.
+* The data goes through the real engine (create, attach, approve, pay), not
+  written straight into the database. So every audit trail is a genuine,
+  verifiable chain, and every check shown is the check the engine really ran.
+  Only the clock is moved, so the history spans weeks instead of seconds.
 
-Creates:
-  * a login you can actually use            (demo@neem.org)
-  * an approval chain that routes correctly (Compliance → Finance → Management)
-  * a funding agreement, so grant-period checks have something to check
-  * field receipts, including one PHOTOGRAPH that gets read by OCR
-  * requisitions across every state: clean and waiting, blocked and waiting,
-    paid cleanly, and paid over an override that the audit page will report
+The configuration itself (departments, approval steps, quote bands, grants,
+voucher letterhead) is profiles/demo.json, applied like any client's.
 """
 from __future__ import annotations
 
 import argparse
-import getpass
-import io
+import contextlib
+import datetime as dt
+import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+import uuid
+import zlib
+from pathlib import Path
 
-# Select the SAME storage backend api/main.py will use. Without this the seeder
-# writes into the default JSON store while the running API reads SQLite, so the
-# demo login it just created does not exist as far as the API is concerned —
-# and the failure surfaces as a 401 at the login screen, which looks like a
-# password problem rather than a storage one.
-import store as _store
-_store.configure_from_env(quiet=True)
+DEMO_ORG = "demo"
+DOMAIN = "riverbend.example"
+PROFILE = Path(__file__).parent / "profiles" / "demo.json"
 
-# Read the org from the environment, exactly as the API does. Hard-coding
-# "default" here while auth.create_user() reads DOCEX_ORG split the demo across
-# two organisations the moment anyone ran this with DOCEX_ORG set: the login
-# landed in one org and every requisition in the other, so the seeded account
-# signed in successfully to a completely empty system. Nothing errored — which
-# is what made it expensive.
-ORG = (os.environ.get("DOCEX_ORG") or "default").strip() or "default"
-DEMO_EMAIL = "demo@neem.org"
-
-
-def _iso(days_ago: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+# (email local part, name, department, role, job title shown in the summary)
+PEOPLE = [
+    ("aisha", "Aisha Bello", "program", "reviewer", "Programme Officer"),
+    ("musa", "Musa Danjuma", "program", "reviewer", "Field Officer"),
+    ("tunde", "Tunde Okafor", "program", "approver", "Programme Manager (budget holder)"),
+    ("grace", "Grace Eze", "hr", "reviewer", "Admin Officer"),
+    ("halima", "Halima Yusuf", "hr", "approver", "HR & Admin Manager (budget holder)"),
+    ("ngozi", "Ngozi Obi", "finance", "reviewer", "Finance Officer"),
+    ("ibrahim", "Ibrahim Sule", "finance", "approver", "Finance Manager"),
+    ("amaka", "Amaka Nwosu", "ed", "approver", "Executive Director"),
+    ("admin", "Demo Admin", "finance", "admin", "System administrator"),
+]
 
 
-# ─── fixtures ───────────────────────────────────────────────────────────────
+def _email(local: str) -> str:
+    return f"{local}@{DOMAIN}"
 
 
-def _receipt_text(vendor: str, date: str, total: float) -> bytes:
-    return (
-        f"{vendor}\nDATE: {date}\nCommunity outreach supplies\n"
-        f"TOTAL: {total:,.2f}\n"
-    ).encode()
+# ─── the moved clock ──────────────────────────────────────────────────────────
 
 
-def _receipt_photo(vendor: str, date: str, total: float) -> bytes:
-    """A phone photo of a market receipt — no text layer, OCR only.
+class _Clock:
+    """Every engine that stamps a time reads it from here while seeding."""
 
-    This is the NEEM story in one file: the fieldworker photographs a hand-
-    written receipt in a market with no signal, and the system still reads it.
-    """
-    from PIL import Image, ImageDraw
+    def __init__(self) -> None:
+        self.now = dt.datetime.now(dt.timezone.utc)
 
-    img = Image.new("RGB", (900, 560), "white")
-    dr = ImageDraw.Draw(img)
-    lines = [vendor, f"DATE: {date}", "", "Exercise books x40",
-             "Pens and markers", "", f"TOTAL: {total:,.2f}"]
-    for i, t in enumerate(lines):
-        dr.text((45, 45 + i * 62), t, fill="black")
+    def at(self, days_ago: float, hour: int = 10, minute: int = 0, *, fresh: bool = False) -> None:
+        """Move to `days_ago` days back at hour:minute (UTC), on a working day.
+
+        Weekends move to the Friday before, because a demo full of Saturday
+        approvals trips the product's own out-of-hours audit test. Within one
+        request time only moves forward (`fresh` starts a new request), so a
+        payment can never be stamped before the approval it follows.
+        """
+        real = dt.datetime.now(dt.timezone.utc)
+        t = real.replace(hour=hour, minute=minute, second=0, microsecond=0) - dt.timedelta(days=int(days_ago))
+        while t.weekday() >= 5:
+            t -= dt.timedelta(days=1)
+        if not fresh and t <= self.now:
+            t = self.now + dt.timedelta(minutes=40)
+        self.now = min(t, real - dt.timedelta(minutes=5))   # never in the future
+
+    def iso(self, spec: str = "microseconds") -> str:
+        self.now += dt.timedelta(seconds=7)         # keep events in order within a day
+        return self.now.isoformat(timespec=spec)
+
+
+@contextlib.contextmanager
+def _moved_clock(clock: _Clock):
+    import advances
+    import auth
+    import grants
+    import notification_center
+    import requisitions as rq
+
+    saved = (rq._now_iso, advances._now_iso, advances._today, grants._now_iso,
+             notification_center._now_iso, auth._now_iso)
+    rq._now_iso = lambda: clock.iso("microseconds")
+    advances._now_iso = lambda: clock.iso("seconds")
+    advances._today = lambda: clock.now.date()
+    grants._now_iso = lambda: clock.iso("seconds")
+    notification_center._now_iso = lambda: clock.iso("microseconds")
+    auth._now_iso = lambda: clock.iso("seconds")
+    try:
+        yield clock
+    finally:
+        (rq._now_iso, advances._now_iso, advances._today, grants._now_iso,
+         notification_center._now_iso, auth._now_iso) = saved
+
+
+# ─── small helpers ────────────────────────────────────────────────────────────
+
+
+def _pdf(title: str, lines: list[str]) -> bytes:
+    """A one-page PDF standing in for a scanned memo, invoice or quote."""
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(60, 780, title)
+    c.setFont("Helvetica", 11)
+    for i, line in enumerate(lines):
+        c.drawString(60, 750 - i * 18, line)
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(60, 60, "Demonstration document — Riverbend Health Foundation is fictional.")
+    c.save()
     return buf.getvalue()
 
 
-# ─── seeding ────────────────────────────────────────────────────────────────
+def _label(doc: str) -> str:
+    import requisitions as rq
+    return rq._doc_label(doc)
 
 
-def seed(reset: bool) -> int:
-    import store
-    import auth
-    import departments
-    import field_receipts as fr
-    import grants
+def _attach(req, docs: list[str], actor: str) -> None:
+    import attachments
     import requisitions as rq
 
-    db = store.get_store()
-
-    if reset:
-        # Collection names come from the modules themselves. Hard-coding them
-        # here got "field_receipts" wrong (it was "receipts"), so receipts
-        # silently piled up on every --reset while the message claimed
-        # everything was cleared.
-        cleared = 0
-        for coll in ("requisitions", "transaction_records",
-                     fr._RECEIPTS, grants._AGREEMENTS,
-                     "idempotency_keys"):
-            for rec in db.list(ORG, coll):
-                rid = rec.get("id")
-                if rid and db.delete(ORG, coll, rid):
-                    cleared += 1
-
-        # These are singletons stored under fixed record ids rather than
-        # carrying an "id" field, so the loop above cannot see them. Without
-        # this the reference counter keeps climbing and a "fresh" demo opens
-        # at REQ-0009.
-        for rid in ("requisition", "transaction"):
-            db.delete(ORG, rq._COUNTER, rid)
-        db.delete(ORG, "requisition_workflow", rq._WORKFLOW_ID)
-
-        print(f"· cleared {cleared} record(s); references restart at REQ-0001")
-
-    # 1. Departments — the defaults already match the workflow below.
-    known = {d.key for d in departments.list_departments()}
-    print(f"· departments: {', '.join(sorted(known))}")
-
-    # 1b. Feature flags. The nav is driven by these, so a screen that is not
-    #     switched on here simply does not exist for the demo — which is a
-    #     confusing thing to discover with a client watching. Set explicitly
-    #     rather than relying on whatever the last profile applied left behind.
-    _store.get_store().put(ORG, "config", "features", {
-        "modules": ["compliance", "extraction", "knowledge"],
-        "features": {
-            "bank_reconciliation": True,   # NEEM asked for this by name
-            "timesheets": True,
-            "tin_verification": True,
-            "payroll": False,              # no confirmed PAYE bands — see profiles/neem.json
-            "legacy_intake": False,
-        },
-    })
-    print("· features: reconciliation ON, timesheets ON, payroll OFF")
-
-    # 2. Approval chain. Explicit rather than default_workflow(), so the demo
-    #    doesn't depend on which default happens to be current.
-    wf = rq.RequisitionWorkflow(
-        org_id=ORG,
-        currency="NGN",
-        max_amount=500_000,
-        allowed_categories=["supplies", "training", "travel", "logistics",
-                            "venue", "stipend", "communications"],
-        required_documents=["receipt", "invoice"],
-        duplicate_window_days=30,
-        # Finance FIRST, deliberately.
-        #
-        # The demo login sits in Finance, and "Waiting on me" filters by the
-        # signed-in user's department. With Compliance first, every requisition
-        # would queue behind a department nobody is logged into and the demo
-        # user's queue would be empty.
-        #
-        # It also avoids a real constraint in the engine: an approver may not
-        # advance a requisition carrying a FAIL they lack the authority to
-        # release. So a blocking check has to arrive at a step that CAN clear
-        # it, or it can only be declined or returned.
-        steps=[
-            rq.WorkflowStep(key="finance", label="Finance Review",
-                            department="finance",
-                            can_override=True, override_limit=150_000),
-            rq.WorkflowStep(key="approval", label="Executive Approval",
-                            department="management", min_amount=250_000,
-                            can_override=True, override_limit=1_000_000),
-        ],
-    )
-    rq.set_workflow(ORG, wf)
-
-    bad = rq.unroutable_steps(ORG, wf)
-    if bad:
-        print(f"  ! these steps route nowhere: {bad}", file=sys.stderr)
-        return 1
-    print("· approval chain: Finance → Executive (over ₦250,000)")
-
-    # 3. A live funding agreement, so GRANT_PERIOD has something to check.
-    grants.add_agreement(
-        ORG, id="agr-neem-2026", donor="Global Fund", project_code="GF-2026-TB",
-        title="Community TB Case Finding", value=48_000_000, currency="NGN",
-        signed_date="2025-11-02", start_date="2026-01-01", end_date="2026-12-31",
-    )
-    # A closed one, so the "outside the period" failure can be shown on demand.
-    grants.add_agreement(
-        ORG, id="agr-neem-2024", donor="FCDO", project_code="FCDO-2024",
-        title="Adolescent Health (closed)", value=12_000_000, currency="NGN",
-        signed_date="2023-10-01", start_date="2024-01-01", end_date="2024-12-31",
-    )
-    print("· grants: GF-2026-TB (live), FCDO-2024 (closed — for the period demo)")
-
-    # 4. Field receipts, including the photographed one.
-    receipts = {}
-    r = fr.upload_receipt(
-        org_id=ORG, uploaded_by="amina.field@neem.org",
-        file_content=_receipt_text("SAHEL CATERING SERVICES", "2026-08-20", 96_000),
-        filename="catering_kano.txt", amount_submitted=96_000,
-        project_code="GF-2026-TB", category="training",
-    )
-    receipts["catering"] = r
-
-    r = fr.upload_receipt(
-        org_id=ORG, uploaded_by="amina.field@neem.org",
-        file_content=_receipt_photo("MAMA NGOZI PROVISIONS", "2026-08-21", 47_500),
-        filename="market_receipt.png", amount_submitted=47_500,
-        project_code="GF-2026-TB", category="supplies",
-    )
-    receipts["photo"] = r
-    photo_read = r.extracted.extracted_amount
-    print(f"· receipts: 3 logged — the photographed one OCR'd to "
-          f"{'₦{:,.0f}'.format(photo_read) if photo_read else 'nothing (OCR not installed)'}")
-
-    # A deliberately incomplete one — NEEM's actual pain point.
-    fr.upload_receipt(
-        org_id=ORG, uploaded_by="amina.field@neem.org",
-        file_content=b"DATE: 2026-08-22\nTOTAL: 18,000.00\n",   # no vendor
-        filename="transport_no_vendor.txt", amount_submitted=18_000,
-        project_code="GF-2026-TB", category="travel",
-    )
-
-    def raise_req(**kw) -> rq.Requisition:
-        base = dict(
-            submitted_by="amina.field@neem.org", department="program",
-            currency="NGN", grant_code="GF-2026-TB",
-            project_code="GF-2026-TB", documents=["receipt", "invoice"],
-        )
-        base.update(kw)
-        return rq.create_requisition(ORG, **base)
-
-    # 5a. Clean, waiting on Compliance — the happy path in the queue.
-    raise_req(vendor_name="Sahel Catering Services", amount=96_000,
-              category="training", description="Refreshments, Kano training, 2 days",
-              receipt_ids=[receipts["catering"].id])
-
-    # 5b. THE DEMO ONE: blocked and waiting on Finance, at an amount the demo
-    #     login has authority to release (₦140,000 ≤ the ₦150,000 limit).
-    #     The block is a genuine donor rule — the cost is charged to a grant
-    #     that closed in 2024 — which is a far better story than a missing
-    #     attachment, and it is exactly the kind of finding an auditor writes up.
-    blocked = raise_req(vendor_name="Northern Logistics Ltd", amount=140_000,
-                        category="logistics", grant_code="FCDO-2024",
-                        project_code="FCDO-2024",
-                        description="Vehicle hire, 3 LGAs, September outreach")
-    n_blocking = len(rq.blocking_checks(blocked))
-
-    # 5c. Paid cleanly — gives the Payments screen a row with no exceptions.
-    clean = raise_req(vendor_name="Zenith Stationers", amount=47_500,
-                      category="supplies", description="Exercise books and pens",
-                      receipt_ids=[receipts["photo"].id])
-    clean = rq.decide(ORG, clean.id, decision=rq.Decision.APPROVED,
-                      actor="finance@neem.org", department="finance",
-                      notes="Checked against the photographed receipt.")
-    rq.mark_paid(ORG, clean.id, actor="finance@neem.org",
-                 bank_reference="FT26082100417", department="finance")
-
-    # 5d. Paid OVER an override — this is what the Audit screen exists for.
-    exception = raise_req(vendor_name="Kaduna Venue Services", amount=95_000,
-                          category="venue", grant_code="FCDO-2024",
-                          project_code="FCDO-2024",
-                          description="Venue hire, community dialogue")
-    exception = rq.decide(
-        ORG, exception.id, decision=rq.Decision.APPROVED,
-        actor="finance@neem.org", department="finance",
-        notes="Released on the Finance Manager's authority.",
-        overrides=[c.code for c in rq.blocking_checks(exception)],
-        override_reason=("Activity ran in the FCDO close-out window and the cost "
-                         "was approved by the donor in writing on 2024-12-18 "
-                         "(ref FCDO/CO/2024/331)."),
-        override_authority="Finance Manager — delegated authority to ₦150,000")
-    rq.mark_paid(ORG, exception.id, actor="finance@neem.org",
-                 bank_reference="FT26081900288", department="finance")
-
-    print(f"· requisitions: 4 — one clean in the queue, one BLOCKED with "
-          f"{n_blocking} failing check for the live override ({blocked.ref}), two paid")
-
-    summary = rq.audit_summary(ORG)
-    print(f"· audit: {summary['exceptions_total']} exception(s), "
-          f"audit_ready={summary['audit_ready']}")
-
-    return 0
+    backend = attachments.get_backend()
+    for doc in docs:
+        att_id = uuid.uuid4().hex[:12]
+        name = f"{doc}.pdf"
+        body = _pdf(_label(doc), [f"Request {req.ref}", f"Payee: {req.vendor_name}",
+                                  f"Amount: NGN {req.amount:,.2f}", f"Project: {req.project_code or '-'}"])
+        key = backend.put(DEMO_ORG, req.id, att_id, name, body, "application/pdf")
+        rq.add_attachment(DEMO_ORG, req.id, actor=actor, filename=name, content_type="application/pdf",
+                          size=len(body), storage_key=key, attachment_id=att_id, document_type=doc)
 
 
-def ensure_login(password: str | None) -> None:
+# ─── the story ────────────────────────────────────────────────────────────────
+
+
+class _Story:
+    """Raise, approve and pay requests the way people would, on given days."""
+
+    def __init__(self, clock: _Clock) -> None:
+        import requisitions as rq
+        self.rq = rq
+        self.clock = clock
+        self.wf = rq.get_workflow(DEMO_ORG)
+        self.dept = {_email(p[0]): p[2] for p in PEOPLE}
+
+    def raise_(self, days_ago: float, who: str, *, vendor: str, amount: float, category: str,
+               grant: str = "GF-TB-26", description: str = "", attach: list[str] | None = None,
+               missing: tuple[str, ...] = (), submit: bool = True, payees=None,
+               account: str = "", bank: str = "GTBank", activity_end: str = ""):
+        rq = self.rq
+        self.clock.at(days_ago, 9, 20, fresh=True)
+        actor = _email(who)
+        req = rq.create_requisition(
+            DEMO_ORG, submitted_by=actor, department=self.dept[actor], vendor_name=vendor,
+            amount=amount, category=category, project_code=grant, grant_code=grant,
+            vendor_account=account or f"01{zlib.crc32(vendor.encode()) % 10**8:08d}", vendor_bank_name=bank,
+            description=description, payees=payees, submit=False, activity_end=activity_end)
+        docs = attach if attach is not None else rq.required_documents_for(self.wf, category, req.amount)
+        _attach(req, [d for d in docs if d not in missing], actor)
+        if submit:
+            req = rq.submit_draft(DEMO_ORG, req.id, actor=actor)
+        return req
+
+    def _approver_for(self, req) -> str:
+        owner = self.rq.step_owner(self.rq._step(self.wf, req.current_step), req)
+        return {"program": "tunde", "hr": "halima", "finance": "ibrahim", "ed": "amaka"}[owner]
+
+    def approve(self, req, days_ago: float, *, until: str | None = None, notes: str = "",
+                overrides: list[str] | None = None, reason: str = ""):
+        """Approve step by step; stop before step `until` (None = all the way)."""
+        rq = self.rq
+        hour = 11
+        while req.status == rq.ReqStatus.IN_REVIEW and req.current_step != until:
+            who = self._approver_for(req)
+            self.clock.at(days_ago, hour)
+            hour += 2
+            step = rq._step(self.wf, req.current_step)
+            if rq.blocking_checks(req) and not step.can_override:
+                # What a budget holder does with a request they can't clear:
+                # confirm the need and pass it to whoever holds the authority
+                # (the "Pass to Finance" button), recorded with a reason.
+                chain = [s.key for s in rq._steps_for(self.wf, req.amount)]
+                later = [s for s in rq._steps_for(self.wf, req.amount)
+                         if chain.index(s.key) > chain.index(step.key) and s.can_override]
+                req = rq.route_to(DEMO_ORG, req.id, target_step=later[0].key, actor=_email(who),
+                                  department=self.dept[_email(who)],
+                                  reason="Needed for the activity. A check is failing that I can't "
+                                         f"release; passing to {later[0].label} to decide.")
+                continue
+            kwargs = {}
+            if overrides and rq.blocking_checks(req):
+                kwargs = dict(overrides=overrides, override_reason=reason,
+                              override_authority=f"{req.current_step} override limit")
+            req = rq.decide(DEMO_ORG, req.id, decision=rq.Decision.APPROVED, actor=_email(who),
+                            department=self.dept[_email(who)], notes=notes, **kwargs)
+            days_ago = max(days_ago - 0.6, 0)
+        return req
+
+    def pay(self, req, days_ago: float):
+        self.clock.at(days_ago, 15)
+        return self.rq.mark_paid(DEMO_ORG, req.id, actor=_email("ngozi"), department="finance",
+                                 bank_reference=f"GTB/FT/{req.ref.replace('REQ-', '')}{int(req.amount) % 997:03d}")
+
+    def decide(self, req, days_ago: float, decision, notes: str):
+        who = self._approver_for(req)
+        self.clock.at(days_ago, 14)
+        return self.rq.decide(DEMO_ORG, req.id, decision=decision, actor=_email(who),
+                              department=self.dept[_email(who)], notes=notes)
+
+
+def _tell(s: _Story) -> None:
+    """The last eight weeks at Riverbend, in the order they happened, so the
+    request numbers run in date order just as they would in real use."""
+    rq = s.rq
+    import advances
+    Payee = rq.Payee
+
+    # ── August: paid, cleanly ───────────────────────────────────────────────
+    r = s.raise_(56, "aisha", vendor="Greenfield Conference Centre", amount=420_000, category="venue",
+                 description="Hall and lunch, TB case-finding training, Kaduna (2 days)")
+    s.pay(s.approve(r, 55), 53)
+
+    r = s.raise_(50, "musa", vendor="Swift Movers Ltd", amount=185_000, category="transport",
+                 grant="MNH-26", description="Bus hire, outreach to 4 wards, Zaria")
+    s.pay(s.approve(r, 49), 48)
+
+    r = s.raise_(46, "grace", vendor="Crestline Office Supplies", amount=96_500, category="supplies",
+                 description="Printer toner and paper, Q3 office supplies")
+    s.pay(s.approve(r, 45), 44)
+
+    r = s.raise_(42, "aisha", vendor="Pathway Consulting", amount=1_850_000, category="consultancy",
+                 description="Baseline survey analysis, community TB project")
+    s.pay(s.approve(r, 41), 38)
+
+    # ── paid over an override: the audit page shows it, with the reason ─────
+    r = s.raise_(36, "musa", vendor="Northern Logistics Ltd", amount=140_000, category="transport",
+                 description="Vehicle hire, 3 LGAs, supervision visit", missing=("invoice",))
+    r = s.approve(r, 35, overrides=["DOCS_COMPLETE"],
+                  reason="Driver's invoice lost in transit; trip log and bank details confirmed by phone. "
+                         "Invoice copy requested for the file.")
+    s.pay(r, 34)
+
+    # ── a stipend list: twelve people, one request ──────────────────────────
+    payees = [Payee(name=n, account_number=f"20{i:08d}", bank_name=b, amount=15_000)
+              for i, (n, b) in enumerate([("Fatima Abubakar", "Access Bank"), ("John Adeyemi", "GTBank"),
+                                          ("Blessing Okon", "Zenith Bank"), ("Sani Lawal", "First Bank"),
+                                          ("Mary Johnson", "UBA"), ("Ahmed Bala", "Access Bank"),
+                                          ("Chioma Nnaji", "GTBank"), ("Yusuf Garba", "Zenith Bank"),
+                                          ("Esther Musa", "Fidelity Bank"), ("Ibrahim Ali", "GTBank"),
+                                          ("Ruth Danladi", "UBA"), ("Peter Okeke", "First Bank")], 1)]
+    r = s.raise_(34, "musa", vendor="Community health volunteers (12)", amount=180_000,
+                 category="stipends", grant="MNH-26", payees=payees,
+                 description="Monthly stipends, safe-delivery volunteers, August")
+    s.pay(s.approve(r, 33), 31)
+
+    # ── September ───────────────────────────────────────────────────────────
+    r = s.raise_(28, "aisha", vendor="Harbour Medical Stores", amount=740_000, category="supplies",
+                 grant="MNH-26", description="Clean delivery kits x 200 (three quotes attached)")
+    s.pay(s.approve(r, 27), 25)
+
+    # Declined by the ED.
+    r = s.raise_(24, "grace", vendor="Crestline Office Supplies", amount=1_200_000, category="equipment",
+                 description="Four laptops for the HR team")
+    r = s.approve(r, 23, until="ed")
+    s.decide(r, 22, rq.Decision.DECLINED, "Not in this year's budget. Bring it back with the 2027 plan.")
+
+    r = s.raise_(21, "grace", vendor="Abuja Electricity Distribution Plc", amount=64_000,
+                 category="utilities", description="Office electricity, August")
+    s.pay(s.approve(r, 20), 19)
+
+    # Advances: Aisha's is never retired (overdue); Musa's is retired on time.
+    r = s.raise_(18, "aisha", vendor="Aisha Bello", amount=120_000, category="advance",
+                 description="Cash advance for community dialogue refreshments, Kafanchan")
+    s.pay(s.approve(r, 17.5), 17)
+
+    r = s.raise_(16, "musa", vendor="Musa Danjuma", amount=150_000, category="dsa",
+                 description="DSA, supervision trip to Katsina (4 nights)",
+                 activity_end=(dt.date.today() - dt.timedelta(days=11)).isoformat())
+    s.pay(s.approve(r, 15.5), 15)
+    adv = next(a for a in advances.list_advances(DEMO_ORG) if a.source_ref == r.ref)
+    s.clock.at(8, 12)
+    advances.retire(DEMO_ORG, adv.id, spent=142_500, actor=_email("ngozi"),
+                    note="Receipts and trip report checked; N7,500 refunded to the project account.")
+
+    # ── this week and last: something waiting at every step ─────────────────
+    r = s.raise_(7, "musa", vendor="Swift Movers Ltd", amount=95_000, category="transport",
+                 grant="MNH-26", description="Bus hire, ward meetings")
+    r = s.approve(r, 6.5, until="finance")
+    s.decide(r, 6, rq.Decision.RETURNED,
+             "Please attach the vehicle log for the last trip and confirm the number of days.")
+
+    r = s.raise_(6, "grace", vendor="Greenfield Conference Centre", amount=510_000, category="venue",
+                 description="Staff retreat venue, 2 days")
+    r = s.approve(r, 5.5, until="finance")
+    s.clock.at(5, 16)
+    rq.place_on_hold(DEMO_ORG, r.id, actor=_email("ibrahim"), department="finance",
+                     reason="Waiting for the venue's corrected invoice: they charged for 3 days, we booked 2.")
+
+    r = s.raise_(5, "musa", vendor="Pathway Consulting", amount=2_400_000, category="consultancy",
+                 description="Endline survey, community TB project")
+    s.approve(r, 4.5, until="ed")                                                 # with the ED
+
+    r = s.raise_(4, "musa", vendor="Crestline Office Supplies", amount=620_000, category="equipment",
+                 grant="MNH-26", description="Spare parts for two outreach motorbikes",
+                 missing=("three_quotes",))
+    s.approve(r, 3.5, until="finance")                                            # blocked: quotes
+
+    r = s.raise_(3, "musa", vendor="Greenfield Conference Centre", amount=380_000, category="venue",
+                 description="Hall, quarterly review meeting with LGA health teams")
+    s.approve(r, 2.5, until="finance")                                            # with Finance, clean
+
+    r = s.raise_(2, "musa", vendor="Northern Logistics Ltd", amount=140_000, category="transport",
+                 grant="YTH-24", description="Vehicle hire, adolescent health follow-up visits")
+    s.approve(r, 1.5, until="finance")                                            # blocked: grant closed
+
+    # Aisha hasn't retired last month's advance, so her new request is blocked
+    # until she does: the advance policy doing its job, on screen.
+    s.raise_(1, "aisha", vendor="Kano Print House", amount=88_000, category="supplies",
+             description="Printing, 500 referral forms")                           # budget holder, blocked
+    s.raise_(0, "grace", vendor="SafeWorks Training Ltd", amount=210_000, category="training",
+             description="Fire safety training for office staff")                 # budget holder (HR)
+    s.raise_(0, "musa", vendor="Kaduna Water Services", amount=45_000, category="supplies",
+             description="Drinking water for outreach teams", submit=False)        # draft
+
+
+# ─── entry points ─────────────────────────────────────────────────────────────
+
+
+def seed(*, password: str, reset: bool = False) -> dict:
     import auth
+    import org_config
+    import store
 
-    existing = auth.get_by_email(DEMO_EMAIL)
-    if not password:
-        # Only prompt when there is a real terminal to prompt on. Run from a
-        # script, a CI job, or anywhere stdin isn't a TTY, getpass() blocks
-        # forever with no visible prompt — which looks exactly like the seeder
-        # hanging, and cost an evening before anyone noticed it was waiting
-        # for input rather than generating data.
-        if sys.stdin is not None and sys.stdin.isatty():
-            password = getpass.getpass(f"Password for {DEMO_EMAIL} (min 6 chars): ")
-        else:
-            print("error: no terminal available to prompt for a password.\n"
-                  "       Pass one explicitly:  python3 demo_seed.py --password '<something>'",
-                  file=sys.stderr)
-            raise SystemExit(1)
-    try:
-        auth.check_password_strength(password)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+    org = (os.environ.get("DOCEX_ORG") or "").strip()
+    if org != DEMO_ORG:
+        raise SystemExit(f"demo_seed only writes to the '{DEMO_ORG}' organisation "
+                         f"(DOCEX_ORG is '{org or 'unset'}'). Nothing was written.")
+    if len(password or "") < 10:
+        raise SystemExit("Give the demo password with --password or DEMO_PASSWORD (10+ characters).")
 
-    if existing:
-        pw_hash, pw_salt = auth.hash_password(password)
-        existing.password_hash, existing.password_salt = pw_hash, pw_salt
-        existing.role, existing.active = "admin", True
-        auth._save(existing)
-        print(f"· login reset: {DEMO_EMAIL} (admin, finance)")
-    else:
-        auth.create_user(email=DEMO_EMAIL, name="NEEM Demo",
-                         password=password, department="finance", role="admin")
-        print(f"· login created: {DEMO_EMAIL} (admin, finance)")
+    db = store.get_store()
+    if reset:
+        db.delete_org(DEMO_ORG)
+    elif db.list(DEMO_ORG, "requisitions"):
+        raise SystemExit("The demo already has data. Re-run with --reset to start it again.")
+
+    profile = json.loads(PROFILE.read_text())
+    clock = _Clock()
+    with _moved_clock(clock):
+        clock.at(70, fresh=True)
+        org_config.apply_profile(profile)
+        for local, name, dept, role, _title in PEOPLE:
+            auth.create_user(_email(local), name, password, dept, role, org_id=DEMO_ORG)
+        _tell(_Story(clock))
+
+    return {"org": DEMO_ORG, "logins": [(_email(p[0]), p[4]) for p in PEOPLE]}
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Seed the NEEM demo dataset.")
-    p.add_argument("--reset", action="store_true",
-                   help="Wipe existing demo data before seeding")
-    p.add_argument("--password", help="Password for the demo login")
-    args = p.parse_args()
+    ap = argparse.ArgumentParser(description="Seed the fictional demo organisation.")
+    ap.add_argument("--password", default=os.environ.get("DEMO_PASSWORD", ""),
+                    help="password for every demo login (or set DEMO_PASSWORD)")
+    ap.add_argument("--reset", action="store_true", help="wipe the demo organisation first")
+    ap.add_argument("--statement", default="",
+                    help="also write this month's matching bank statement (CSV) to this path, "
+                         "for the reconciliation part of a demo")
+    args = ap.parse_args()
 
-    print("Seeding NEEM demo\n" + "─" * 50)
-    rc = seed(args.reset)
-    if rc:
-        return rc
-    ensure_login(args.password)
+    org = (os.environ.get("DOCEX_ORG") or "").strip()
+    if org != DEMO_ORG:
+        print(f"Refusing: demo_seed only writes to the '{DEMO_ORG}' organisation, "
+              f"and DOCEX_ORG is '{org or 'unset'}'. Nothing was written.", file=sys.stderr)
+        return 2
+    if len(args.password or "") < 10:
+        print("Refusing: give the demo password with --password or DEMO_PASSWORD "
+              "(10+ characters). No password is ever stored in the code.", file=sys.stderr)
+        return 2
 
-    print("─" * 50)
-    print("Ready.\n")
-    print("  1. uvicorn api.main:app --reload --port 8000")
-    print("  2. cd web && npm run dev")
-    print(f"  3. http://localhost:3000/login  →  {DEMO_EMAIL}")
-    print("\nThe money shot: Requisitions → the ₦140,000 Northern Logistics")
-    print("row → try to Approve. The button stays disabled until you tick the")
-    print("blocking check and write a reason and an authority.")
-    print("\nKeep every demo amount under ₦150,000 — above ₦250,000 routes to")
-    print("Executive Approval, where nobody is logged in, and it will sit there.")
+    import store
+    where = store.configure_from_env(quiet=True)
+    summary = seed(password=args.password, reset=args.reset)
+    import requisitions as rq
+    reqs = rq.list_requisitions(DEMO_ORG)
+    print(f"Seeded Riverbend Health Foundation into {where}: {len(reqs)} requests.")
+    print("Logins (all use the password you gave):")
+    for email, title in summary["logins"]:
+        print(f"  {email:32} {title}")
+    if args.statement:
+        import make_demo_statement
+        # The month of the latest payment, not "this month": seeded on the 1st,
+        # this month would have no payments in it yet.
+        latest = max(t.paid_at for t in rq.list_transactions(DEMO_ORG))[:7]
+        csv_text, stats = make_demo_statement.build(DEMO_ORG, latest)
+        Path(args.statement).write_text(csv_text, encoding="utf-8")
+        print(f"Bank statement for {stats['period']}: {args.statement} "
+              f"({stats['matched_payments']} payments that match, 1 transfer nobody approved, "
+              f"2 bank charges, 2 credits)")
     return 0
 
 

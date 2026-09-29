@@ -29,8 +29,8 @@ import urllib.request
 from pathlib import Path
 
 DB = os.environ.get("DOCEX_DB", "./demo.db")
-ORG = os.environ.get("DOCEX_ORG", "default")
-EMAIL = "demo@neem.org"
+ORG = os.environ.get("DOCEX_ORG", "demo")
+EMAIL = "ibrahim@riverbend.example"   # the Finance Manager in the demo organisation
 
 _fail: list[str] = []
 _warn: list[str] = []
@@ -86,7 +86,7 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
     if user is None:
         bad(f"no {EMAIL} in org '{ORG}'",
             f"DOCEX_DB={DB} DOCEX_ORG={ORG} python3 demo_seed.py "
-            "--reset --password 'DemoPass2026'")
+            "--reset --password '<demo password>'")
         return report()
     ok(f"login exists — {EMAIL} ({user.role})")
 
@@ -111,7 +111,7 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
         print(f"      ↳ {fail.message[:78]}")
     else:
         bad("no blocked payment — the override moment will not work",
-            "python3 demo_seed.py --reset --password 'DemoPass2026'")
+            "python3 demo_seed.py --reset --password '<demo password>'")
 
     paid = [r for r in reqs if r.status == rq.ReqStatus.PAID]
     ok(f"{len(paid)} paid, for the Payments screen") if paid else warn(
@@ -141,11 +141,14 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
         else:
             bad("app does not answer /health", "check the API terminal for errors")
 
-        r = client.post("/auth/login",
-                        json={"email": EMAIL, "password": "DemoPass2026"})
+        password = os.environ.get("DEMO_PASSWORD", "")
+        if not password:
+            bad("DEMO_PASSWORD is not set", "export DEMO_PASSWORD='<demo password>' and run again")
+            return report()
+        r = client.post("/auth/login", json={"email": EMAIL, "password": password})
         if r.status_code != 200:
             bad(f"login failed ({r.status_code})",
-                "re-run demo_seed.py --reset --password 'DemoPass2026'")
+                "re-run demo_seed.py --reset --password '<demo password>'")
             return report()
         ok("login works")
         h = {"Authorization": f"Bearer {r.json()['token']}"}
@@ -162,6 +165,11 @@ def main() -> int:  # noqa: C901 - a checklist reads better flat
             ("/timesheets", "Timesheets screen"),
             ("/timesheets/mine", "My timesheets"),
         ]:
+            # A screen the org has switched off is meant to be absent.
+            import org_config
+            if path.startswith("/timesheets") and not org_config.feature_enabled(ORG, "timesheets"):
+                ok(f"{label}: switched off for this organisation")
+                continue
             code = client.get(path, headers=h).status_code
             ok(f"{label} ({code})") if code == 200 else bad(
                 f"{label} returned {code}", "check the API terminal")
@@ -269,7 +277,7 @@ def report() -> int:
             print(f"  · {w}")
     else:
         print("\033[32mAll green. The demo path works.\033[0m")
-    print("\n  http://localhost:3000/login   demo@neem.org / DemoPass2026")
+    print("\n  http://localhost:3000/login   ibrahim@riverbend.example / your demo password")
     print("  Receipts → Requisitions → the BLOCKED one → Audit")
     print("  Keep demo amounts under ₦250,000.\n")
     return 0
