@@ -604,8 +604,12 @@ def diff_profile(profile: dict) -> list[str]:
         have_t = store.get_store().get(org, payment_voucher._CONFIG, payment_voucher._TEMPLATE_ID)
         if not have_t:
             out.append("voucher_template: not installed → will be installed")
-        elif {k: have_t.get(k) for k in profile["voucher_template"]} != profile["voucher_template"]:
-            out.append("voucher_template: differs → will be replaced")
+        else:
+            # "_…" keys are notes for the person editing the profile, not
+            # settings; a note alone must not read as a change to production.
+            want_t = {k: v for k, v in profile["voucher_template"].items() if not k.startswith("_")}
+            if {k: have_t.get(k) for k in want_t} != want_t:
+                out.append("voucher_template: differs → will be replaced")
 
     if profile.get("advance_policy"):
         try:

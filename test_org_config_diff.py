@@ -127,6 +127,22 @@ def test_diff_exits_nonzero_when_out_of_step() -> None:
     check("exit 1 and names the flag", rc == 1 and "timesheets" in out, out)
 
 
+def test_a_note_in_the_profile_is_not_a_change() -> None:
+    print("\nA '_note' written for humans doesn't make the live voucher look different")
+    # Found diffing NEEM on 29 Sep: the live voucher matched the profile field
+    # for field, but the profile's "_account_codes_note" made the diff say
+    # "voucher_template: differs → will be replaced" — a false alarm on the
+    # one screen meant to tell you what a production change will touch.
+    noted = copy.deepcopy(PROFILE)
+    noted["voucher_template"] = {**noted["voucher_template"], "_note": "fill account codes later"}
+    lines = org_config.diff_profile(noted)
+    check("no voucher difference reported", not any("voucher_template" in l for l in lines), "\n".join(lines))
+    changed = copy.deepcopy(noted)
+    changed["voucher_template"]["organisation_name"] = "Acme Relief Nigeria"
+    lines = org_config.diff_profile(changed)
+    check("a real change is still reported", any("voucher_template" in l for l in lines), "\n".join(lines))
+
+
 def _write_profile(p: dict) -> str:
     path = Path(_TMP) / "profile.json"
     path.write_text(json.dumps(p))
@@ -138,6 +154,7 @@ if __name__ == "__main__":
     test_the_cli_writes_where_the_api_reads()
     test_diff_names_what_would_change()
     test_diff_after_apply_is_empty_apart_from_what_apply_cannot_touch()
+    test_a_note_in_the_profile_is_not_a_change()
     test_apply_warns_when_it_switches_a_live_flag_off()
     test_diff_exits_nonzero_when_out_of_step()
     print(f"\n{_passed} passed, {_failed} failed")
