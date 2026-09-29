@@ -511,6 +511,8 @@ export type DocumentPermissions = {
   /** The approval chain sees every request; everyone else their own and
    *  their department's (WO-59). */
   sees_everything?: boolean;
+  /** May record that a payment left the bank: Finance approvers or an admin. */
+  can_pay?: boolean;
 };
 
 export async function getDocumentPermissions(): Promise<DocumentPermissions> {

@@ -140,7 +140,7 @@ export default function RequisitionDetailPage() {
   // payments the schedule Finance pays from. Which buttons appear is the
   // server's answer (flag + who you are); the status rules below mirror the
   // routes so a button never shows where it would be refused.
-  const [docPerms, setDocPerms] = useState<{ voucher: boolean; payee_schedule: boolean }>({
+  const [docPerms, setDocPerms] = useState<{ voucher: boolean; payee_schedule: boolean; can_pay?: boolean }>({
     voucher: false,
     payee_schedule: false,
   });
@@ -211,7 +211,9 @@ export default function RequisitionDetailPage() {
 
   const isOpen =
     req != null && ["submitted", "in_review"].includes(req.status);
-  const canPay = req?.status === "approved";
+  // Only people the server lets record a payment see the button (Finance
+  // approvers or an admin); everyone else just sees it waiting for payment.
+  const canPay = req?.status === "approved" && Boolean(docPerms.can_pay);
   const isHeld = req?.status === "on_hold";
   const canHold = req?.status === "in_review" && holdEnabled;
 

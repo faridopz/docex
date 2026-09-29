@@ -261,7 +261,10 @@ def _approvals_by_step(req) -> dict[str, tuple[str, str]]:
     """
     out: dict[str, tuple[str, str]] = {}
     for a in getattr(req, "approvals", None) or []:
-        decision = str(getattr(a, "decision", "") or "").lower()
+        # The engine stores a Decision enum; str() of it is "Decision.APPROVED"
+        # on Python 3.11+, so read its value, not its string form.
+        raw = getattr(a, "decision", "") or ""
+        decision = str(getattr(raw, "value", raw)).lower()
         if decision != "approved":
             continue
         step = str(getattr(a, "step", "") or getattr(a, "step_key", "") or "")

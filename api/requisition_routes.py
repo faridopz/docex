@@ -392,6 +392,21 @@ def _handles_money(ctx: Ctx) -> bool:
     return ctx.role == "admin" or (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
 
 
+def _can_pay(ctx: Ctx) -> bool:
+    """Recording that money left the bank is Finance's act: an approver in
+    the org's finance department(s), or an admin. Once every department has
+    an approver (the budget-holder step), "any approver" would let a
+    Programme Manager freeze a payment record with a bank reference they
+    cannot know."""
+    return ctx.role == "admin" or (ctx.role == "approver" and _handles_money(ctx))
+
+
+def _require_can_pay(ctx: Ctx) -> None:
+    if not _can_pay(ctx):
+        raise HTTPException(status_code=403,
+                            detail="Only Finance approvers or an administrator can record a payment.")
+
+
 def _sees_everything(ctx: Ctx) -> bool:
     """The approval chain: money handlers, admins, and any department that
     owns a workflow step or is copied on large requests. Read from the org's
@@ -939,6 +954,8 @@ async def document_permissions_endpoint(ctx: Ctx = Depends(request_context)):
         # Whether this person sees every request in the organisation (the
         # approval chain) or only their own and their department's.
         "sees_everything": _sees_everything(ctx),
+        # May record that a payment left the bank ("Mark as paid").
+        "can_pay": _can_pay(ctx),
     }
 
 
@@ -2185,7 +2202,7 @@ async def pay_endpoint(
     Send an `Idempotency-Key` header: a retried call replays the original
     transaction rather than freezing a second record against one debit.
     """
-    require_role(ctx, "approver", "admin")
+    _require_can_pay(ctx)
     try:
         with idempotency.guard(ctx.org_id, "requisition.pay", idempotency_key) as slot:
             if slot.replayed:

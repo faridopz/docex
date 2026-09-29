@@ -487,6 +487,28 @@ def test_people_are_named_not_emailed() -> None:
     check("Prepared by: Amina Bello", by["Prepared by"].name == "Amina Bello", by["Prepared by"].name)
 
 
+def test_a_real_approval_signs_the_voucher() -> None:
+    print("\nA real approval (the engine's own Decision enum) signs the voucher")
+    # Found recording the demo on 29 Sep 2026: a paid request's voucher had
+    # every approver line blank. Approvals store decision as the Decision
+    # enum, and on Python 3.11 str(Decision.APPROVED) is "Decision.APPROVED",
+    # not "approved", so no approval ever matched. Every test above built
+    # approvals with the plain string "approved", which hid it. NEEM's live
+    # vouchers were affected too.
+    import requisitions as rq
+    org = _fresh("alpha", NEEM_TEMPLATE)
+    req = _BareReq(id="r-enum", approvals=[
+        rq.Approval(step="finance-audit-review", department="finance", actor="chinenye@neem",
+                    decision=rq.Decision.APPROVED, at="2026-09-29T10:00:00+00:00"),
+        rq.Approval(step="aed-approval", department="aed", actor="aed@neem",
+                    decision=rq.Decision.APPROVED, at="2026-09-29T11:00:00+00:00"),
+    ])
+    by = {s.label: s for s in pv.build_voucher(req, org).signatures}
+    check("Checked by filled from a real approval", by["Checked by"].name.startswith("chinenye"), by["Checked by"].name)
+    check("…with its date", by["Checked by"].date == "2026-09-29", by["Checked by"].date)
+    check("Approved by filled", by["Approved by"].name.startswith("aed"), by["Approved by"].name)
+
+
 if __name__ == "__main__":
     print("WO-41 — payment voucher export")
     test_the_letterhead_is_never_hardcoded()
@@ -510,6 +532,7 @@ if __name__ == "__main__":
     test_empty_pv_segments_do_not_print_as_slashes()
     test_signatures_match_on_department_when_step_keys_differ()
     test_people_are_named_not_emailed()
+    test_a_real_approval_signs_the_voucher()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)
 
