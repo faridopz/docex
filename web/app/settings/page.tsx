@@ -20,6 +20,7 @@ import {
   ScrollText,
   ShieldCheck,
   Users,
+  Wand2,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
@@ -37,6 +38,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
   {
     title: "Your organisation",
     items: [
+      { href: "/onboarding", label: "Setup wizard", hint: "Six questions: who approves, from what amount, and what paperwork", icon: Wand2, show: always },
       { href: "/settings/org", label: "Organisation", hint: "Name, currency, which features are on", icon: Building2, show: always },
       { href: "/settings/departments", label: "Departments & approval chain", hint: "Who approves what, in which order", icon: Users, show: always },
       { href: "/settings/users", label: "People & access", hint: "Invite staff, set roles, reset passwords", icon: KeyRound, show: always },

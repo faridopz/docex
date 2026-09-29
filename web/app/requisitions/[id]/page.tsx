@@ -207,7 +207,7 @@ export default function RequisitionDetailPage() {
   // Approving over a FAIL needs the check ticked, a reason, and an authority.
   const overrideComplete =
     allBlockingSelected && overrideReason.trim().length > 0 && overrideAuthority.trim().length > 0;
-  const canApprove = blocking.length === 0 || overrideComplete;
+  const canApproveOverride = blocking.length === 0 || overrideComplete;
 
   const isOpen =
     req != null && ["submitted", "in_review"].includes(req.status);
@@ -269,6 +269,15 @@ export default function RequisitionDetailPage() {
   const releasers = (workflow?.steps ?? []).filter(
     (st) => st.key !== currentStep?.key && (st.min_amount ?? 0) <= amount && mayRelease(st),
   );
+  // A budget holder approves the NEED; a check they can't release travels on
+  // to the next step that can (the server applies the same rule).
+  const laterReleaser = (() => {
+    if (!currentStep?.requester_department) return undefined;
+    const steps = workflow?.steps ?? [];
+    const at = steps.findIndex((st) => st.key === currentStep.key);
+    return steps.slice(at + 1).find((st) => (st.min_amount ?? 0) <= amount && mayRelease(st));
+  })();
+  const canApprove = canApproveOverride || (blocking.length > 0 && Boolean(laterReleaser));
 
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
@@ -761,6 +770,7 @@ export default function RequisitionDetailPage() {
                 canApprove={canApprove}
                 canRelease={mayRelease(currentStep)}
                 releasers={releasers.map((st) => ({ key: st.key, label: st.label }))}
+                needOnlyTo={blocking.length > 0 && laterReleaser ? laterReleaser.label || laterReleaser.key : ""}
                 iRaisedIt={iRaisedIt}
                 departmentName={deptName(currentOwner)}
                 onPassTo={passTo}
@@ -1543,6 +1553,7 @@ function DecisionPanel({
   stepLabel,
   canRelease,
   releasers,
+  needOnlyTo,
   iRaisedIt,
   departmentName,
   onPassTo,
@@ -1567,6 +1578,9 @@ function DecisionPanel({
   stepLabel: string;
   canRelease: boolean;
   releasers: { key: string; label: string }[];
+  /** Budget holder with an open check: approving confirms the need only,
+   *  and the check goes on to this step to decide. "" otherwise. */
+  needOnlyTo: string;
   iRaisedIt: boolean;
   departmentName: string;
   onPassTo: (stepKey: string) => void;
@@ -1592,7 +1606,7 @@ function DecisionPanel({
 }) {
   // Blocked, and this step cannot release it: say who can, and offer the
   // one useful move instead of an override form the server will refuse.
-  const stuck = blockingCount > 0 && !canRelease;
+  const stuck = blockingCount > 0 && !canRelease && !needOnlyTo;
   return (
     <Card title={`Your turn · ${stepLabel}`}>
       <label className="block">
@@ -1611,6 +1625,24 @@ function DecisionPanel({
         <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-sm text-amber-900">
           You raised this, so someone else in {departmentName} has to approve it. You can still
           return it to yourself to fix something.
+        </div>
+      ) : null}
+
+      {needOnlyTo && !iRaisedIt ? (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3.5">
+          <p className="text-sm font-semibold text-amber-900">
+            {blockingCount} {blockingCount === 1 ? "check is" : "checks are"} not met yet:
+          </p>
+          <ul className="mt-2 space-y-1 text-sm text-amber-900">
+            {blockingChecks.map((c) => (
+              <li key={c.code}>• {c.message || c.name}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-sm text-amber-900">
+            You&rsquo;re confirming the need is real. If you approve, {needOnlyTo} decides on{" "}
+            {blockingCount === 1 ? "this check" : "these checks"} before anything is paid. If it
+            should be fixed first, return it instead.
+          </p>
         </div>
       ) : null}
 
@@ -1652,7 +1684,7 @@ function DecisionPanel({
         </div>
       ) : null}
 
-      {blockingCount > 0 && !stuck && !iRaisedIt ? (
+      {blockingCount > 0 && !stuck && !needOnlyTo && !iRaisedIt ? (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3.5">
           <p className="text-sm font-semibold text-red-900">
             {blockingCount} {blockingCount === 1 ? "check blocks" : "checks block"} this payment
@@ -1738,7 +1770,7 @@ function DecisionPanel({
           ) : (
             <Check className="h-4 w-4" />
           )}
-          {blockingCount > 0 ? "Approve with override" : "Approve"}
+          {needOnlyTo ? `Approve the need, send to ${needOnlyTo}` : blockingCount > 0 ? "Approve with override" : "Approve"}
         </button>
         )}
         <button

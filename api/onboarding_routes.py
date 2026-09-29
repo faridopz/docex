@@ -185,3 +185,62 @@ async def setup(body: SetupRequest, ctx: Ctx = Depends(request_context)) -> Setu
                           error=str(exc))
 
     return SetupResult(ok=True, departments=len(dept_defs), steps=len(wf.steps))
+
+
+# ─── the setup wizard: six questions, any organisation ────────────────────────
+#
+# /onboarding/setup above is the first version: it replaced the whole
+# registry and chain in two writes, knew nothing of budget holders or quote
+# bands, and could leave an org half-configured. The wizard below
+# (setup_wizard.py) checks everything first, writes nothing on any error,
+# never touches settings its questions don't cover, and refuses a change that
+# would strand a waiting request or a person. /onboarding/setup stays for
+# older clients of the API.
+
+import org_config  # noqa: E402
+import setup_wizard  # noqa: E402
+
+
+class WizardBody(BaseModel):
+    answers: dict = Field(default_factory=dict)
+
+
+def _wizard_gate(ctx: Ctx) -> None:
+    # On unless an organisation's settings switch it off.
+    if not org_config.feature_enabled(ctx.org_id, "setup_wizard", default=True):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+@router.get("/answers")
+async def wizard_answers(ctx: Ctx = Depends(request_context)) -> dict:
+    """The org's current setup as wizard answers (defaults for a new org)."""
+    _wizard_gate(ctx)
+    require_role(ctx, "admin")
+    import departments
+    import requisitions as _rq
+    wf = _rq.get_workflow(ctx.org_id)
+    return {
+        "answers": setup_wizard.load_answers(ctx.org_id),
+        "categories": wf.allowed_categories or setup_wizard.DEFAULT_CATEGORIES,
+        "configured": departments.has_registry_configured(ctx.org_id) and _rq.has_workflow_configured(ctx.org_id),
+    }
+
+
+@router.post("/preview")
+async def wizard_preview(body: WizardBody, ctx: Ctx = Depends(request_context)) -> dict:
+    """What these answers would produce, and anything stopping them being saved."""
+    _wizard_gate(ctx)
+    require_role(ctx, "admin")
+    return setup_wizard.preview(ctx.org_id, body.answers)
+
+
+@router.post("/apply")
+async def wizard_apply(body: WizardBody, ctx: Ctx = Depends(request_context)) -> dict:
+    """Save the answers: everything checked first, nothing written on any error."""
+    _wizard_gate(ctx)
+    require_role(ctx, "admin")
+    try:
+        return setup_wizard.apply(ctx.org_id, body.answers,
+                                  actor=getattr(ctx.user, "email", "") or "")
+    except setup_wizard.WizardError as exc:
+        raise HTTPException(status_code=422, detail={"errors": exc.errors}) from exc

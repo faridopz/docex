@@ -1641,10 +1641,45 @@ def _submit(org_id: str, req: Requisition) -> Requisition:
                detail="No approval step configured for this amount.")
         return req
     req.status = ReqStatus.IN_REVIEW
-    req.current_step = steps[0].key
+    first = 0
+    # The budget holder raising a request is their confirmation of the need.
+    # Without this, a manager's own request sat on a step only they could
+    # decide, and nobody may approve their own request. Never when it is the
+    # only step: that would be a payment nobody else looked at.
+    if (len(steps) > 1 and getattr(steps[0], "requester_department", False)
+            and _raiser_holds_budget(org_id, req)):
+        first = 1
+    req.current_step = steps[first].key
     _audit(req, "submitted", actor=req.submitted_by, department=req.department,
-           detail=f"Routed to {steps[0].label or steps[0].key}")
+           detail=f"Routed to {steps[first].label or steps[first].key}")
+    if first:
+        _audit(req, "budget_holder_raised", actor="system", department=req.department,
+               detail=(f"Raised by the budget holder, so '{steps[0].label or steps[0].key}' is "
+                       f"their own confirmation; sent on to {steps[first].label or steps[first].key}."))
     return req
+
+
+def _raiser_holds_budget(org_id: str, req: Requisition) -> bool:
+    """Is the person who raised this an approver in the department it is from?"""
+    try:
+        import auth
+        user = auth.get_by_email(req.submitted_by, org_id)
+    except Exception:  # noqa: BLE001 — no user record: treat as an ordinary raiser
+        return False
+    return bool(user and getattr(user, "department", "") == req.department
+                and getattr(user, "role", "") in ("approver", "admin"))
+
+
+def _later_releaser(wf: "RequisitionWorkflow", req: Requisition, step: "WorkflowStep") -> Optional["WorkflowStep"]:
+    """The next step, after `step`, that may release a failing check on this amount."""
+    steps = _steps_for(wf, req.amount)
+    keys = [s.key for s in steps]
+    if step.key not in keys:
+        return None
+    for s in steps[keys.index(step.key) + 1:]:
+        if s.can_override and (s.override_limit is None or _money(req.amount) <= _money(s.override_limit)):
+            return s
+    return None
 
 
 _DRAFT_EDITABLE = (
@@ -1971,14 +2006,24 @@ def decide(
                            f"Authority: {check.override_authority}"))
 
     # ─── refuse to approve over an unreleased hard failure ──────────────────
+    # A budget holder approves the NEED, not the paperwork: they may approve
+    # while a failure they cannot release travels on to the step that can. It
+    # stays blocking there, and the last step can never pass it on. Only the
+    # budget-holder step: a policy step (Finance, Compliance) that cannot
+    # release a failure must not put its approval on it — it uses "Pass to…"
+    # or returns it, as before.
+    passing_on: Optional[WorkflowStep] = None
     if decision == Decision.APPROVED:
         blockers = blocking_checks(req)
         if blockers:
-            raise RequisitionError(
-                "Cannot approve: unresolved policy failure(s) "
-                + ", ".join(c.code for c in blockers)
-                + ". Override them with a reason, or decline."
-            )
+            if getattr(step, "requester_department", False):
+                passing_on = _later_releaser(wf, req, step)
+            if passing_on is None:
+                raise RequisitionError(
+                    "Cannot approve: unresolved policy failure(s) "
+                    + ", ".join(c.code for c in blockers)
+                    + ". Override them with a reason, or return it to be fixed."
+                )
 
     # ─── record the decision (signed, immutable) ────────────────────────────
     at = _now_iso()
@@ -1991,6 +2036,12 @@ def decide(
     _audit(req, f"step_{decision.value}", actor=actor,
            department=department or step_owner(step, req),
            detail=f"{step.label or step.key}: {decision.value}" + (f" — {notes.strip()}" if notes.strip() else ""))
+    if passing_on is not None:
+        _audit(req, "passed_with_open_checks", actor=actor, department=department or step_owner(step, req),
+               detail=(f"Approved at {step.label or step.key} with "
+                       + ", ".join(c.code for c in blocking_checks(req))
+                       + f" still open: {passing_on.label or passing_on.key} holds the authority to "
+                         "release it, or it goes back to be fixed."))
 
     # ─── advance / stop ─────────────────────────────────────────────────────
     if decision == Decision.DECLINED:

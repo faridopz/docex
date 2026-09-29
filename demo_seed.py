@@ -199,17 +199,13 @@ class _Story:
             self.clock.at(days_ago, hour)
             hour += 2
             step = rq._step(self.wf, req.current_step)
-            if rq.blocking_checks(req) and not step.can_override:
-                # What a budget holder does with a request they can't clear:
-                # confirm the need and pass it to whoever holds the authority
-                # (the "Pass to Finance" button), recorded with a reason.
-                chain = [s.key for s in rq._steps_for(self.wf, req.amount)]
-                later = [s for s in rq._steps_for(self.wf, req.amount)
-                         if chain.index(s.key) > chain.index(step.key) and s.can_override]
-                req = rq.route_to(DEMO_ORG, req.id, target_step=later[0].key, actor=_email(who),
-                                  department=self.dept[_email(who)],
-                                  reason="Needed for the activity. A check is failing that I can't "
-                                         f"release; passing to {later[0].label} to decide.")
+            if rq.blocking_checks(req) and getattr(step, "requester_department", False):
+                # A budget holder approves the need; the failing check travels
+                # on to Finance, who holds the authority to decide it.
+                req = rq.decide(DEMO_ORG, req.id, decision=rq.Decision.APPROVED, actor=_email(who),
+                                department=self.dept[_email(who)],
+                                notes=notes or "Needed for the activity. Finance to decide on the open check.")
+                days_ago = max(days_ago - 0.6, 0)
                 continue
             kwargs = {}
             if overrides and rq.blocking_checks(req):

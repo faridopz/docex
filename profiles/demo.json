@@ -50,7 +50,7 @@
         "label": "Finance review",
         "department": "finance",
         "can_override": true,
-        "override_limit": 250000
+        "override_limit": 1000000
       },
       {
         "key": "ed",
