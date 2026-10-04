@@ -850,7 +850,7 @@ export default function RequisitionDetailPage() {
                 <Detail label="Grant" value={req.grant_code || "—"} />
                 {req.payees.length === 0 ? (
                   <>
-                    <Detail label="Vendor account" value={req.vendor_account || "—"} />
+                    <Detail label={req.kind === "expense_claim" ? "Account to pay" : "Vendor account"} value={req.vendor_account || "—"} />
                     <Detail label="Bank" value={req.vendor_bank_name || "—"} />
                     <Detail label="TIN" value={req.vendor_tin || "—"} />
                     <Detail label="Phone / email" value={req.vendor_phone_or_email || "—"} />

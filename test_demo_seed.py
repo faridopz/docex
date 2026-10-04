@@ -209,6 +209,40 @@ def test_reset_starts_clean() -> None:
     check("references restart", min(r.ref for r in after).endswith("0001"), min(r.ref for r in after))
 
 
+def test_projects_time_and_claims_have_something_to_show() -> None:
+    print("\nThe four newer screens have something to show")
+    import grants
+    import projects
+    import timesheets as ts
+    gf = projects.figures("demo", grants.find_agreement("demo", "GF-TB-26"))
+    lines = {lf.code: lf for lf in gf.lines}
+    check("the TB grant has money paid on its own budget lines",
+          gf.paid > 0 and lines["2.1"].paid > 0 and lines["4.1"].paid > 0, str(gf.lines)[:200])
+    check("…and money on its way", gf.committed > 0)
+    check("nothing paid on the TB grant is left unassigned to a line",
+          not any(lf.code == projects.UNASSIGNED and lf.paid for lf in gf.lines), str(gf.lines)[-200:])
+    time_rows = projects.approved_time("demo", grants.find_agreement("demo", "GF-TB-26"))
+    check("two months of approved time from two people",
+          len({r["period"] for r in time_rows}) == 2 and len({r["staff_id"] for r in time_rows}) == 2, str(time_rows)[:200])
+    musa = [t for t in ts.list_timesheets("demo") if t.staff_id.startswith("musa")]
+    check("one of them records by week", musa and all(t.span == "week" for t in musa))
+    claims = [r for r in rq.list_requisitions("demo") if r.kind == "expense_claim"]
+    statuses = sorted(str(getattr(r.status, "value", r.status)) for r in claims)
+    check("three claims: two reimbursed, one with Finance", statuses == ["in_review", "paid", "paid"], str(statuses))
+    kano = next((r for r in claims if r.advance_id), None)
+    check("one settles an advance and pays only the difference",
+          kano is not None and kano.claim_total == 92_500 and kano.amount == 12_500)
+    import advances
+    check("…and that advance is retired", kano is not None and not advances.get("demo", kano.advance_id).open)
+    pdf_ok = False
+    try:
+        import donor_report
+        pdf_ok = donor_report.build("demo", grants.find_agreement("demo", "GF-TB-26"))[:4] == b"%PDF"
+    except Exception as exc:  # pragma: no cover
+        print("   ", exc)
+    check("the TB grant's donor report builds", pdf_ok)
+
+
 if __name__ == "__main__":
     print("Demo organisation (Riverbend Health Foundation)")
     test_it_only_ever_writes_to_the_demo_org()
@@ -220,6 +254,7 @@ if __name__ == "__main__":
     test_an_advance_is_overdue()
     test_people_can_sign_in_and_see_their_queue()
     test_the_bank_statement_tells_the_story()
+    test_projects_time_and_claims_have_something_to_show()
     test_reset_starts_clean()
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)

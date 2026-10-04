@@ -200,6 +200,23 @@ def test_someone_elses_advance(c, h) -> None:
           _codes(body["id"], "CLAIM_ADVANCE")[0].result == rq.CheckResult.FAIL)
 
 
+def test_procurement_rules_dont_block_a_claim(c, h) -> None:
+    print("\nAn organisation that limits spending categories and requires invoices")
+    wf = rq.get_workflow("acme")
+    wf.allowed_categories = ["supplies", "venue"]
+    rq.set_workflow("acme", wf)
+    body = _claim(c, h)
+    for n in (1, 2, 3):
+        _receipt(c, h, body["id"], n)
+    c.post(f"/requisitions/{body['id']}/submit", headers=h("amina@acme.org"))
+    codes = {x.code: x.result for x in rq.get_requisition("acme", body["id"]).checks}
+    check("a claim isn't refused for not being a procurement category (found by the demo seed)",
+          "CATEGORY_ALLOWED" not in codes and "DOCS_COMPLETE" not in codes, str(codes))
+    check("…its receipts are what it's checked on", codes.get("ITEM_RECEIPTS") == rq.CheckResult.PASS)
+    wf.allowed_categories = []
+    rq.set_workflow("acme", wf)
+
+
 def test_switched_off(c, h) -> None:
     print("\nAn organisation without expense claims")
     org_config.set_features("acme", expense_claims=False)
@@ -223,6 +240,7 @@ if __name__ == "__main__":
     test_a_claim_against_an_advance(c, h)
     test_an_advance_that_covered_everything(c, h)
     test_someone_elses_advance(c, h)
+    test_procurement_rules_dont_block_a_claim(c, h)
     test_switched_off(c, h)
     print(f"\n{_passed} passed, {_failed} failed")
     raise SystemExit(1 if _failed else 0)

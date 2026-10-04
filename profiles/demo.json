@@ -166,7 +166,53 @@
       "title": "Community TB case finding",
       "value": 48000000,
       "start_date": "2026-01-01",
-      "end_date": "2026-12-31"
+      "end_date": "2026-12-31",
+      "budget_lines": [
+        {
+          "code": "1.1",
+          "label": "Personnel",
+          "amount": 17000000
+        },
+        {
+          "code": "2.1",
+          "label": "Training and meetings",
+          "amount": 9000000
+        },
+        {
+          "code": "2.2",
+          "label": "Travel and transport",
+          "amount": 6000000
+        },
+        {
+          "code": "3.1",
+          "label": "Supplies and equipment",
+          "amount": 10000000
+        },
+        {
+          "code": "4.1",
+          "label": "Consultancy",
+          "amount": 5000000
+        },
+        {
+          "code": "5.1",
+          "label": "Office running costs",
+          "amount": 1000000
+        }
+      ],
+      "staff": [
+        {
+          "name": "Musa Danjuma",
+          "staff_id": "musa@riverbend.example",
+          "role": "Field officer",
+          "percent": 60
+        },
+        {
+          "name": "Aisha Bello",
+          "staff_id": "aisha@riverbend.example",
+          "role": "Programme officer",
+          "percent": 50
+        }
+      ]
     },
     {
       "project_code": "MNH-26",
@@ -174,7 +220,43 @@
       "title": "Safe delivery outreach",
       "value": 30000000,
       "start_date": "2026-03-01",
-      "end_date": "2027-02-28"
+      "end_date": "2027-02-28",
+      "budget_lines": [
+        {
+          "code": "A",
+          "label": "Volunteer stipends",
+          "amount": 8000000
+        },
+        {
+          "code": "B",
+          "label": "Delivery kits and supplies",
+          "amount": 12000000
+        },
+        {
+          "code": "C",
+          "label": "Transport",
+          "amount": 4000000
+        },
+        {
+          "code": "D",
+          "label": "Personnel",
+          "amount": 6000000
+        }
+      ],
+      "staff": [
+        {
+          "name": "Musa Danjuma",
+          "staff_id": "musa@riverbend.example",
+          "role": "Field officer",
+          "percent": 40
+        },
+        {
+          "name": "Aisha Bello",
+          "staff_id": "aisha@riverbend.example",
+          "role": "Programme officer",
+          "percent": 50
+        }
+      ]
     },
     {
       "project_code": "YTH-24",
@@ -193,7 +275,7 @@
     "kobo_sync": false,
     "tin_verification": true,
     "bank_reconciliation": true,
-    "timesheets": false,
+    "timesheets": true,
     "advance_aging": false,
     "legacy_intake": false,
     "payroll": false,
@@ -213,7 +295,9 @@
     "bank_verification": false,
     "payee_account_check": false,
     "payee_check_blocks": false,
-    "email_notifications": false
+    "email_notifications": false,
+    "projects": true,
+    "expense_claims": true
   },
   "_features_note": "Off on purpose: email (no sending domain yet), the Paystack account check (needs a live key), the AI policy-document check (needs an uploaded policy and model credit) and timesheets (not part of the story the demo tells).",
   "advance_policy": {

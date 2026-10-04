@@ -13,6 +13,7 @@ import {
   UserCheck,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { getDocumentPermissions } from "@/lib/requisitionApi";
 import {
   createTimesheet,
   myTimesheets,
@@ -91,7 +92,10 @@ export default function TimesheetsPage() {
       setMine(m);
       setPending(p);
       try {
-        setSummary(await periodSummary(lastMonth));
+        // Finance's pre-payroll check: only Finance and admins can get it,
+        // so only they ask (everyone else would just collect a 403).
+        const perms = await getDocumentPermissions().catch(() => null);
+        if (perms?.handles_money) setSummary(await periodSummary(lastMonth));
       } catch {
         /* summary is context; a missing one should not blank the screen */
       }

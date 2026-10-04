@@ -17,6 +17,7 @@ import { Page } from "@/components/layout/Page";
 import { StatusBadge } from "@/components/erp/StatusBadge";
 import { useAuth } from "@/lib/auth";
 import { getDashboard, listTransactions } from "@/lib/erpApi";
+import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { getDocumentPermissions, listPendingForMe, listRequisitions } from "@/lib/requisitionApi";
 import { useDepartmentNames } from "@/lib/orgNames";
 import { WHERE_TONE, whereItIs } from "@/lib/whereItIs";
@@ -88,8 +89,13 @@ export default function DashboardPage() {
       }
 
       // Legacy voucher/transaction system — best-effort and never fatal. An
-      // org that doesn't use it should not see an error about it.
+      // org that doesn't use it should not see an error about it, and since
+      // the server now hides it entirely when it is off, don't even ask.
       try {
+        const cfg = await getClientConfig().catch(() => null);
+        if (!cfg || !(hasFeature(cfg, "legacy_intake") || hasFeature(cfg, "attendance_payments"))) {
+          throw new Error("legacy pipeline off");
+        }
         const [s, q] = await Promise.all([
           getDashboard(),
           listTransactions({ department: user.department }),

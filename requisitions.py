@@ -1106,8 +1106,11 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     if trip_check is not None:
         checks.append(trip_check)
 
-    # 6. Category allowed
-    if wf.allowed_categories:
+    # 6. Category allowed. Not for an expense claim: what staff spend on a
+    # trip doesn't fit a list of procurement categories, and each item is
+    # already checked against its own receipt (ITEM_RECEIPTS).
+    is_claim = req.kind == "expense_claim"
+    if wf.allowed_categories and not is_claim:
         ok = req.category.strip().lower() in {c.lower() for c in wf.allowed_categories}
         checks.append(PolicyCheck(
             code="CATEGORY_ALLOWED", name="Spend category permitted",
@@ -1119,7 +1122,7 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
         ))
 
     # 7. Required documents present — for THIS kind of payment
-    required = required_documents_for(wf, req.category, req.amount)
+    required = [] if is_claim else required_documents_for(wf, req.category, req.amount)
     if required:
         checks.append(_documents_check(org, wf, req, required))
 

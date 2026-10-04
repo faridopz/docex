@@ -96,20 +96,22 @@ def _moved_clock(clock: _Clock):
     import grants
     import notification_center
     import requisitions as rq
+    import timesheets
 
     saved = (rq._now_iso, advances._now_iso, advances._today, grants._now_iso,
-             notification_center._now_iso, auth._now_iso)
+             notification_center._now_iso, auth._now_iso, timesheets._now_iso)
     rq._now_iso = lambda: clock.iso("microseconds")
     advances._now_iso = lambda: clock.iso("seconds")
     advances._today = lambda: clock.now.date()
     grants._now_iso = lambda: clock.iso("seconds")
     notification_center._now_iso = lambda: clock.iso("microseconds")
     auth._now_iso = lambda: clock.iso("seconds")
+    timesheets._now_iso = lambda: clock.iso("seconds")
     try:
         yield clock
     finally:
         (rq._now_iso, advances._now_iso, advances._today, grants._now_iso,
-         notification_center._now_iso, auth._now_iso) = saved
+         notification_center._now_iso, auth._now_iso, timesheets._now_iso) = saved
 
 
 # ─── small helpers ────────────────────────────────────────────────────────────
@@ -156,6 +158,14 @@ def _attach(req, docs: list[str], actor: str) -> None:
 
 # ─── the story ────────────────────────────────────────────────────────────────
 
+# Which line of each donor budget a kind of spending belongs on — what a
+# programme officer picks on the request form.
+_LINES = {
+    "GF-TB-26": {"venue": "2.1", "training": "2.1", "transport": "2.2", "dsa": "2.2", "advance": "2.2",
+                 "supplies": "3.1", "equipment": "3.1", "consultancy": "4.1", "utilities": "5.1"},
+    "MNH-26": {"stipends": "A", "supplies": "B", "equipment": "B", "transport": "C"},
+}
+
 
 class _Story:
     """Raise, approve and pay requests the way people would, on given days."""
@@ -174,9 +184,12 @@ class _Story:
         rq = self.rq
         self.clock.at(days_ago, 9, 20, fresh=True)
         actor = _email(who)
+        line = _LINES.get(grant, {}).get(category)
+        lines = [rq.BudgetLine(description=(description or vendor)[:80], budget_line=line,
+                               unit_cost=amount)] if line else None
         req = rq.create_requisition(
             DEMO_ORG, submitted_by=actor, department=self.dept[actor], vendor_name=vendor,
-            amount=amount, category=category, project_code=grant, grant_code=grant,
+            amount=amount, category=category, project_code=grant, grant_code=grant, budget_lines=lines,
             vendor_account=account or f"01{zlib.crc32(vendor.encode()) % 10**8:08d}", vendor_bank_name=bank,
             description=description, payees=payees, submit=False, activity_end=activity_end)
         docs = attach if attach is not None else rq.required_documents_for(self.wf, category, req.amount)
@@ -224,6 +237,25 @@ class _Story:
         return self.rq.mark_paid(DEMO_ORG, req.id, actor=_email("ngozi"), department="finance",
                                  bank_reference=f"GTB/FT/{req.ref.replace('REQ-', '')}{int(req.amount) % 997:03d}",
                                  settlement="bulk" if req.payees else "individual")
+
+    def claim(self, days_ago: float, who: str, *, purpose: str, grant: str, items: list[tuple],
+              advance_id: str = ""):
+        """An expense claim: (description, budget line, amount, days before) per item,
+        each with its receipt, sent for approval."""
+        rq = self.rq
+        self.clock.at(days_ago, 10, 5, fresh=True)
+        actor = _email(who)
+        name = next(p[1] for p in PEOPLE if _email(p[0]) == actor)
+        spent = [rq.BudgetLine(description=d, budget_line=line, unit_cost=amt,
+                               date=(self.clock.now.date() - dt.timedelta(days=back)).isoformat())
+                 for d, line, amt, back in items]
+        req = rq.create_requisition(
+            DEMO_ORG, submitted_by=actor, department=self.dept[actor], vendor_name=name, amount=0,
+            category="expense claim", project_code=grant, grant_code=grant or None, budget_lines=spent,
+            vendor_account=f"02{zlib.crc32(name.encode()) % 10**8:08d}", vendor_bank_name="GTBank",
+            description=purpose, kind="expense_claim", advance_id=advance_id, submit=False)
+        _attach(req, [f"item-{n}" for n in range(1, len(spent) + 1)], actor)
+        return rq.submit_draft(DEMO_ORG, req.id, actor=actor)
 
     def decide(self, req, days_ago: float, decision, notes: str):
         who = self._approver_for(req)
@@ -292,6 +324,13 @@ def _tell(s: _Story) -> None:
                  category="utilities", description="Office electricity, August")
     s.pay(s.approve(r, 20), 19)
 
+    # An expense claim, start to finish: three things, a receipt for each.
+    r = s.claim(19, "grace", purpose="Recruitment interviews for two field officers", grant="",
+                items=[("Taxi to and from the interview venue", "", 4_500, 3),
+                       ("Printing interview packs", "", 3_200, 3),
+                       ("Refreshments for the panel", "", 7_800, 2)])
+    s.pay(s.approve(r, 18.5), 18)
+
     # Advances: Aisha's is never retired (overdue); Musa's is retired on time.
     r = s.raise_(18, "aisha", vendor="Aisha Bello", amount=120_000, category="advance",
                  description="Cash advance for community dialogue refreshments, Kafanchan")
@@ -305,6 +344,19 @@ def _tell(s: _Story) -> None:
     s.clock.at(8, 12)
     advances.retire(DEMO_ORG, adv.id, spent=142_500, actor=_email("ngozi"),
                     note="Receipts and trip report checked; N7,500 refunded to the project account.")
+
+    # An advance settled by an expense claim: he spent more than he was
+    # given, so the claim pays only the difference.
+    r = s.raise_(13, "musa", vendor="Musa Danjuma", amount=80_000, category="dsa",
+                 description="DSA, TB refresher training in Kano (2 nights)",
+                 activity_end=(dt.date.today() - dt.timedelta(days=10)).isoformat())
+    s.pay(s.approve(r, 12.5), 12)
+    kano = next(a for a in advances.list_advances(DEMO_ORG) if a.source_ref == r.ref)
+    r = s.claim(9, "musa", purpose="Kano refresher training: what the advance paid for", grant="GF-TB-26",
+                advance_id=kano.id,
+                items=[("Hotel, 2 nights", "2.2", 50_000, 3), ("Bus fare Kaduna–Kano return", "2.2", 27_500, 4),
+                       ("Meals, 3 days", "2.2", 15_000, 3)])
+    s.pay(s.approve(r, 8.5), 8)
 
     # ── this week and last: something waiting at every step ─────────────────
     r = s.raise_(7, "musa", vendor="Swift Movers Ltd", amount=95_000, category="transport",
@@ -329,6 +381,11 @@ def _tell(s: _Story) -> None:
                  missing=("three_quotes",))
     s.approve(r, 3.5, until="finance")                                            # blocked: quotes
 
+    # A claim with Finance now.
+    r = s.claim(3, "aisha", purpose="Community dialogue follow-up, Kafanchan", grant="MNH-26",
+                items=[("Motorbike hire, 2 days", "C", 12_000, 4), ("Airtime for volunteer calls", "C", 5_000, 4)])
+    s.approve(r, 2.8, until="finance")
+
     r = s.raise_(3, "musa", vendor="Greenfield Conference Centre", amount=380_000, category="venue",
                  description="Hall, quarterly review meeting with LGA health teams")
     s.approve(r, 2.5, until="finance")                                            # with Finance, clean
@@ -345,6 +402,50 @@ def _tell(s: _Story) -> None:
              description="Fire safety training for office staff")                 # budget holder (HR)
     s.raise_(0, "musa", vendor="Kaduna Water Services", amount=45_000, category="supplies",
              description="Drinking water for outreach teams", submit=False)        # draft
+
+    _effort(s)
+
+
+def _effort(s: _Story) -> None:
+    """Two finished months of timesheets: Aisha records by day, Musa by week.
+    Their supervisor signs each a few days after the month ends, so the
+    project pages and donor reports have approved time to show."""
+    import timesheets as ts
+    today = dt.date.today()
+    first_this = today.replace(day=1)
+    last_month_end = first_this - dt.timedelta(days=1)
+    months = [(last_month_end.replace(day=1) - dt.timedelta(days=1)).replace(day=1), last_month_end.replace(day=1)]
+    pattern = ["GF-TB-26", "GF-TB-26", "GF-TB-26", "MNH-26", "NON_PROJECT"]       # Mon..Fri
+    for start in months:
+        period = start.strftime("%Y-%m")
+        end = (start.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
+        days = [start + dt.timedelta(days=i) for i in range((end - start).days + 1)]
+        signed_on = max(0, (today - (end + dt.timedelta(days=3))).days)
+
+        s.clock.at(signed_on + 1, 9, fresh=True)
+        aisha = [{"date": d.isoformat(), "hours": 8, "project_code": pattern[d.weekday()], "activity": ""}
+                 for d in days if d.weekday() < 5]
+        sheet = ts.create_timesheet(DEMO_ORG, staff_id=_email("aisha"), staff_name="Aisha Bello",
+                                    period=period, entries=aisha)
+        ts.submit(DEMO_ORG, sheet.id, actor=_email("aisha"))
+        s.clock.at(signed_on, 11)
+        ts.approve(DEMO_ORG, sheet.id, supervisor=_email("tunde"))
+
+        s.clock.at(signed_on + 1, 10, fresh=True)
+        weeks, d = [], start
+        while d <= end:
+            wk_end = min(end, d + dt.timedelta(days=6 - d.weekday()))
+            working = sum(1 for x in range((wk_end - d).days + 1) if (d + dt.timedelta(days=x)).weekday() < 5)
+            if working:
+                for code, per_day in (("GF-TB-26", 4.8), ("MNH-26", 2.4), ("NON_PROJECT", 0.8)):
+                    weeks.append({"date": d.isoformat(), "hours": round(per_day * working, 1),
+                                  "project_code": code, "span": "week"})
+            d = wk_end + dt.timedelta(days=1)
+        sheet = ts.create_timesheet(DEMO_ORG, staff_id=_email("musa"), staff_name="Musa Danjuma",
+                                    period=period, entries=weeks)
+        ts.submit(DEMO_ORG, sheet.id, actor=_email("musa"))
+        s.clock.at(signed_on, 11, 30)
+        ts.approve(DEMO_ORG, sheet.id, supervisor=_email("tunde"))
 
 
 # ─── entry points ─────────────────────────────────────────────────────────────
