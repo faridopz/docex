@@ -86,14 +86,25 @@ class NoteRequest(BaseModel):
 # ─── transactions ───────────────────────────────────────────────────────────
 
 
+def _money_department(user: User) -> bool:
+    import payment_voucher
+    import os
+    org = getattr(user, "org_id", None) or os.environ.get("DOCEX_ORG") or "default"
+    try:
+        return (user.department or "").lower() in payment_voucher.schedule_departments(org)
+    except Exception:
+        return (user.department or "").lower() == "finance"
+
+
 @router.post("/transactions", response_model=Transaction)
-def create_transaction(body: TransactionCreate) -> Transaction:
+def create_transaction(body: TransactionCreate, user: User = Depends(current_user)) -> Transaction:
     if not body.title.strip():
         raise HTTPException(status_code=422, detail="title is required.")
+    # created_by is the signed-in user, never the request body (30 Sep audit, H5).
     return tx.create(
         body.kind, body.title,
         source_kind=body.source_kind, source_id=body.source_id,
-        amount=body.amount, currency=body.currency, created_by=body.created_by,
+        amount=body.amount, currency=body.currency, created_by=user.email,
     )
 
 
@@ -158,6 +169,19 @@ def transition_transaction(
         )
 
     txn = _load_or_404(ref)
+    # Only the department that holds the item may move it on, and only
+    # Finance records money leaving. Found in the 30 Sep audit (H5): one
+    # Programmes approver took a ₦5M item from intake to paid alone — the
+    # bug already fixed on requisitions, in this second pipeline.
+    if user.role != "admin":
+        owner = tx._state_owner(txn.state)
+        if owner and (user.department or "") != owner:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This item is with {owner} now; only they can move it on.")
+        if body.to_state == "paid" and not _money_department(user):
+            raise HTTPException(status_code=403,
+                                detail="Only Finance can record that a payment was made.")
     try:
         txn = tx.transition(
             txn, body.to_state,
@@ -178,17 +202,20 @@ def transition_transaction(
 
 
 @router.post("/transactions/{ref}/view", response_model=Transaction)
-def view_transaction(ref: str, body: ViewRequest) -> Transaction:
+def view_transaction(ref: str, body: ViewRequest, user: User = Depends(current_user)) -> Transaction:
     txn = _load_or_404(ref)
-    return tx.record_view(txn, department=body.department, actor=body.actor)
+    return tx.record_view(txn, department=user.department, actor=user.name or user.email)
 
 
 @router.post("/transactions/{ref}/note", response_model=Transaction)
-def note_transaction(ref: str, body: NoteRequest) -> Transaction:
+def note_transaction(ref: str, body: NoteRequest, user: User = Depends(current_user)) -> Transaction:
     if not body.note.strip():
         raise HTTPException(status_code=422, detail="note is required.")
     txn = _load_or_404(ref)
-    return tx.add_note(txn, body.note.strip(), actor=body.actor, department=body.department)
+    # Who wrote a note is the session's to say, not the body's (H5: a viewer
+    # signed a note "The ED").
+    return tx.add_note(txn, body.note.strip(), actor=user.name or user.email,
+                       department=user.department)
 
 
 # ─── notifications ──────────────────────────────────────────────────────────
@@ -210,7 +237,9 @@ def list_notifications(
     query parameter: a personally-addressed notification must not be
     readable by anyone who can simply supply someone else's email.
     """
-    dept = department or user.department
+    # Another department's inbox is not yours to read (30 Sep audit, M4);
+    # only an administrator may look at someone else's.
+    dept = department if (department and user.role == "admin") else user.department
     items: list[Notification] = nc.list_for(
         dept, unread_only=unread_only, viewer_email=user.email)
     return {
@@ -223,6 +252,10 @@ def list_notifications(
 @router.post("/notifications/{notif_id}/read", response_model=Notification)
 def read_notification(notif_id: str, user: User = Depends(current_user)) -> Notification:
     try:
+        if user.role != "admin":
+            mine = {n.id for n in nc.list_for(user.department, limit=100_000, viewer_email=user.email)}
+            if notif_id not in mine:
+                raise ValueError(f"Notification '{notif_id}' not found.")
         return nc.mark_read(notif_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -233,5 +266,5 @@ def read_all_notifications(
     department: Optional[Department] = Query(default=None),
     user: User = Depends(current_user),
 ) -> dict:
-    dept = department or user.department
+    dept = department if (department and user.role == "admin") else user.department
     return {"marked_read": nc.mark_all_read(dept, viewer_email=user.email)}

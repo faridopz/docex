@@ -52,6 +52,47 @@ def _gate(ctx: Ctx) -> Ctx:
     return ctx
 
 
+# ─── who may see and act on whose sheet ─────────────────────────────────────
+# Found in the 30 Sep audit (H7): any viewer could list every sheet, read
+# any of them, overwrite a colleague's hours and submit them; any reviewer
+# in any department could approve. Timesheets decide whose salary is charged
+# to which donor, so the rules below are the ones an auditor would expect.
+
+
+def _staff_department(ctx: Ctx, staff_id: str) -> str:
+    import auth
+    u = auth.get_by_email(staff_id, org_id=ctx.org_id)
+    return (u.department or "").lower() if u else ""
+
+
+def _is_finance(ctx: Ctx) -> bool:
+    import payment_voucher
+    return (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
+
+
+def _is_own(ctx: Ctx, sheet: ts.Timesheet) -> bool:
+    return (sheet.staff_id or "").lower() == (ctx.user_id or "").lower()
+
+
+def _supervises(ctx: Ctx, sheet: ts.Timesheet) -> bool:
+    """An approver in the staff member's own department, or an admin."""
+    if ctx.role == "admin":
+        return True
+    return ctx.role == "approver" and bool(ctx.department) and \
+        (ctx.department or "").lower() == _staff_department(ctx, sheet.staff_id)
+
+
+def _may_see(ctx: Ctx, sheet: ts.Timesheet) -> bool:
+    return _is_own(ctx, sheet) or _supervises(ctx, sheet) or _is_finance(ctx)
+
+
+def _visible_or_404(ctx: Ctx, ts_id: str) -> ts.Timesheet:
+    sheet = ts.get_timesheet(ctx.org_id, ts_id)
+    if sheet is None or not _may_see(ctx, sheet):
+        raise HTTPException(status_code=404, detail="Timesheet not found.")
+    return sheet
+
+
 def _fail(exc: ts.TimesheetError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
@@ -120,8 +161,9 @@ async def list_sheets(
         parsed = ts.TimesheetStatus(status) if status else None
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Unknown status '{status}'.")
-    sheets = ts.list_timesheets(ctx.org_id, period=period,
-                                staff_id=staff_id, status=parsed)
+    sheets = [t for t in ts.list_timesheets(ctx.org_id, period=period,
+                                            staff_id=staff_id, status=parsed)
+              if _may_see(ctx, t)]
     return {"timesheets": [_summary_out(t) for t in sheets], "total": len(sheets)}
 
 
@@ -144,7 +186,7 @@ async def awaiting_approval(ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     sheets = [t for t in ts.list_timesheets(ctx.org_id,
                                             status=ts.TimesheetStatus.SUBMITTED)
-              if t.staff_id != ctx.user_id]
+              if not _is_own(ctx, t) and _supervises(ctx, t)]
     return {"timesheets": [_summary_out(t) for t in sheets], "total": len(sheets)}
 
 
@@ -153,6 +195,8 @@ async def period_summary(period: str = Query(...),
                          ctx: Ctx = Depends(request_context)):
     """Finance's pre-payroll check: is every sheet in, and signed?"""
     _gate(ctx)
+    if not (_is_finance(ctx) or ctx.role == "admin"):
+        raise HTTPException(status_code=403, detail="This is Finance's pre-payroll check.")
     try:
         return ts.period_summary(ctx.org_id, period)
     except ts.TimesheetError as exc:
@@ -193,8 +237,10 @@ async def create_sheet(
     else is an admin action, since it puts words in their mouth."""
     _gate(ctx)
     subject = (staff_id or "").strip() or ctx.user_id
-    if subject != ctx.user_id:
-        require_role(ctx, "admin", "approver")
+    if subject.lower() != ctx.user_id.lower() and ctx.role != "admin":
+        raise HTTPException(status_code=403,
+                            detail="You can only start your own timesheet; an administrator "
+                                   "can start one for someone else.")
     try:
         parsed = json.loads(entries or "[]")
         if not isinstance(parsed, list):
@@ -214,10 +260,7 @@ async def create_sheet(
 @router.get("/{ts_id}")
 async def get_sheet(ts_id: str, ctx: Ctx = Depends(request_context)):
     _gate(ctx)
-    sheet = ts.get_timesheet(ctx.org_id, ts_id)
-    if sheet is None:
-        raise HTTPException(status_code=404, detail="Timesheet not found.")
-    return _detail_out(ctx.org_id, sheet)
+    return _detail_out(ctx.org_id, _visible_or_404(ctx, ts_id))
 
 
 @router.put("/{ts_id}/entries")
@@ -230,6 +273,9 @@ async def replace_entries(ts_id: str, entries: str = Form(...),
             raise ValueError("entries must be a JSON array")
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid entries: {exc}")
+    sheet = _visible_or_404(ctx, ts_id)
+    if not (_is_own(ctx, sheet) or ctx.role == "admin"):
+        raise HTTPException(status_code=403, detail="Only the person whose timesheet this is can change it.")
     try:
         sheet = ts.set_entries(ctx.org_id, ts_id, parsed, actor=ctx.user_id)
     except ts.TimesheetError as exc:
@@ -240,6 +286,10 @@ async def replace_entries(ts_id: str, entries: str = Form(...),
 @router.post("/{ts_id}/submit")
 async def submit(ts_id: str, ctx: Ctx = Depends(request_context)):
     _gate(ctx)
+    sheet = _visible_or_404(ctx, ts_id)
+    if not _is_own(ctx, sheet):
+        raise HTTPException(status_code=403,
+                            detail="Submitting is the employee's signature, so only they can do it.")
     try:
         sheet = ts.submit(ctx.org_id, ts_id, actor=ctx.user_id)
     except ts.TimesheetError as exc:
@@ -252,7 +302,11 @@ async def approve(ts_id: str, ctx: Ctx = Depends(request_context)):
     """Supervisor sign-off. The engine refuses self-approval; the actor comes
     from the token, so there is nothing to spoof."""
     _gate(ctx)
-    require_role(ctx, "approver", "admin", "reviewer")
+    sheet = _visible_or_404(ctx, ts_id)
+    if not _supervises(ctx, sheet):
+        raise HTTPException(status_code=403,
+                            detail="Only an approver in this person's department, or an "
+                                   "administrator, can sign off their timesheet.")
     try:
         sheet = ts.approve(ctx.org_id, ts_id, supervisor=ctx.user_id)
     except ts.TimesheetError as exc:
@@ -264,7 +318,11 @@ async def approve(ts_id: str, ctx: Ctx = Depends(request_context)):
 async def send_back(ts_id: str, reason: str = Form(...),
                     ctx: Ctx = Depends(request_context)):
     _gate(ctx)
-    require_role(ctx, "approver", "admin", "reviewer")
+    sheet = _visible_or_404(ctx, ts_id)
+    if not _supervises(ctx, sheet):
+        raise HTTPException(status_code=403,
+                            detail="Only an approver in this person's department, or an "
+                                   "administrator, can sign off their timesheet.")
     try:
         sheet = ts.send_back(ctx.org_id, ts_id, supervisor=ctx.user_id, reason=reason)
     except ts.TimesheetError as exc:

@@ -103,8 +103,15 @@ ref = txn.ref
 check("viewer cannot action items (403)",
       client.post(f"/transactions/{ref}/transition", headers=vh,
                   json={"to_state": "compliance_review"}).status_code == 403)
-check("reviewer CAN progress work",
+client.post("/auth/register", headers=ah, json={
+    "email": "prog@eva.org", "name": "Prog", "password": "program-passphrase",
+    "department": "program", "role": "reviewer"})
+gh = {"Authorization": f"Bearer {client.post('/auth/login', json={'email': 'prog@eva.org', 'password': 'program-passphrase'}).json()['token']}"}
+check("a reviewer outside the holding department cannot move it (30 Sep audit, H5)",
       client.post(f"/transactions/{ref}/transition", headers=rh,
+                  json={"to_state": "compliance_review"}).status_code == 403)
+check("reviewer CAN progress work their department holds",
+      client.post(f"/transactions/{ref}/transition", headers=gh,
                   json={"to_state": "compliance_review"}).status_code == 200)
 check("reviewer CANNOT authorise (approval gate, 403)",
       client.post(f"/transactions/{ref}/transition", headers=rh,

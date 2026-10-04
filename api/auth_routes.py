@@ -31,6 +31,10 @@ middleware so it covers routes nobody has written yet.
 """
 from __future__ import annotations
 
+import hmac
+
+import os
+
 import sys
 from pathlib import Path
 from typing import Optional
@@ -156,9 +160,20 @@ def auth_status() -> dict:
 
 
 @router.post("/auth/register", response_model=UserPublic)
-def register(body: RegisterRequest, authorization: Optional[str] = Header(default=None)) -> UserPublic:
+def register(body: RegisterRequest, authorization: Optional[str] = Header(default=None),
+             setup_token: Optional[str] = Header(default=None, alias="X-Setup-Token")) -> UserPublic:
     first_user = not auth_mod.list_public()
     if first_user:
+        # On a live instance the first account can't be claimed by whoever
+        # finds the page first (30 Sep audit, H8): it needs the one-time
+        # setup code from the server's settings, or seed_admin.py.
+        if os.environ.get("DOCEX_ENV", "").strip().lower() == "production":
+            expected = (os.environ.get("DOCEX_SETUP_TOKEN") or "").strip()
+            if not expected or not hmac.compare_digest(expected, (setup_token or "").strip()):
+                raise HTTPException(
+                    status_code=403,
+                    detail="This system is not set up yet. The first administrator is "
+                           "created by the provider, not from this page.")
         role: Role = "admin"  # bootstrap: first account is the admin
     else:
         # Subsequent users require an admin token.
@@ -480,13 +495,11 @@ def dashboard(
     user: User = Depends(current_user),
     department: Optional[Department] = Query(default=None),
 ) -> DashboardSummary:
-    # Anyone signed in may view any department's dashboard — this is a
-    # read-only aggregate (counts, pending value, recent items), and every
-    # write action it links to (approve, pay, edit) stays role-gated at the
-    # endpoint that actually does it. Restricting the VIEW here bought no
-    # real protection, only confusion: a program officer asking "what's
-    # stuck in finance right now" got a 403 instead of an answer.
-    dept: Department = department if department is not None else user.department
+    # Your own department's queue; another department's is an admin's view.
+    # The 30 Sep audit (M4) showed "recent items" leaks payee names and
+    # amounts from other departments, so this is no longer open to all.
+    dept: Department = department if (department is not None and user.role == "admin") \
+        else user.department
 
     owned = tx.list_all(department=dept)
     counts: dict[str, int] = {}

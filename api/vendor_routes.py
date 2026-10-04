@@ -43,7 +43,25 @@ def _fail(exc: vd.VendorError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
 
-def _out(v: vd.Vendor) -> dict:
+def _mask(number: str) -> str:
+    digits = (number or "").strip()
+    return digits if len(digits) <= 4 else "••••••" + digits[-4:]
+
+
+def _sees_bank_details(ctx: Optional[Ctx]) -> bool:
+    """Full account numbers are Finance's (and admins'): the same rule as the
+    payee schedule. Found in the 30 Sep audit: the vendor register returned
+    them to every signed-in user."""
+    if ctx is None:
+        return False
+    if ctx.role == "admin":
+        return True
+    import payment_voucher
+    return (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
+
+
+def _out(v: vd.Vendor, ctx: Optional[Ctx] = None) -> dict:
+    full = _sees_bank_details(ctx)
     return {
         "id": v.id,
         "name": v.name,
@@ -57,7 +75,7 @@ def _out(v: vd.Vendor) -> dict:
         "blocked_reason": v.blocked_reason,
         "bank": {
             "status": v.bank.status.value,
-            "account_number": v.bank.account_number,
+            "account_number": v.bank.account_number if full else _mask(v.bank.account_number),
             "bank_code": v.bank.bank_code,
             "bank_name": v.bank.bank_name,
             "resolved_name": v.bank.resolved_name,
@@ -86,7 +104,7 @@ async def list_vendors(active_only: bool = Query(False),
                        ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     items = vd.list_vendors(ctx.org_id, active_only=active_only)
-    return {"vendors": [_out(v) for v in items], "total": len(items)}
+    return {"vendors": [_out(v, ctx) for v in items], "total": len(items)}
 
 
 @router.get("/summary")
@@ -124,7 +142,7 @@ async def create_vendor(
                       created_by=ctx.user_id)
     except vd.VendorError as exc:
         raise _fail(exc)
-    return _out(v)
+    return _out(v, ctx)
 
 
 @router.get("/{vendor_id}")
@@ -133,7 +151,7 @@ async def get_vendor(vendor_id: str, ctx: Ctx = Depends(request_context)):
     v = vd.get(ctx.org_id, vendor_id)
     if v is None:
         raise HTTPException(status_code=404, detail="Vendor not found.")
-    return _out(v)
+    return _out(v, ctx)
 
 
 @router.post("/{vendor_id}/verify")
@@ -158,7 +176,7 @@ async def verify(
                           checked_by=ctx.user_id)
     except vd.VendorError as exc:
         raise _fail(exc)
-    return _out(v)
+    return _out(v, ctx)
 
 
 @router.post("/{vendor_id}/block")
@@ -168,7 +186,7 @@ async def block(vendor_id: str, reason: str = Form(...),
     require_role(ctx, "admin", "approver")
     try:
         return _out(vd.block(ctx.org_id, vendor_id, reason=reason,
-                             actor=ctx.user_id))
+                             actor=ctx.user_id), ctx)
     except vd.VendorError as exc:
         raise _fail(exc)
 
@@ -178,6 +196,6 @@ async def unblock(vendor_id: str, ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     require_role(ctx, "admin", "approver")
     try:
-        return _out(vd.unblock(ctx.org_id, vendor_id))
+        return _out(vd.unblock(ctx.org_id, vendor_id), ctx)
     except vd.VendorError as exc:
         raise _fail(exc)

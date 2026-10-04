@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,6 +27,7 @@ import notification_center as nc  # noqa: E402
 import transactions as tx  # noqa: E402
 import vouchers as vouchers_mod  # noqa: E402
 from models import RateCard, ReceiptItem, Voucher  # noqa: E402
+from .auth_routes import current_user  # noqa: E402
 from per_diem import (  # noqa: E402
     DayCoverage,
     ParticipantPayable,
@@ -96,14 +97,14 @@ def _payable_for(p: ParticipantInput) -> ParticipantPayable:
 
 
 @router.post("/vouchers", response_model=Voucher)
-def create_voucher(body: VoucherCreate) -> Voucher:
+def create_voucher(body: VoucherCreate, user=Depends(current_user)) -> Voucher:
     if not body.participants:
         raise HTTPException(status_code=422, detail="At least one participant is required.")
     payables = [_payable_for(p) for p in body.participants]
     roles = [p.role for p in body.participants]
     return vouchers_mod.build_voucher(
         body.event_name, payables,
-        currency=body.currency, created_by=body.created_by, roles=roles,
+        currency=body.currency, created_by=user.email, roles=roles,
     )
 
 
@@ -121,9 +122,10 @@ def get_voucher(voucher_id: str) -> Voucher:
 
 
 @router.post("/vouchers/{voucher_id}/submit", response_model=Voucher)
-def submit_voucher(voucher_id: str, created_by: Optional[str] = None) -> Voucher:
+def submit_voucher(voucher_id: str, user=Depends(current_user)) -> Voucher:
+    # Who submitted is the session's to say (30 Sep audit, H5).
     try:
-        voucher = vouchers_mod.submit(voucher_id, created_by=created_by)
+        voucher = vouchers_mod.submit(voucher_id, created_by=user.email)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     # Fire the compliance-assignment notification for the transition submit()

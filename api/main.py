@@ -158,6 +158,21 @@ try:
                 "per-container key means verify_audit_chain() fails on records "
                 "written by any other container. Set it ONCE and never rotate "
                 "it — rotating invalidates every historical record.")
+    # Key fingerprints, every boot. DOCEX_SIGNING_KEY must never change (it
+    # signs the audit chain); printing a short hash of it lets anyone confirm
+    # from the logs that a deploy kept the same key, without revealing it.
+    if _owns_storage:
+        import hashlib as _hl
+        for _name in ("DOCEX_SIGNING_KEY", "APPROVAL_SECRET", "AUTH_SECRET"):
+            _val = (os.environ.get(_name) or "").strip()
+            if _val:
+                print(f"[DOCex] {_name} fingerprint {_hl.sha256(_val.encode()).hexdigest()[:8]}", flush=True)
+            elif _pg_url:
+                # Not a refusal: a live instance already signed with the
+                # fallback must not be taken down, and a NEW key would break
+                # its chain. This needs a deliberate decision, made once.
+                print(f"[DOCex] ERROR: {_name} is not set on a real database. "
+                      "See NEEM_SECURITY_SUMMARY.md before setting it.", flush=True)
 except Exception as _store_err:
     print(f"[DOCex] FATAL: {_store_err}", flush=True)
     raise
@@ -244,10 +259,15 @@ from .schemas import (  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+# The API map (/docs, /openapi.json) is a developer tool; in production it
+# only hands an attacker a list of every route (30 Sep audit, L1).
 app = FastAPI(
     title="DOCex API",
     description="AI-powered document extraction — define questions, upload docs, get answers.",
     version="2.0.0",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # CORS configuration.
@@ -269,7 +289,9 @@ _extra_origins = (
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_default_dev_origins + _extra_origins,
+    # Localhost is for development only; in production only the configured
+    # site may call the API from a browser (30 Sep audit, L7).
+    allow_origins=(_extra_origins if _is_production else _default_dev_origins + _extra_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

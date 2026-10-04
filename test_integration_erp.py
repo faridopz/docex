@@ -92,15 +92,24 @@ check("voucher submitted", r.status_code == 200)
 ref = r.json()["txn_ref"]
 check("got a V-reference", ref and ref.startswith("V"))
 
-# 3. Compliance sees it (notification + owns the transaction).
+# 3. Compliance sees it (notification + owns the transaction). Read as a
+# Compliance user: since the 30 Sep audit (M4) nobody but an admin can read
+# another department's inbox by asking for it.
+client.post("/auth/register", headers=ah, json={
+    "email": "cara@taconnect-ng.org", "name": "Cara", "password": "compliance-passphrase",
+    "department": "compliance", "role": "reviewer"})
+ch = {"Authorization": "Bearer " + client.post("/auth/login", json={
+    "email": "cara@taconnect-ng.org", "password": "compliance-passphrase"}).json()["token"]}
 r = client.get("/notifications", headers=fh, params={"department": "compliance"})
+check("Finance asking for Compliance's inbox gets its own instead", r.json()["department"] == "finance")
+r = client.get("/notifications", headers=ch)
 check("compliance notified of the new voucher", r.json()["unread"] >= 1)
 
 r = client.get(f"/transactions/{ref}", headers=fh)
 check("transaction is in compliance_review", r.json()["state"] == "compliance_review")
 
 # Compliance views + passes to finance.
-client.post(f"/transactions/{ref}/view", headers=fh, json={"department": "compliance"})
+client.post(f"/transactions/{ref}/view", headers=ch, json={})
 r = client.get(f"/transactions/{ref}", headers=fh)
 check("viewed_by records compliance", "compliance" in r.json()["viewed_by"])
 
@@ -131,7 +140,10 @@ check("finance has unread notifications", d["unread_notifications"] >= 1)
 # aggregate counts, not an action. Write actions (approve, pay) still gate
 # on role at the endpoint that actually does them, tested elsewhere.
 r = client.get("/dashboard", headers=fh, params={"department": "compliance"})
-check("cross-department dashboard is visible to any signed-in user",
+check("another department's dashboard is not shown to a non-admin (M4)",
+      r.status_code == 200 and r.json()["department"] == "finance")
+r = client.get("/dashboard", headers=ah, params={"department": "compliance"})
+check("…an administrator can look at any department's",
       r.status_code == 200 and r.json()["department"] == "compliance")
 
 print()

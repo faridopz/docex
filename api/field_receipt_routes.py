@@ -31,6 +31,20 @@ router = APIRouter(prefix="/field-receipts", tags=["field-receipts"])
 # ─── upload ──────────────────────────────────────────────────────────────────
 
 
+def _is_finance(ctx: Ctx) -> bool:
+    """Admins and the org's finance department(s). Field receipts are claims
+    for money: Finance reviews them, everyone else sees their own. (30 Sep
+    audit, H6: a viewer uploaded a flagged ₦999,999 receipt and approved it.)"""
+    if ctx.role == "admin":
+        return True
+    import payment_voucher
+    return (ctx.department or "").lower() in payment_voucher.schedule_departments(ctx.org_id)
+
+
+def _mine_or_finance(ctx: Ctx, receipt) -> bool:
+    return _is_finance(ctx) or (receipt.uploaded_by or "").lower() == (ctx.user_id or "").lower()
+
+
 @router.post("/upload")
 async def upload_receipt_endpoint(
     file: Annotated[UploadFile, File(description="Receipt image or PDF")],
@@ -194,6 +208,8 @@ async def list_receipts_endpoint(
         status=status_enum,
         project_code=project_code,
     )
+    if not _is_finance(ctx):
+        receipts = [r for r in receipts if _mine_or_finance(ctx, r)]
 
     return {
         "total": len(receipts),
@@ -253,6 +269,9 @@ async def update_policy_endpoint(
     """
 
     require_role(ctx, "admin", "approver")
+    if not _is_finance(ctx):
+        raise HTTPException(status_code=403,
+                            detail="Only a Finance approver or an administrator can change the receipt rules.")
 
     try:
         policy = field_receipts.ReceiptPolicy.model_validate(body)
@@ -274,7 +293,7 @@ async def get_receipt_endpoint(receipt_id: str, ctx: Ctx = Depends(request_conte
     """
 
     receipt = field_receipts.get_receipt(ctx.org_id, receipt_id)
-    if receipt is None:
+    if receipt is None or not _mine_or_finance(ctx, receipt):
         raise HTTPException(status_code=404, detail="Receipt not found.")
 
     return {
@@ -325,7 +344,7 @@ async def update_receipt_endpoint(
     """
 
     receipt = field_receipts.get_receipt(ctx.org_id, receipt_id)
-    if receipt is None:
+    if receipt is None or not _mine_or_finance(ctx, receipt):
         raise HTTPException(status_code=404, detail="Receipt not found.")
 
     if receipt.status not in [
@@ -382,6 +401,14 @@ async def resolve_receipt_endpoint(
 
     if decision not in ["approved", "rejected"]:
         raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'.")
+    if not _is_finance(ctx) or ctx.role == "viewer":
+        raise HTTPException(status_code=403, detail="Flagged receipts are reviewed by Finance.")
+    existing = field_receipts.get_receipt(ctx.org_id, receipt_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Receipt not found.")
+    if (existing.uploaded_by or "").lower() == (ctx.user_id or "").lower():
+        raise HTTPException(status_code=403,
+                            detail="You uploaded this receipt, so someone else in Finance must review it.")
 
     try:
         receipt = field_receipts.resolve_flags(

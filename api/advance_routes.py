@@ -118,8 +118,14 @@ async def aging(ctx: Ctx = Depends(request_context)):
 @router.get("/block")
 async def check_block(staff_id: str = Query(""), project_code: str = Query(""),
                       ctx: Ctx = Depends(request_context)):
-    """Is this person or project barred from payment right now?"""
+    """Is this person or project barred from payment right now?
+
+    Your own status is yours to check; anyone else's is Finance's business
+    (30 Sep audit, L3: any user could learn a colleague's overdue amount)."""
     _gate(ctx)
+    asking_about_other = staff_id and staff_id.strip().lower() != (ctx.user_id or "").lower()
+    if (asking_about_other or (project_code and not staff_id)) and not _handles_money(ctx):
+        staff_id, project_code = ctx.user_id, ""
     result = adv.payment_block(ctx.org_id, staff_id=staff_id,
                                project_code=project_code)
     return result or {"blocked": False}

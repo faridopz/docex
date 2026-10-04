@@ -146,12 +146,11 @@ def test_timesheet_lifecycle(staff: dict, supervisor: dict) -> str:
     r = client.post(f"/timesheets/{ts_id}/submit", headers=staff)
     check("submitted", r.json()["status"] == "submitted")
 
-    # The employee here holds 'reviewer', so the ROLE guard lets the call
-    # through and the refusal comes from the engine — which is the control
-    # actually being tested. A viewer would have been stopped one layer earlier
-    # and proved nothing about self-approval.
+    # Refused at the route since the 30 Sep audit (H7): only an approver in
+    # the employee's department may sign. The engine's own self-approval
+    # refusal is still tested in test_timesheets.py.
     r = client.post(f"/timesheets/{ts_id}/approve", headers=staff)
-    check("the employee cannot approve their own", r.status_code == 422,
+    check("the employee cannot approve their own", r.status_code == 403,
           f"got {r.status_code}: {r.text[:160]}")
 
     r = client.get("/timesheets/pending", headers=supervisor)
@@ -162,31 +161,39 @@ def test_timesheet_lifecycle(staff: dict, supervisor: dict) -> str:
     check("supervisor approves", r.json()["status"] == "approved")
     check("and is named on it", r.json()["approved_by"].startswith("supervisor"))
 
-    r = client.get("/timesheets/summary", headers=supervisor,
+    r = client.get("/timesheets/summary", headers=supervisor, params={"period": PERIOD})
+    check("the pre-payroll summary is Finance's, not a programme supervisor's",
+          r.status_code == 403, str(r.status_code))
+    r = client.get("/timesheets/summary", headers=_login("admin@org"),
                    params={"period": PERIOD})
     check("period summary says payroll is safe to run",
           r.json()["ready_for_payroll"] is True, r.text[:200])
     return ts_id
 
 
-def test_returning_a_timesheet_needs_a_reason(staff: dict, supervisor: dict) -> None:
+def test_returning_a_timesheet_needs_a_reason(staff: dict, supervisor: dict, admin: dict) -> None:
     print("\nSending a timesheet back requires feedback")
     import json as _json
     r = client.post("/timesheets", headers=staff, data={
-        "period": PERIOD, "staff_id": "bola", "staff_name": "Bola A",
+        "period": PERIOD, "staff_id": "bola@org", "staff_name": "Bola A",
         "entries": _json.dumps([{"date": day(1), "hours": 8,
                                  "project_code": "GF-2026-TB"}])})
     # staff_id != caller, so this needs elevation — proves the guard works.
     check("filling one in for someone else is refused for staff",
           r.status_code == 403, f"got {r.status_code}")
 
+    entries = _json.dumps([{"date": day(1), "hours": 8, "project_code": "GF-2026-TB"}])
     r = client.post("/timesheets", headers=supervisor, data={
-        "period": PERIOD, "staff_id": "bola", "staff_name": "Bola A",
-        "entries": _json.dumps([{"date": day(1), "hours": 8,
-                                 "project_code": "GF-2026-TB"}])})
-    check("but allowed for an approver", r.status_code == 200, r.text[:200])
+        "period": PERIOD, "staff_id": "bola@org", "staff_name": "Bola A", "entries": entries})
+    check("…and for a supervisor: it puts words in Bola's mouth", r.status_code == 403,
+          f"got {r.status_code}")
+    r = client.post("/timesheets", headers=admin, data={
+        "period": PERIOD, "staff_id": "bola@org", "staff_name": "Bola A", "entries": entries})
+    check("an administrator may start one for her", r.status_code == 200, r.text[:200])
     ts_id = r.json()["id"]
-    client.post(f"/timesheets/{ts_id}/submit", headers=supervisor)
+    r = client.post(f"/timesheets/{ts_id}/submit", headers=supervisor)
+    check("but only Bola can sign and submit it", r.status_code == 403, f"got {r.status_code}")
+    client.post(f"/timesheets/{ts_id}/submit", headers=_login("bola@org"))
 
     r = client.post(f"/timesheets/{ts_id}/return", headers=supervisor,
                     data={"reason": ""})
@@ -357,7 +364,8 @@ def main() -> int:
     test_signed_out_gets_nothing()
     test_feature_flags_hide_what_was_not_bought(admin)
     ts_id = test_timesheet_lifecycle(staff, supervisor)
-    test_returning_a_timesheet_needs_a_reason(staff, supervisor)
+    _register("bola@org", "Bola A", "viewer", "program", headers=admin)
+    test_returning_a_timesheet_needs_a_reason(staff, supervisor, admin)
     test_payroll_uses_the_approved_hours(admin, ts_id)
     test_payroll_without_a_timesheet_is_disclosed(admin)
     test_preview_before_committing(admin)
