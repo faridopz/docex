@@ -148,6 +148,12 @@ class Timesheet(BaseModel):
     submitted_at: str = ""
     approved_by: str = ""                    # the supervisor
     approved_at: str = ""
+    # With a second approval configured: the supervisor's signature, kept
+    # while the sheet waits for the second (approved_by is the final one).
+    supervisor_approved_by: str = ""
+    supervisor_approved_at: str = ""
+    # Reopened by Finance after the grace period: editable until this date.
+    unlocked_until: str = ""
     returned_reason: str = ""
 
     created_at: Optional[str] = None
@@ -199,6 +205,15 @@ class TimesheetPolicy(BaseModel):
     # How staff may record time. Default: any of the three. An organisation
     # whose donor wants daily records sets this to ["day"].
     allowed_spans: list[str] = Field(default_factory=lambda: ["day", "week", "month"])
+    # Days after the month ends during which staff may still change entries.
+    # None = no lock. After that, Finance or an admin reopens a sheet.
+    grace_days: Optional[int] = None
+    # A department key ("finance", "hr") whose approver signs after the
+    # supervisor; "" = the supervisor's signature is enough.
+    second_approval: str = ""
+    # Who must record time: "everyone" (all active staff) or "project_staff"
+    # (people named on a project) — decides the "hasn't started" list.
+    who_records: Literal["everyone", "project_staff"] = "everyone"
     updated_at: Optional[str] = None
 
 
@@ -416,12 +431,144 @@ def create_timesheet(org_id: str, *, staff_id: str, period: str,
     return _save(org, ts)
 
 
+# ─── the grace period ───────────────────────────────────────────────────────
+
+
+def lock_date(org_id: str, ts: Timesheet) -> Optional[dt.date]:
+    """The last day staff may change this sheet, or None for no lock."""
+    grace = get_policy(org_id).grace_days
+    if grace is None:
+        return None
+    _, end = period_bounds(ts.period)
+    last = end + dt.timedelta(days=max(0, int(grace)))
+    if ts.unlocked_until:
+        try:
+            last = max(last, dt.date.fromisoformat(ts.unlocked_until[:10]))
+        except ValueError:
+            pass
+    return last
+
+
+def is_locked(org_id: str, ts: Timesheet, *, at: Optional[dt.date] = None) -> bool:
+    last = lock_date(org_id, ts)
+    return last is not None and (at or dt.date.today()) > last
+
+
+def _require_unlocked(org_id: str, ts: Timesheet) -> None:
+    if is_locked(org_id, ts):
+        raise TimesheetError(
+            f"{ts.period} closed for changes on {lock_date(org_id, ts).isoformat()}. "
+            "Ask Finance to reopen it if something needs correcting.")
+
+
+def reopen(org_id: str, ts_id: str, *, actor: str, days: int = 5) -> Timesheet:
+    """Finance lets one person correct a closed month for a few days."""
+    org = _org(org_id)
+    ts = get_timesheet(org, ts_id)
+    if ts is None:
+        raise TimesheetError(f"No timesheet {ts_id}.")
+    if ts.status not in (TimesheetStatus.DRAFT, TimesheetStatus.RETURNED):
+        raise TimesheetError(f"This timesheet is {ts.status.value}; only an unsubmitted one is reopened.")
+    ts.unlocked_until = (dt.date.today() + dt.timedelta(days=max(1, int(days)))).isoformat()
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+# ─── quick entry ────────────────────────────────────────────────────────────
+
+
+def hours_per_day(org_id: str, period: str) -> float:
+    """A full working day, from the org's monthly standard divided by the
+    month's working days (not an assumed 8)."""
+    start, end = period_bounds(period)
+    working = sum(1 for i in range((end - start).days + 1)
+                  if (start + dt.timedelta(days=i)).weekday() < 5) or 1
+    return round(get_policy(org_id).standard_hours_per_period / working, 2)
+
+
+def quick_log(org_id: str, *, staff_id: str, staff_name: str = "", date: str,
+              project_code: str, hours: float, activity: str = "") -> Timesheet:
+    """Record one day's work on one project, in one step.
+
+    Opens the month's sheet if there isn't one. Replaces an existing entry
+    for the same day and project (people correct themselves; they don't mean
+    to log it twice). Refuses plainly where the sheet can't take it."""
+    org = _org(org_id)
+    d = _parse_date(date)
+    if d > dt.date.today():
+        raise TimesheetError("Time is recorded after it is worked, not before.")
+    code = (project_code or "").strip()
+    if not code:
+        raise TimesheetError("Pick the project you worked on.")
+    hours = _hours(hours)
+    if hours <= 0 or hours > MAX_HOURS_PER_DAY:
+        raise TimesheetError("Hours must be more than 0 and no more than 24.")
+    period = d.strftime("%Y-%m")
+    ts = find_timesheet(org, staff_id, period)
+    if ts is None:
+        ts = create_timesheet(org, staff_id=staff_id, staff_name=staff_name, period=period)
+    if ts.status not in (TimesheetStatus.DRAFT, TimesheetStatus.RETURNED):
+        raise TimesheetError(
+            f"Your {period} timesheet is {ts.status.value}, so it can't take new entries.")
+    if ts.entries and ts.span != "day":
+        raise TimesheetError(
+            f"Your {period} timesheet is recorded by {ts.span}; add this on the timesheet itself.")
+    _require_unlocked(org, ts)
+    ts.entries = [e for e in ts.entries if not (e.date == d.isoformat() and e.project_code == code)]
+    ts.entries.append(TimeEntry(date=d.isoformat(), hours=hours, project_code=code,
+                                activity=(activity or "").strip()))
+    ts.entries.sort(key=lambda e: (e.date, e.project_code))
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+def fill_from_split(org_id: str, ts_id: str, split: dict[str, float]) -> Timesheet:
+    """Fill every empty working day up to today from a percentage split
+    (the person's planned level of effort). Days already recorded are left
+    alone; anything under 100% goes to leave/admin, so the day is whole."""
+    org = _org(org_id)
+    ts = get_timesheet(org, ts_id)
+    if ts is None:
+        raise TimesheetError(f"No timesheet {ts_id}.")
+    if ts.status not in (TimesheetStatus.DRAFT, TimesheetStatus.RETURNED):
+        raise TimesheetError(f"This timesheet is {ts.status.value} and can't be changed.")
+    if ts.entries and ts.span != "day":
+        raise TimesheetError("This month is recorded by week or month; fill it in there.")
+    _require_unlocked(org, ts)
+    split = {k: float(v) for k, v in (split or {}).items() if float(v or 0) > 0}
+    total = sum(split.values())
+    if not split or total > 100.0001:
+        raise TimesheetError("There is no usual split to fill from (or it adds up to more than 100%).")
+    if total < 100:
+        split[NON_PROJECT] = split.get(NON_PROJECT, 0.0) + (100 - total)
+    per_day = hours_per_day(org, ts.period)
+    start, end = period_bounds(ts.period)
+    last = min(end, dt.date.today())
+    taken = set(ts.hours_by_day())
+    added = 0
+    d = start
+    while d <= last:
+        if d.weekday() < 5 and d.isoformat() not in taken:
+            for code, pct in split.items():
+                h = _hours(per_day * pct / 100.0)
+                if h > 0:
+                    ts.entries.append(TimeEntry(date=d.isoformat(), hours=h, project_code=code))
+            added += 1
+        d += dt.timedelta(days=1)
+    if not added:
+        raise TimesheetError("Every working day so far already has time on it.")
+    ts.entries.sort(key=lambda e: (e.date, e.project_code))
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
 def set_entries(org_id: str, ts_id: str, entries: list[dict], *, actor: str) -> Timesheet:
     """Replace the entries on a draft or returned timesheet."""
     org = _org(org_id)
     ts = get_timesheet(org, ts_id)
     if ts is None:
         raise TimesheetError(f"No timesheet {ts_id}.")
+    _require_unlocked(org, ts)
     if ts.status not in (TimesheetStatus.DRAFT, TimesheetStatus.RETURNED):
         raise TimesheetError(
             f"This timesheet is {ts.status.value} and cannot be edited. "
@@ -479,11 +626,31 @@ def approve(org_id: str, ts_id: str, *, supervisor: str) -> Timesheet:
             "A timesheet cannot be approved by the person who submitted it. "
             "Self-approved effort records are a standard audit finding.")
 
+    policy = get_policy(org)
+    if (policy.second_approval or "").strip() and not ts.supervisor_approved_by:
+        # First of two signatures: the supervisor's. The sheet stays
+        # submitted, now waiting on the second approver.
+        ts.supervisor_approved_by = supervisor.strip()
+        ts.supervisor_approved_at = _now_iso()
+        ts.updated_at = ts.supervisor_approved_at
+        return _save(org, ts)
+    if ts.supervisor_approved_by and supervisor.strip().lower() == ts.supervisor_approved_by.lower():
+        raise TimesheetError("The second approval must come from someone other than the supervisor who signed first.")
+
     ts.status = TimesheetStatus.APPROVED
     ts.approved_by = supervisor.strip()
     ts.approved_at = _now_iso()
     ts.updated_at = ts.approved_at
     return _save(org, ts)
+
+
+def awaiting_stage(ts: Timesheet, org_id: str) -> str:
+    """For a submitted sheet: 'supervisor' or 'second' (the department key
+    that signs second is in the policy)."""
+    if ts.status != TimesheetStatus.SUBMITTED:
+        return ""
+    policy = get_policy(org_id)
+    return "second" if (policy.second_approval and ts.supervisor_approved_by) else "supervisor"
 
 
 def send_back(org_id: str, ts_id: str, *, supervisor: str, reason: str) -> Timesheet:
@@ -499,6 +666,10 @@ def send_back(org_id: str, ts_id: str, *, supervisor: str, reason: str) -> Times
         raise TimesheetError("Returning a timesheet requires a written reason.")
     ts.status = TimesheetStatus.RETURNED
     ts.returned_reason = reason.strip()
+    # A corrected sheet is signed afresh: an earlier first signature was on
+    # figures that are about to change.
+    ts.supervisor_approved_by = ""
+    ts.supervisor_approved_at = ""
     ts.updated_at = _now_iso()
     return _save(org, ts)
 

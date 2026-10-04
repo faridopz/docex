@@ -82,6 +82,8 @@ export type WizardAnswers = {
   tender_from: number | null;
   quote_categories: string[];
   max_amount: number | null;
+  /** "Do your staff charge time to donor projects?" null = not answered. */
+  staff_time: boolean | null;
 };
 
 export type RouteBand = {

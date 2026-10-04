@@ -11,6 +11,7 @@ import {
   Loader2,
   Plus,
   UserCheck,
+  BellRing,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { getDocumentPermissions } from "@/lib/requisitionApi";
@@ -19,7 +20,9 @@ import {
   myTimesheets,
   pendingApproval,
   periodSummary,
+  remindOutstanding,
 } from "@/lib/timesheetApi";
+import { useAuth } from "@/lib/auth";
 import type { PeriodSummary, TimesheetStatus, TimesheetSummary } from "@/types/timesheet";
 
 /**
@@ -79,6 +82,25 @@ export default function TimesheetsPage() {
   const [mine, setMine] = useState<TimesheetSummary[]>([]);
   const [pending, setPending] = useState<TimesheetSummary[]>([]);
   const [summary, setSummary] = useState<PeriodSummary | null>(null);
+  const { user } = useAuth();
+  const [reminding, setReminding] = useState(false);
+  const [remindNote, setRemindNote] = useState<string | null>(null);
+  const owing = (summary?.not_started?.length ?? 0) + (summary?.not_submitted?.length ?? 0);
+
+  async function remind(period: string) {
+    setReminding(true);
+    setRemindNote(null);
+    try {
+      const r = await remindOutstanding(period);
+      setRemindNote(r.reminded
+        ? `Reminded ${r.reminded} ${r.reminded === 1 ? "person" : "people"}${r.emailed ? ` (${r.emailed} by email too)` : ""}.`
+        : "Everyone's timesheet is already in.");
+    } catch (e) {
+      setRemindNote(e instanceof Error ? e.message : "Could not send reminders.");
+    } finally {
+      setReminding(false);
+    }
+  }
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -259,41 +281,82 @@ export default function TimesheetsPage() {
           </section>
         )}
 
-        {summary && summary.timesheets > 0 && (
+        {summary && (
           <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-            <h2 className="flex items-center gap-2 font-medium text-gray-900">
-              <ClipboardList className="h-4 w-4 text-gray-500" />
-              {periodLabel(summary.period)} — before payroll runs
-            </h2>
-            {summary.ready_for_payroll ? (
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <h2 className="flex items-center gap-2 font-medium text-gray-900">
+                <ClipboardList className="h-4 w-4 text-gray-500" />
+                {periodLabel(summary.period)} — before payroll runs
+              </h2>
+              {owing > 0 && (
+                <button type="button" onClick={() => remind(summary.period)} disabled={reminding}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  <BellRing className="h-4 w-4" />
+                  {reminding ? "Sending…" : `Remind ${owing} ${owing === 1 ? "person" : "people"}`}
+                </button>
+              )}
+            </div>
+            {remindNote && <p className="mt-2 text-sm text-emerald-700">{remindNote}</p>}
+            {summary.ready_for_payroll && owing === 0 ? (
               <p className="mt-2 flex items-start gap-2 text-sm text-emerald-800">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                All {summary.timesheets} timesheets are approved. Payroll can
-                charge each grant for the hours actually worked.
+                Everyone&apos;s timesheet is in and approved. Payroll can charge each grant for the hours actually worked.
               </p>
             ) : (
               <p className="mt-2 text-sm text-amber-800">
-                Waiting on {summary.outstanding_staff.length} person
-                {summary.outstanding_staff.length === 1 ? "" : "s"}:{" "}
-                {summary.outstanding_staff.slice(0, 5).join(", ")}
-                {summary.outstanding_staff.length > 5 ? "…" : ""}. Until these are
-                approved, payroll falls back to budgeted percentages — which a
-                donor may disallow.
+                Until every timesheet is approved, payroll falls back to budgeted percentages for the missing people —
+                which a donor may disallow.
               </p>
             )}
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              {[
+                ["Haven't started", summary.not_started ?? []],
+                ["Started, not sent", summary.not_submitted ?? []],
+                ["Waiting for a signature", summary.awaiting_approval ?? []],
+              ].map(([title, people]) => (
+                <div key={title as string}>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    {title as string} · {(people as { name: string }[]).length}
+                  </h3>
+                  <ul className="mt-1.5 space-y-0.5 text-sm text-gray-800">
+                    {(people as { name: string; staff_id: string }[]).slice(0, 8).map((p) => (
+                      <li key={p.staff_id}>{p.name}</li>
+                    ))}
+                    {(people as unknown[]).length > 8 && (
+                      <li className="text-gray-400">and {(people as unknown[]).length - 8} more</li>
+                    )}
+                    {(people as unknown[]).length === 0 && <li className="text-gray-400">Nobody</li>}
+                  </ul>
+                </div>
+              ))}
+            </div>
             {Object.keys(summary.hours_by_project).length > 0 && (
-              <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              <dl className="mt-4 flex flex-wrap gap-x-6 gap-y-1 border-t border-gray-100 pt-3 text-sm">
                 {Object.entries(summary.hours_by_project)
                   .sort((a, b) => b[1] - a[1])
                   .map(([code, hours]) => (
                     <div className="flex gap-2" key={code}>
-                      <dt className="text-gray-500">{code}</dt>
-                      <dd className="font-medium text-gray-900">{hours}h</dd>
+                      <dt className="text-gray-500">{code === "NON_PROJECT" ? "Leave / admin" : code}</dt>
+                      <dd className="font-medium text-gray-900">{hours}h approved</dd>
                     </div>
                   ))}
               </dl>
             )}
           </section>
+        )}
+
+        {!summary && user?.role === "approver" && (
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 text-sm shadow-sm">
+            <BellRing className="h-4 w-4 text-gray-500" />
+            <span className="flex-1 text-gray-700">
+              Remind your team to send their {periodLabel(lastMonth)} timesheets.
+            </span>
+            <button type="button" onClick={() => remind(lastMonth)} disabled={reminding}
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+              {reminding ? "Sending…" : "Remind my team"}
+            </button>
+            {remindNote && <span className="w-full text-emerald-700">{remindNote}</span>}
+          </div>
         )}
       </div>
     </AppShell>

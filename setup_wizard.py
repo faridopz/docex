@@ -92,6 +92,9 @@ def default_answers() -> dict:
         "tender_from": None,
         "quote_categories": list(DEFAULT_PURCHASE_CATEGORIES),
         "max_amount": None,
+        # "Do your staff charge time to donor projects?" Yes switches
+        # timesheets on; None leaves the organisation's setting alone.
+        "staff_time": None,
     }
 
 
@@ -142,6 +145,8 @@ def load_answers(org_id: str) -> dict:
     else:
         a["signoffs"] = []
 
+    import org_config
+    a["staff_time"] = org_config.feature_enabled(org, "timesheets")
     a["documents"] = list(wf.required_documents)
     a["quotes_from"] = a["tender_from"] = None
     for band in wf.documents_by_amount:
@@ -500,6 +505,9 @@ def apply(org_id: str, answers: dict, *, actor: str = "") -> dict:
         # organisations keep whatever their administrator chose.
         import mfa
         mfa.set_policy(org, enabled=True, grace_days=7)
+
+    if answers.get("staff_time") is not None:
+        org_config.set_features(org, timesheets=bool(answers["staff_time"]))
 
     store.get_store().put(org, "config", "setup_wizard", {
         "org_id": org, "saved_by": actor, "saved_at": rq._now_iso(), "answers": answers})

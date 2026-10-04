@@ -15,8 +15,14 @@ import {
   Undo2,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { useAuth } from "@/lib/auth";
+import { getDocumentPermissions } from "@/lib/requisitionApi";
+import type { MyProject } from "@/types/timesheet";
 import {
   approveTimesheet,
+  fillFromPlan,
+  myProjects,
+  reopenTimesheet,
   getPolicy,
   getTimesheet,
   returnTimesheet,
@@ -76,6 +82,13 @@ export default function TimesheetDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [newProject, setNewProject] = useState("");
+  const { user } = useAuth();
+  const [mine, setMine] = useState<MyProject[]>([]);
+  const [handlesMoney, setHandlesMoney] = useState(false);
+  useEffect(() => {
+    myProjects().then((r) => setMine(r.projects)).catch(() => setMine([]));
+    getDocumentPermissions().then((p) => setHandlesMoney(Boolean(p.handles_money))).catch(() => {});
+  }, []);
   const [returning, setReturning] = useState(false);
   const [returnReason, setReturnReason] = useState("");
   const savedGrid = useRef<string>("");
@@ -173,7 +186,14 @@ export default function TimesheetDetailPage() {
     setBusy(key);
     setError(null);
     try {
-      setSheet(await fn());
+      // The server's copy is the truth after any action: refresh the grid
+      // from it too (filling the month changes the entries).
+      const t = await fn();
+      setSheet(t);
+      const g = entriesToGrid(t.entries);
+      setGrid(g);
+      savedGrid.current = JSON.stringify(g);
+      setDirty(false);
       setReturning(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That did not work.");
@@ -190,6 +210,18 @@ export default function TimesheetDetailPage() {
     setSpan(next);
     update(clearHours(grid));
     setDirty(true);
+  }
+
+  async function fillMonth() {
+    if (!sheet) return;
+    const saved = dirty ? await save() : sheet;
+    if (!saved) return;
+    await act(() => fillFromPlan(sheet.id), "fill");
+  }
+
+  async function reopen() {
+    if (!sheet) return;
+    await act(() => reopenTimesheet(sheet.id, 5), "reopen");
   }
 
   function addProject() {
@@ -267,10 +299,27 @@ export default function TimesheetDetailPage() {
           </div>
         )}
 
+        {editable && sheet.locked && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <Lock className="h-4 w-4 shrink-0" />
+            <span className="flex-1">
+              This month closed for changes on {sheet.lock_date}. Ask Finance to reopen it if something needs correcting.
+            </span>
+            {handlesMoney && (
+              <button type="button" onClick={reopen} disabled={busy !== null}
+                      className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100">
+                Reopen for 5 days
+              </button>
+            )}
+          </div>
+        )}
+
         {!editable && (
           <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
             <Lock className="h-4 w-4 shrink-0" />
-            {sheet.status === "submitted"
+            {sheet.status === "submitted" && sheet.stage === "second"
+              ? `Signed by ${sheet.supervisor_approved_by}; now waiting for the second signature.`
+              : sheet.status === "submitted"
               ? "Submitted and waiting for a supervisor. It cannot be edited while it is with them."
               : sheet.status === "approved"
                 ? "Approved. These hours are now evidence for what each grant is charged."
@@ -328,6 +377,14 @@ export default function TimesheetDetailPage() {
                     ? `Click a cell: empty → ½ day → full day. A full day is ${perDay}h.`
                     : "Type hours into any cell."}
             </p>
+            {span === "day" && sheet.staff_id.toLowerCase() === (user?.email ?? "").toLowerCase()
+              && mine.some((p) => p.planned_percent > 0) && (
+              <button type="button" onClick={fillMonth} disabled={busy !== null}
+                      title="Fills empty working days up to today from your planned split; days you've recorded are left alone"
+                      className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">
+                {busy === "fill" ? "Filling…" : "Fill my month from my usual split"}
+              </button>
+            )}
             {missing.length > 0 && (
               <span className="ml-auto text-xs font-medium text-amber-700">
                 {missing.length} working day{missing.length === 1 ? "" : "s"} empty
@@ -477,11 +534,19 @@ export default function TimesheetDetailPage() {
 
         {editable && (
           <div className="flex flex-wrap items-center gap-2">
+            {mine.filter((p) => !grid[p.project_code]).map((p) => (
+              <button key={p.project_code} type="button"
+                      onClick={() => update({ ...grid, [p.project_code]: {} })}
+                      title={[p.donor, p.title].filter(Boolean).join(" · ")}
+                      className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100">
+                + {p.project_code}
+              </button>
+            ))}
             <input
               className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm"
               onChange={(e) => setNewProject(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addProject()}
-              placeholder="Add a project code, e.g. GF-2026-TB"
+              placeholder={mine.length ? "Another project code" : "Add a project code, e.g. GF-2026-TB"}
               value={newProject}
             />
             <button

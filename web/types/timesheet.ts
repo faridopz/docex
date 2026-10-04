@@ -57,6 +57,15 @@ export interface Timesheet extends TimesheetSummary {
   effort_allocation: Record<string, number>;
   issues: EffortIssue[];
   blocking: number;
+  /** For a submitted sheet: whose signature it waits for. */
+  stage?: "" | "supervisor" | "second";
+  supervisor_approved_by?: string;
+  supervisor_approved_at?: string;
+  /** Past the grace period: the employee can no longer change it. */
+  locked?: boolean;
+  lock_date?: string | null;
+  /** A full working day for this month, by the org's own standard. */
+  hours_per_day?: number;
 }
 
 export interface TimesheetPolicy {
@@ -65,7 +74,27 @@ export interface TimesheetPolicy {
   tolerance_hours: number;
   require_activity_description: boolean;
   allowed_spans: ("day" | "week" | "month")[];
+  /** Days after month-end staff may still change entries; null = no lock. */
+  grace_days: number | null;
+  /** Department whose approver signs after the supervisor; "" = one signature. */
+  second_approval: string;
+  /** Who is expected to record time. */
+  who_records: "everyone" | "project_staff";
   updated_at: string | null;
+}
+
+export interface OutstandingPerson {
+  staff_id: string;
+  name: string;
+  status?: string;
+  stage?: string;
+}
+
+export interface MyProject {
+  project_code: string;
+  title: string;
+  donor: string;
+  planned_percent: number;
 }
 
 export interface PeriodSummary {
@@ -77,4 +106,10 @@ export interface PeriodSummary {
   /** False while any sheet is unapproved — payroll should wait. */
   ready_for_payroll: boolean;
   outstanding_staff: string[];
+  /** Expected to record time but no sheet at all for the month. */
+  not_started?: OutstandingPerson[];
+  /** Started, not sent (draft or returned). */
+  not_submitted?: OutstandingPerson[];
+  awaiting_approval?: OutstandingPerson[];
+  expected?: number;
 }

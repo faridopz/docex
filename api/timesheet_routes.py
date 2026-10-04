@@ -25,11 +25,13 @@ declared BEFORE /timesheets/{ts_id}, or FastAPI would read them as an id.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query
 
+import grants
 import org_config
 import timesheets as ts
 from .context import Ctx, request_context, require_role
@@ -82,8 +84,25 @@ def _supervises(ctx: Ctx, sheet: ts.Timesheet) -> bool:
         (ctx.department or "").lower() == _staff_department(ctx, sheet.staff_id)
 
 
+def _second_signer(ctx: Ctx) -> bool:
+    """An approver in the department the policy names for the second
+    signature (Finance or HR, usually), or an admin."""
+    second = (ts.get_policy(ctx.org_id).second_approval or "").strip().lower()
+    if not second:
+        return False
+    return ctx.role == "admin" or (ctx.role == "approver" and (ctx.department or "").lower() == second)
+
+
+def _may_sign(ctx: Ctx, sheet: ts.Timesheet) -> bool:
+    """Who signs depends on where the sheet is: its supervisor first, then,
+    when the organisation wants two signatures, the second approver."""
+    if ts.awaiting_stage(sheet, ctx.org_id) == "second":
+        return _second_signer(ctx)
+    return _supervises(ctx, sheet)
+
+
 def _may_see(ctx: Ctx, sheet: ts.Timesheet) -> bool:
-    return _is_own(ctx, sheet) or _supervises(ctx, sheet) or _is_finance(ctx)
+    return _is_own(ctx, sheet) or _supervises(ctx, sheet) or _is_finance(ctx) or _second_signer(ctx)
 
 
 def _visible_or_404(ctx: Ctx, ts_id: str) -> ts.Timesheet:
@@ -91,6 +110,14 @@ def _visible_or_404(ctx: Ctx, ts_id: str) -> ts.Timesheet:
     if sheet is None or not _may_see(ctx, sheet):
         raise HTTPException(status_code=404, detail="Timesheet not found.")
     return sheet
+
+
+def _who_signs(ctx: Ctx, sheet: ts.Timesheet) -> str:
+    if ts.awaiting_stage(sheet, ctx.org_id) == "second":
+        return ("Signed by the supervisor; the second signature comes from an approver in "
+                f"{ts.get_policy(ctx.org_id).second_approval}, or an administrator.")
+    return ("Only an approver in this person's department, or an administrator, "
+            "can sign off their timesheet.")
 
 
 def _fail(exc: ts.TimesheetError) -> HTTPException:
@@ -143,6 +170,12 @@ def _detail_out(org_id: str, t: ts.Timesheet) -> dict:
         "issues": [{"code": i.code, "blocking": i.blocking, "message": i.message}
                    for i in issues],
         "blocking": len(ts.blocking(issues)),
+        "stage": ts.awaiting_stage(t, org_id),
+        "supervisor_approved_by": t.supervisor_approved_by,
+        "supervisor_approved_at": t.supervisor_approved_at,
+        "locked": ts.is_locked(org_id, t),
+        "lock_date": (ts.lock_date(org_id, t).isoformat() if ts.lock_date(org_id, t) else None),
+        "hours_per_day": ts.hours_per_day(org_id, t.period),
     })
     return out
 
@@ -187,7 +220,7 @@ async def awaiting_approval(ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     sheets = [t for t in ts.list_timesheets(ctx.org_id,
                                             status=ts.TimesheetStatus.SUBMITTED)
-              if not _is_own(ctx, t) and _supervises(ctx, t)]
+              if not _is_own(ctx, t) and _may_sign(ctx, t)]
     return {"timesheets": [_summary_out(t) for t in sheets], "total": len(sheets)}
 
 
@@ -199,9 +232,11 @@ async def period_summary(period: str = Query(...),
     if not (_is_finance(ctx) or ctx.role == "admin"):
         raise HTTPException(status_code=403, detail="This is Finance's pre-payroll check.")
     try:
-        return ts.period_summary(ctx.org_id, period)
+        out = ts.period_summary(ctx.org_id, period)
     except ts.TimesheetError as exc:
         raise _fail(exc)
+    out.update(_outstanding(ctx, period))
+    return out
 
 
 @router.get("/policy")
@@ -220,6 +255,170 @@ async def set_policy(payload: dict = Body(...),
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid policy: {exc}")
     return ts.set_policy(ctx.org_id, policy).model_dump()
+
+
+# ─── who still owes a timesheet ─────────────────────────────────────────────
+
+
+def _expected_staff(ctx: Ctx) -> dict[str, str]:
+    """email → name of everyone who should record time this month."""
+    import auth
+    policy = ts.get_policy(ctx.org_id)
+    people = {u.email.lower(): (u.name or u.email) for u in auth.list_public(ctx.org_id)
+              if getattr(u, "active", True) and u.role != "admin"}
+    if policy.who_records == "project_staff":
+        planned = {(st.staff_id or "").lower() for ag in grants.list_agreements(ctx.org_id)
+                   if ag.status == "active" for st in ag.staff if st.staff_id}
+        people = {e: n for e, n in people.items() if e in planned}
+    return people
+
+
+def _outstanding(ctx: Ctx, period: str) -> dict:
+    sheets = {t.staff_id.lower(): t for t in ts.list_timesheets(ctx.org_id, period=period)}
+    expected = _expected_staff(ctx)
+    not_started = [{"staff_id": e, "name": n} for e, n in sorted(expected.items(), key=lambda x: x[1].lower())
+                   if e not in sheets]
+    not_sent = [{"staff_id": t.staff_id, "name": t.staff_name or t.staff_id, "status": t.status.value}
+                for t in sheets.values()
+                if t.status in (ts.TimesheetStatus.DRAFT, ts.TimesheetStatus.RETURNED)]
+    waiting = [{"staff_id": t.staff_id, "name": t.staff_name or t.staff_id,
+                "stage": ts.awaiting_stage(t, ctx.org_id)}
+               for t in sheets.values() if t.status == ts.TimesheetStatus.SUBMITTED]
+    return {"not_started": not_started, "not_submitted": sorted(not_sent, key=lambda x: x["name"].lower()),
+            "awaiting_approval": sorted(waiting, key=lambda x: x["name"].lower()),
+            "expected": len(expected)}
+
+
+@router.post("/remind")
+async def remind(period: str = Form(...), ctx: Ctx = Depends(request_context)):
+    """Nudge everyone whose timesheet for `period` isn't in: an in-app notice,
+    and an email when the organisation has email switched on. Finance and
+    admins remind everyone; a department's approver reminds their own team."""
+    _gate(ctx)
+    everyone = _is_finance(ctx) or ctx.role == "admin"
+    if not (everyone or ctx.role == "approver"):
+        raise HTTPException(status_code=403, detail="Supervisors and Finance send reminders.")
+    try:
+        ts.period_bounds(period)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    o = _outstanding(ctx, period)
+    targets = [(p["staff_id"], p["name"]) for p in o["not_started"] + o["not_submitted"]]
+    if not everyone:
+        mine = (ctx.department or "").lower()
+        targets = [(e, n) for e, n in targets if _staff_department(ctx, e) == mine]
+    import notification_center as nc
+    import requisition_mail
+    label = dt.date.fromisoformat(period + "-01").strftime("%B %Y")
+    emailed = 0
+    for email, name in targets:
+        try:
+            nc.create(f"TS-{period}", "", "mention", f"Your {label} timesheet isn't in yet",
+                      body="Open Timesheets to fill it in and send it to your supervisor.",
+                      actor=ctx.user_id, org_id=ctx.org_id, to_user=email)
+        except Exception:
+            pass
+        if requisition_mail.enabled(ctx.org_id):
+            try:
+                requisition_mail._send(email, f"Your {label} timesheet isn't in yet",
+                                       f"Hello {name},\n\nYour timesheet for {label} hasn't been sent "
+                                       "yet. Please fill it in and send it to your supervisor.\n")
+                emailed += 1
+            except Exception:
+                pass
+    return {"reminded": len(targets), "emailed": emailed, "people": [n for _, n in targets]}
+
+
+# ─── for staff: my projects, log today, fill my month ───────────────────────
+
+
+def _planned_split(ctx: Ctx) -> dict[str, float]:
+    me = (ctx.user_id or "").lower()
+    out: dict[str, float] = {}
+    for ag in grants.list_agreements(ctx.org_id):
+        if ag.status != "active":
+            continue
+        for st in ag.staff:
+            if (st.staff_id or "").lower() == me and st.percent > 0:
+                out[ag.project_code] = out.get(ag.project_code, 0.0) + st.percent
+    return out
+
+
+@router.get("/my-projects")
+async def my_projects(ctx: Ctx = Depends(request_context)):
+    """What this person can charge time to, so nobody types a code: the
+    projects that name them as staff, then any they've recorded time on."""
+    _gate(ctx)
+    split = _planned_split(ctx)
+    ags = {a.project_code: a for a in grants.list_agreements(ctx.org_id)}
+    out = [{"project_code": c, "title": ags[c].title, "donor": ags[c].donor, "planned_percent": p}
+           for c, p in sorted(split.items(), key=lambda x: -x[1])]
+    seen = set(split)
+    for sheet in ts.list_timesheets(ctx.org_id, staff_id=ctx.user_id)[:6]:
+        for code in sheet.hours_by_project():
+            if code not in seen and code != ts.NON_PROJECT:
+                seen.add(code)
+                a = ags.get(code)
+                out.append({"project_code": code, "title": a.title if a else "",
+                            "donor": a.donor if a else "", "planned_percent": 0})
+    return {"projects": out, "non_project": ts.NON_PROJECT,
+            "hours_per_day": ts.hours_per_day(ctx.org_id, dt.date.today().strftime("%Y-%m"))}
+
+
+@router.post("/quick-log")
+async def quick_log(project_code: str = Form(...), date: str = Form(""),
+                    portion: str = Form(""), hours: Optional[float] = Form(None),
+                    activity: str = Form(""), ctx: Ctx = Depends(request_context)):
+    """Log one day on one project: `portion` is "half" or "full" (a working
+    day by the org's own standard), or give `hours`."""
+    _gate(ctx)
+    day = (date or dt.date.today().isoformat())[:10]
+    try:
+        per_day = ts.hours_per_day(ctx.org_id, day[:7])
+        if portion in ("half", "full"):
+            h = per_day if portion == "full" else round(per_day / 2, 2)
+        elif hours is not None:
+            h = hours
+        else:
+            raise ts.TimesheetError("Say half day, full day, or how many hours.")
+        sheet = ts.quick_log(ctx.org_id, staff_id=ctx.user_id, staff_name=ctx.user.name or "",
+                             date=day, project_code=project_code, hours=h, activity=activity)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.post("/{ts_id}/fill-from-plan")
+async def fill_from_plan(ts_id: str, ctx: Ctx = Depends(request_context)):
+    """Fill empty working days so far from my planned split."""
+    _gate(ctx)
+    sheet = _visible_or_404(ctx, ts_id)
+    if not _is_own(ctx, sheet):
+        raise HTTPException(status_code=403, detail="Only the person whose timesheet this is can fill it in.")
+    split = _planned_split(ctx)
+    if not split:
+        raise HTTPException(status_code=422,
+                            detail="You aren't named on any project's staff yet, so there's no usual split. "
+                                   "Ask Finance to add you to your projects, or fill the days in yourself.")
+    try:
+        sheet = ts.fill_from_split(ctx.org_id, ts_id, split)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.post("/{ts_id}/reopen")
+async def reopen(ts_id: str, days: int = Form(5), ctx: Ctx = Depends(request_context)):
+    """Finance lets one person correct a closed month, for a few days."""
+    _gate(ctx)
+    sheet = _visible_or_404(ctx, ts_id)
+    if not (_is_finance(ctx) or ctx.role == "admin"):
+        raise HTTPException(status_code=403, detail="Finance or an administrator reopens a closed month.")
+    try:
+        sheet = ts.reopen(ctx.org_id, ts_id, actor=ctx.user_id, days=days)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
 
 
 # ─── create + act ───────────────────────────────────────────────────────────
@@ -304,10 +503,8 @@ async def approve(ts_id: str, ctx: Ctx = Depends(request_context)):
     from the token, so there is nothing to spoof."""
     _gate(ctx)
     sheet = _visible_or_404(ctx, ts_id)
-    if not _supervises(ctx, sheet):
-        raise HTTPException(status_code=403,
-                            detail="Only an approver in this person's department, or an "
-                                   "administrator, can sign off their timesheet.")
+    if not _may_sign(ctx, sheet):
+        raise HTTPException(status_code=403, detail=_who_signs(ctx, sheet))
     try:
         sheet = ts.approve(ctx.org_id, ts_id, supervisor=ctx.user_id)
     except ts.TimesheetError as exc:
@@ -320,10 +517,8 @@ async def send_back(ts_id: str, reason: str = Form(...),
                     ctx: Ctx = Depends(request_context)):
     _gate(ctx)
     sheet = _visible_or_404(ctx, ts_id)
-    if not _supervises(ctx, sheet):
-        raise HTTPException(status_code=403,
-                            detail="Only an approver in this person's department, or an "
-                                   "administrator, can sign off their timesheet.")
+    if not _may_sign(ctx, sheet):
+        raise HTTPException(status_code=403, detail=_who_signs(ctx, sheet))
     try:
         sheet = ts.send_back(ctx.org_id, ts_id, supervisor=ctx.user_id, reason=reason)
     except ts.TimesheetError as exc:

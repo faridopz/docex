@@ -14,7 +14,8 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Clock, Loader2, Wallet } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Loader2, Receipt, Wallet } from "lucide-react";
+import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
@@ -37,6 +38,10 @@ function dueLabel(r: AgingRow): { text: string; tone: string } {
 
 export default function AdvancesPage() {
   const { user } = useAuth();
+  const [claimsOn, setClaimsOn] = useState(false);
+  useEffect(() => {
+    getClientConfig().then((c) => setClaimsOn(hasFeature(c, "expense_claims"))).catch(() => {});
+  }, []);
   const [data, setData] = useState<Aging | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -145,7 +150,12 @@ export default function AdvancesPage() {
                           </button>
                         )
                       ) : null}
-                      {finance && mine ? (
+                      {mine && claimsOn ? (
+                        <Link href={`/claims?advance=${encodeURIComponent(r.id)}`}
+                              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
+                          <Receipt className="h-3.5 w-3.5" /> Settle with my receipts
+                        </Link>
+                      ) : finance && mine ? (
                         <p className="mt-2 text-xs text-gray-500">Your own advance — someone else in Finance settles it.</p>
                       ) : null}
                     </div>
@@ -156,7 +166,10 @@ export default function AdvancesPage() {
 
             {!finance ? (
               <p className="text-xs text-gray-500">
-                To retire an advance, give Finance your receipts and any unspent balance. Raising a new
+                {claimsOn
+                  ? "To retire an advance, list what you spent with a receipt for each item. The difference is paid to you, or shown as what to return. "
+                  : "To retire an advance, give Finance your receipts and any unspent balance. "}
+                Raising a new
                 request? <Link href="/requisitions/new" className="text-brand-700 underline">Start here</Link>.
               </p>
             ) : null}

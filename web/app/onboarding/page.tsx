@@ -393,6 +393,20 @@ export default function SetupWizardPage() {
                     </>
                   ) : null}
                 </div>
+                <div className="mt-6 border-t border-gray-100 pt-5">
+                  <p className="text-sm font-medium text-gray-900">Do your staff charge their time to donor projects?</p>
+                  <p className="mb-3 text-xs text-gray-500">
+                    Most donors want salaries charged by the time actually worked on their project. You can change this later in Settings.
+                  </p>
+                  <div className="space-y-2">
+                    <Choice checked={a.staff_time === true} onChange={() => set("staff_time", true)}
+                            title="Yes — staff record their time"
+                            text="Staff tap what they worked on each day; supervisors sign; each grant is charged for the hours worked." />
+                    <Choice checked={a.staff_time === false} onChange={() => set("staff_time", false)}
+                            title="No"
+                            text="Salaries are charged by each person's fixed split. No timesheets." />
+                  </div>
+                </div>
               </Section>
             )}
 

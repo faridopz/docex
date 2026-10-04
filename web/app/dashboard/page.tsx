@@ -18,6 +18,7 @@ import { StatusBadge } from "@/components/erp/StatusBadge";
 import { useAuth } from "@/lib/auth";
 import { getDashboard, listTransactions } from "@/lib/erpApi";
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
+import { LogTodayCard } from "@/components/erp/LogTodayCard";
 import { getDocumentPermissions, listPendingForMe, listRequisitions } from "@/lib/requisitionApi";
 import { useDepartmentNames } from "@/lib/orgNames";
 import { WHERE_TONE, whereItIs } from "@/lib/whereItIs";
@@ -168,6 +169,8 @@ export default function DashboardPage() {
         {error && (
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</p>
         )}
+
+        <LogTodayCard />
 
         {seesEverything ? (
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

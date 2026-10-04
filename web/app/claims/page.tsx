@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Paperclip, Plus, Receipt, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/lib/auth";
@@ -33,8 +33,18 @@ type Item = { date: string; description: string; budget_line: string; amount: st
 
 const blank = (): Item => ({ date: "", description: "", budget_line: "", amount: "", file: null });
 
-export default function ClaimsPage() {
+export default function ClaimsPageWrapper() {
+  // useSearchParams needs a Suspense boundary for the production build.
+  return (
+    <Suspense fallback={null}>
+      <ClaimsPage />
+    </Suspense>
+  );
+}
+
+function ClaimsPage() {
   const router = useRouter();
+  const params = useSearchParams();
   const { user } = useAuth();
   const [claims, setClaims] = useState<RequisitionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -69,6 +79,16 @@ export default function ClaimsPage() {
   useEffect(() => {
     if (adding && user) void myOpenAdvances(user.email).then(setAdvances);
   }, [adding, user]);
+
+  // Arrived from "Settle with my receipts" on the Advances page: open the
+  // form with that advance already chosen.
+  useEffect(() => {
+    const adv = params?.get("advance");
+    if (adv) {
+      setAdding(true);
+      setAdvanceId(adv);
+    }
+  }, [params]);
 
   useEffect(() => {
     const c = code.trim();

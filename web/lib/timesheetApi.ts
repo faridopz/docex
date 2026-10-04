@@ -6,6 +6,7 @@
  */
 import { apiFetch } from "@/lib/session";
 import type {
+  MyProject,
   PeriodSummary,
   Timesheet,
   TimesheetPolicy,
@@ -113,4 +114,45 @@ export function returnTimesheet(id: string, reason: string): Promise<Timesheet> 
     method: "POST",
     body: form({ reason }),
   });
+}
+
+// ─── the quick paths ────────────────────────────────────────────────────────
+
+export function myProjects(): Promise<{ projects: MyProject[]; non_project: string; hours_per_day: number }> {
+  return apiFetch("/timesheets/my-projects");
+}
+
+/** Log one day on one project: "half" or "full" day, or a number of hours. */
+export function quickLog(opts: {
+  projectCode: string; date?: string; portion?: "half" | "full"; hours?: number; activity?: string;
+}): Promise<Timesheet> {
+  return apiFetch<Timesheet>("/timesheets/quick-log", {
+    method: "POST",
+    body: form({
+      project_code: opts.projectCode,
+      date: opts.date,
+      portion: opts.portion,
+      hours: opts.hours,
+      activity: opts.activity,
+    }),
+  });
+}
+
+export function fillFromPlan(id: string): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`/timesheets/${encodeURIComponent(id)}/fill-from-plan`, { method: "POST" });
+}
+
+export function reopenTimesheet(id: string, days = 5): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`/timesheets/${encodeURIComponent(id)}/reopen`, {
+    method: "POST",
+    body: form({ days }),
+  });
+}
+
+export function remindOutstanding(period: string): Promise<{ reminded: number; emailed: number; people: string[] }> {
+  return apiFetch("/timesheets/remind", { method: "POST", body: form({ period }) });
+}
+
+export function savePolicy(policy: Partial<TimesheetPolicy>): Promise<TimesheetPolicy> {
+  return apiFetch<TimesheetPolicy>("/timesheets/policy", { method: "PUT", body: JSON.stringify(policy) });
 }

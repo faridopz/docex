@@ -19,6 +19,7 @@ import {
   Percent,
   ScrollText,
   ShieldCheck,
+  Timer,
   Users,
   Wand2,
   type LucideIcon,
@@ -42,6 +43,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
       { href: "/settings/org", label: "Organisation", hint: "Name, currency, which features are on", icon: Building2, show: always },
       { href: "/settings/departments", label: "Departments & approval chain", hint: "Who approves what, in which order", icon: Users, show: always },
       { href: "/settings/users", label: "People & access", hint: "Invite staff, set roles, reset passwords", icon: KeyRound, show: always },
+      { href: "/settings/timesheets", label: "Timesheets", hint: "On or off; by day, week or month; closing a month; who signs", icon: Timer, show: always },
     ],
   },
   {
