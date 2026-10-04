@@ -1937,6 +1937,24 @@ async def request_requisition_signoff(
     if step is None:
         raise HTTPException(status_code=404, detail=f"No approval step '{step_key}'.")
 
+    # Delegating a decision is the decision-maker's act. Found in the 30 Sep
+    # audit: any viewer could mint links for every step to their own personal
+    # address and approve their own request end to end.
+    if step_key != (req.current_step or ""):
+        raise HTTPException(status_code=400,
+                            detail=f"{req.ref} is not at '{step.label or step_key}' now; only "
+                                   "the step it is waiting at can be signed off.")
+    owner = rq.step_owner(step, req)
+    if not (ctx.role == "admin" or (ctx.role == "approver" and ctx.department == owner)):
+        raise HTTPException(status_code=403,
+                            detail="Only an approver in the department that owns this step, "
+                                   "or an administrator, can ask someone else to sign it off.")
+    involved = {(req.submitted_by or "").lower()} | {(a.actor or "").lower() for a in req.approvals}
+    if email in involved:
+        raise HTTPException(status_code=422,
+                            detail="That person raised or has already decided on this request, "
+                                   "so they can't sign off this step too.")
+
     token = approval_tokens.make_token(
         req.id, step_key, email, org=ctx.org_id, kind="requisition",
     )

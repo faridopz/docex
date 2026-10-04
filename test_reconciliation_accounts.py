@@ -47,7 +47,9 @@ import requisitions as rq  # noqa: E402
 _passed = _failed = 0
 TODAY = dt.date.today()
 PERIOD = TODAY.strftime("%Y-%m")
-D = TODAY.strftime("%d/%m/%Y")
+# ISO, not dd/mm: on days 1–12 a dd/mm date is ambiguous and the engine
+# rightly refuses to guess (this test broke on 4 Oct for exactly that reason).
+D = TODAY.strftime("%Y-%m-%d")
 
 
 def check(label: str, cond: bool, detail: str = "") -> None:

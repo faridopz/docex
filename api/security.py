@@ -255,7 +255,131 @@ class AuthMiddleware:
             )
             return
 
+        # Who may use this part of the system at all. Routes still apply
+        # their own finer rules; this is the floor for whole areas — payroll,
+        # bank data, reconciliation, the older payment pipelines — so that a
+        # route written without a role check can't hand money data to any
+        # signed-in member of staff. (Found in the 30 Sep 2026 audit: about 110
+        # older routes checked only that someone was signed in.)
+        refusal = access_refusal(scope.get("method", "GET"), scope.get("path", ""), user)
+        if refusal:
+            status, detail = refusal
+            await self._reject(scope, send, detail, status=status)
+            return
+
         await self.app(scope, receive, send)
+
+
+# ─── access by area ─────────────────────────────────────────────────────────
+#
+# (methods, path pattern, who). First match wins. "*" means every method.
+#   money          — an admin, or anyone in the org's finance department(s)
+#   money_approver — an admin, or an approver in the finance department(s)
+#   chain          — money, plus departments that own an approval step
+#   admin          — administrators only
+#   feature:<flag> — only when the organisation has switched that feature on
+_READ = frozenset({"GET", "HEAD"})
+_ANY = frozenset({"*"})
+_ACCESS_RULES: tuple[tuple[frozenset, re.Pattern[str], str], ...] = (
+    # Salaries, bank accounts, statements, ledgers: Finance's material.
+    (_ANY, re.compile(r"^/payroll(/.*)?$"), "money"),
+    (_ANY, re.compile(r"^/accounting(/.*)?$"), "money"),
+    (_ANY, re.compile(r"^/reconciliation(/.*)?$"), "money"),
+    (_READ, re.compile(r"^/treasury/wht/(policy|preview)$"), "signed_in"),
+    (frozenset({"POST"}), re.compile(r"^/treasury/wht/preview$"), "signed_in"),
+    (_ANY, re.compile(r"^/treasury(/.*)?$"), "money"),
+    (_ANY, re.compile(r"^/verify(/.*)?$"), "money"),
+    (_ANY, re.compile(r"^/per-diem(/.*)?$"), "money"),
+    (_ANY, re.compile(r"^/agents/attendance-payment(/.*)?$"), "money"),
+    # Rate cards set what people are paid: anyone may read, admins change.
+    (_READ, re.compile(r"^/rate-cards(/.*)?$"), "signed_in"),
+    (_ANY, re.compile(r"^/rate-cards(/.*)?$"), "admin"),
+    # Vendor bank details and blocking: Finance.
+    (_ANY, re.compile(r"^/vendors/[^/]+/(verify|block|unblock)$"), "money"),
+    # The policy-document (compliance) area.
+    (_ANY, re.compile(r"^/compliance/(org-profile|rulebooks|policy)(/.*)?$"), "admin_write"),
+    (frozenset({"DELETE"}), re.compile(r"^/compliance(/.*)?$"), "admin"),
+    (_ANY, re.compile(r"^/compliance/checks/[^/]+/(approve|unapprove|mark-paid|request-signoff)$"), "money_approver"),
+    (_READ, re.compile(r"^/compliance(/.*)?$"), "chain"),
+    (_ANY, re.compile(r"^/compliance(/.*)?$"), "money"),
+    # The older intake pipeline, replaced by payment requests. Only for an
+    # organisation that has deliberately switched it (or the attendance
+    # vouchers that feed it) back on. Vouchers are payables: Finance's.
+    (_ANY, re.compile(r"^/vouchers(/.*)?$"), "feature:attendance_payments+money"),
+    (_ANY, re.compile(r"^/transactions(/.*)?$"), "feature:legacy_intake|attendance_payments"),
+    # Knowledge decks: anyone with the module may ask; admins curate.
+    (frozenset({"DELETE", "PATCH"}), re.compile(r"^/knowledge/decks/[^/]+$"), "admin"),
+    (frozenset({"POST"}), re.compile(r"^/knowledge/decks$"), "admin"),
+    (_ANY, re.compile(r"^/diagnostics(/.*)?$"), "admin"),
+)
+
+
+def _rule_for(method: str, path: str) -> Optional[str]:
+    for methods, pattern, who in _ACCESS_RULES:
+        if ("*" in methods or method in methods) and pattern.match(path):
+            return who
+    return None
+
+
+def _money_departments(org: str) -> set[str]:
+    try:
+        import payment_voucher
+        return set(payment_voucher.schedule_departments(org))
+    except Exception:
+        return {"finance"}
+
+
+def _chain_departments(org: str) -> set[str]:
+    out = _money_departments(org)
+    try:
+        import requisitions
+        wf = requisitions.get_workflow(org)
+        out |= {s.department.lower() for s in wf.steps if s.department}
+        out |= {(r.department or "").lower() for r in wf.cc_rules if getattr(r, "department", "")}
+    except Exception:
+        pass
+    return out
+
+
+def access_refusal(method: str, path: str, user) -> Optional[tuple[int, str]]:
+    """(status, message) if this user may not use this area; None if they may."""
+    who = _rule_for(method.upper(), path)
+    if who is None or who == "signed_in":
+        return None
+    org = (getattr(user, "org_id", None) or os.environ.get("DOCEX_ORG") or "default").strip() or "default"
+    role = getattr(user, "role", "") or ""
+    dept = (getattr(user, "department", "") or "").lower()
+    if who.startswith("feature:"):
+        # A switched-off area is absent for everyone, administrators included:
+        # "off" must mean off, not "off unless you're an admin".
+        spec, _, then = who.split(":", 1)[1].partition("+")
+        try:
+            import org_config
+            on = any(org_config.feature_enabled(org, f) for f in spec.split("|") if f)
+        except Exception:
+            on = False
+        if not on:
+            return 404, "Not Found"
+        if not then:
+            return None
+        who = then
+    if role == "admin":
+        return None
+    if who == "admin_write":
+        return None if method.upper() in _READ and dept in _chain_departments(org) else \
+            (403, "Only an administrator can change this.")
+    if who == "admin":
+        return 403, "Only an administrator can do this."
+    if who == "money":
+        return None if dept in _money_departments(org) else \
+            (403, "This is Finance's area. Ask Finance or an administrator.")
+    if who == "money_approver":
+        return None if (dept in _money_departments(org) and role == "approver") else \
+            (403, "Only a Finance approver or an administrator can do this.")
+    if who == "chain":
+        return None if dept in _chain_departments(org) else \
+            (403, "Only the people who approve payments can see this.")
+    return 403, "Not allowed."
 
 
 # ─── module entitlements ────────────────────────────────────────────────────

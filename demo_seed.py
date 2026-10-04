@@ -218,8 +218,12 @@ class _Story:
 
     def pay(self, req, days_ago: float):
         self.clock.at(days_ago, 15)
+        # A list of people (stipends) goes out as one bulk schedule, the way
+        # NGOs actually pay them: one debit on the statement, not twelve
+        # identical ones nobody could tell apart.
         return self.rq.mark_paid(DEMO_ORG, req.id, actor=_email("ngozi"), department="finance",
-                                 bank_reference=f"GTB/FT/{req.ref.replace('REQ-', '')}{int(req.amount) % 997:03d}")
+                                 bank_reference=f"GTB/FT/{req.ref.replace('REQ-', '')}{int(req.amount) % 997:03d}",
+                                 settlement="bulk" if req.payees else "individual")
 
     def decide(self, req, days_ago: float, decision, notes: str):
         who = self._approver_for(req)

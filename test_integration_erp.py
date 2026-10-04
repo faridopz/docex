@@ -2,6 +2,7 @@
 Run: python test_integration_erp.py"""
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,11 @@ vouchers_mod._VOUCHER_DIR = _base / "vouchers"
 
 from fastapi.testclient import TestClient  # noqa: E402
 import api.main as m  # noqa: E402
+import org_config  # noqa: E402
+
+# This suite exercises the older transactions/vouchers pipeline, which is
+# switched off by default (see test_access_policy.py); turn it on here.
+org_config.set_features(os.environ.get("DOCEX_ORG") or "default", legacy_intake=True, attendance_payments=True)
 # Point the rate-card loaders (used by voucher route) at our temp card dir.
 import api.voucher_routes as vr  # noqa: E402
 vr._RATE_CARD_DIR = _base / "cards"

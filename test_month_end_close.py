@@ -97,6 +97,10 @@ def _approved(amount, vendor, category, project="B24", payees=None):
 
 
 def _setup():
+    # The statement is September's, so the payments must be paid in September.
+    # Pinning the clock keeps this from breaking every time the month turns
+    # (it broke on 1 Oct 2026, when "paid today" stopped being September).
+    rq._now_iso = lambda: "2026-09-28T10:00:00+00:00"
     org_config.set_features(ORG, bank_reconciliation=True, multi_payee_requisitions=True,
                             accounting_export=True)
     wf = rq.get_workflow(ORG)

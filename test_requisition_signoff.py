@@ -30,6 +30,7 @@ Run: python test_requisition_signoff.py
 """
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -92,7 +93,13 @@ check("it starts at the finance step", r.json()["current_step"] == "finance")
 
 # ─── requesting a link ──────────────────────────────────────────────────────
 
+# Only the step's own approver (or an admin) may delegate it — see
+# test_access_policy.py. The submitter asking for a link is refused.
 r = client.post(f"/requisitions/{req_id}/request-signoff", headers=ph, json={
+    "step": "finance", "approver_email": "External.Auditor@Example.com"})
+check("the person who raised it cannot hand out its sign-off", r.status_code == 403)
+
+r = client.post(f"/requisitions/{req_id}/request-signoff", headers=ah, json={
     "step": "finance", "approver_email": "External.Auditor@Example.com",
     "note": "Please review before Friday's run",
 })
@@ -111,7 +118,7 @@ check("the audit line names who it was sent to",
 check("requesting a link changes nothing about the requisition itself",
       detail["status"] == "in_review" and detail["current_step"] == "finance")
 
-r = client.post(f"/requisitions/{req_id}/request-signoff", headers=ph, json={
+r = client.post(f"/requisitions/{req_id}/request-signoff", headers=ah, json={
     "step": "finance", "approver_email": "not-an-email",
 })
 check("a malformed approver email is refused", r.status_code == 422)
@@ -190,10 +197,15 @@ r = client.post("/requisitions", headers=ph, data={
     "vendor_name": "Self Approval Ltd", "amount": "20000", "category": "supplies",
 })
 self_id = r.json()["id"]
-r = client.post(f"/requisitions/{self_id}/request-signoff", headers=ph, json={
+r = client.post(f"/requisitions/{self_id}/request-signoff", headers=ah, json={
     "step": "finance", "approver_email": "program@neem.org",
 })
-self_token = r.json()["link"].rsplit("/", 1)[-1]
+check("a link addressed to the submitter is refused when it's asked for", r.status_code == 422)
+# Second layer: even a correctly signed link to the submitter (say, minted
+# before this rule existed) must not let them approve their own request.
+self_token = approval_tokens.make_token(self_id, "finance", "program@neem.org",
+                                        org=os.environ.get("DOCEX_ORG", "default") or "default",
+                                        kind="requisition")
 r = client.post(f"/requisitions/approve/{self_token}", json={"action": "approve"})
 check("the submitter cannot approve their own requisition by email either",
       r.status_code == 400)

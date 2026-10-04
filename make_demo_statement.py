@@ -68,6 +68,14 @@ def build(org_id: str, period: str | None = None) -> tuple[str, dict]:
     rows: list[tuple[dt.date, str, str, float, float]] = []
     for txn in paid:
         d = dt.date.fromisoformat(txn.paid_at[:10])
+        if txn.payees and (getattr(txn, "settlement", "") or "individual") != "bulk":
+            # Paid to each person separately: the bank shows one debit per
+            # payee, not one total. A single combined line here made the
+            # demo report every volunteer as "not in bank".
+            for i, p in enumerate(txn.payees):
+                rows.append((d, f"TRF TO {(p.name or txn.vendor_name).upper()}",
+                             f"{txn.bank_reference or 'FT'}-{i + 1}", abs(p.amount), 0.0))
+            continue
         rows.append((
             d,
             f"TRF TO {txn.vendor_name.upper()}",
