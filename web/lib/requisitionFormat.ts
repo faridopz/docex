@@ -17,6 +17,7 @@ export const REQ_STATUS_LABEL: Record<ReqStatus, string> = {
   paid: "Paid",
   declined: "Declined",
   returned: "Returned for fixes",
+  settled: "Settled — nothing to pay",
 };
 
 export const REQ_STATUS_STYLE: Record<ReqStatus, string> = {
@@ -28,6 +29,7 @@ export const REQ_STATUS_STYLE: Record<ReqStatus, string> = {
   paid: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   declined: "bg-red-50 text-red-700 ring-red-200",
   returned: "bg-orange-50 text-orange-700 ring-orange-200",
+  settled: "bg-emerald-50 text-emerald-700 ring-emerald-200",
 };
 
 export const CHECK_LABEL: Record<CheckResult, string> = {

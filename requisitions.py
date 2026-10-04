@@ -59,6 +59,8 @@ class ReqStatus(str, Enum):
     PAID = "paid"                    # terminal — transaction record frozen
     DECLINED = "declined"            # terminal — rejected by an approver
     RETURNED = "returned"            # sent back to submitter for fixes
+    SETTLED = "settled"              # terminal — approved, nothing to pay (an
+                                     # expense claim its advance fully covered)
 
 
 class CheckResult(str, Enum):
@@ -129,6 +131,7 @@ class BudgetLine(BaseModel):
     frequency: float = 1.0
     unit_cost: float = 0.0
     line_total: float = 0.0       # computed — never accepted from a client
+    date: str = ""                # when it was spent (expense claims)
 
 
 class Approval(BaseModel):
@@ -409,6 +412,15 @@ class Requisition(BaseModel):
     # unaffected. When populated, `amount` above is always the sum of these
     # and `vendor_name` is the batch's title/purpose, not a payee's name.
     payees: list[Payee] = Field(default_factory=list)
+
+    # An ordinary payment, or a member of staff claiming back what they spent
+    # (WO-74). A claim's items are `budget_lines`, each with its own receipt
+    # attached as document type "item-N"; the payee is the claimant.
+    kind: Literal["payment", "expense_claim"] = "payment"
+    # The advance this claim retires. The claim then pays only what was spent
+    # beyond the advance: `amount` = max(0, claim_total - advance).
+    advance_id: str = ""
+    claim_total: float = 0.0          # sum of the items, before the advance
 
     # Workflow
     status: ReqStatus = ReqStatus.DRAFT
@@ -899,6 +911,113 @@ def cc_recipients(wf: RequisitionWorkflow, amount: float) -> list[CCRule]:
 # ─── policy checks (deterministic — code owns every number) ─────────────────
 
 
+# ─── expense claims (WO-74) ─────────────────────────────────────────────────
+
+
+def _claim_amounts(org_id: str, req: Requisition) -> None:
+    """A claim's total is the sum of its items; what is paid is what was spent
+    beyond any advance it retires. Code computes both — never the form."""
+    req.claim_total = _money(sum(bl.line_total for bl in req.budget_lines))
+    advance = 0.0
+    if req.advance_id:
+        try:
+            import advances as _adv
+            a = _adv.get(org_id, req.advance_id)
+            advance = a.amount if a else 0.0
+        except ImportError:  # pragma: no cover
+            advance = 0.0
+    req.amount = _money(max(0.0, req.claim_total - advance))
+
+
+def _claim_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
+    out: list[PolicyCheck] = []
+    items = req.budget_lines
+    if not items:
+        return [PolicyCheck(code="ITEM_RECEIPTS", name="A receipt for every item",
+                            result=CheckResult.FAIL, message="Add at least one item to claim.")]
+    have = {(a.document_type or "").strip().lower() for a in req.attachments}
+    missing = [str(i + 1) for i in range(len(items)) if f"item-{i + 1}" not in have]
+    if missing:
+        out.append(PolicyCheck(
+            code="ITEM_RECEIPTS", name="A receipt for every item", result=CheckResult.FAIL,
+            actual_value=f"{len(items) - len(missing)} of {len(items)}",
+            message=(f"No receipt attached for item{'s' if len(missing) > 1 else ''} "
+                     f"{', '.join(missing)}. Each item needs its own receipt.")))
+    else:
+        out.append(PolicyCheck(code="ITEM_RECEIPTS", name="A receipt for every item",
+                               result=CheckResult.PASS,
+                               message=f"All {len(items)} item{'s' if len(items) > 1 else ''} have a receipt."))
+    undated = [str(i + 1) for i, bl in enumerate(items) if not (bl.date or "").strip()]
+    if undated:
+        out.append(PolicyCheck(
+            code="ITEM_DATES", name="Every item is dated", result=CheckResult.WARNING,
+            message=f"Item{'s' if len(undated) > 1 else ''} {', '.join(undated)} have no date spent."))
+    if req.advance_id:
+        out.append(_claim_advance_check(org_id, req))
+    return out
+
+
+def _claim_advance_check(org_id: str, req: Requisition) -> PolicyCheck:
+    name = "Settles the claimant's own open advance"
+    try:
+        import advances as _adv
+    except ImportError:  # pragma: no cover
+        return PolicyCheck(code="CLAIM_ADVANCE", name=name, result=CheckResult.FAIL,
+                           message="Advances are not available here.")
+    a = _adv.get(org_id, req.advance_id)
+    if a is None:
+        return PolicyCheck(code="CLAIM_ADVANCE", name=name, result=CheckResult.FAIL,
+                           message="The advance this claim names doesn't exist.")
+    if (a.staff_id or "").strip().lower() != (req.submitted_by or "").strip().lower():
+        return PolicyCheck(code="CLAIM_ADVANCE", name=name, result=CheckResult.FAIL,
+                           message=f"{a.ref} was issued to someone else; a claim can only settle your own advance.")
+    if not a.open:
+        return PolicyCheck(code="CLAIM_ADVANCE", name=name, result=CheckResult.FAIL,
+                           message=f"{a.ref} is already {a.status.value}.")
+    others = [r.ref for r in list_requisitions(org_id)
+              if r.id != req.id and r.kind == "expense_claim" and r.advance_id == req.advance_id
+              and r.status not in (ReqStatus.DRAFT, ReqStatus.DECLINED)]
+    if others:
+        return PolicyCheck(code="CLAIM_ADVANCE", name=name, result=CheckResult.FAIL,
+                           message=f"{a.ref} is already being settled by {', '.join(others)}.")
+    cur = req.currency
+    diff = _money(req.claim_total - a.amount)
+    outcome = (f"{cur} {diff:,.2f} to reimburse" if diff > 0
+               else f"{cur} {-diff:,.2f} to be returned by the claimant" if diff < 0
+               else "spent exactly the advance")
+    return PolicyCheck(
+        code="CLAIM_ADVANCE", name=name, result=CheckResult.PASS,
+        policy_value=f"{cur} {a.amount:,.2f} advance ({a.ref})",
+        actual_value=f"{cur} {req.claim_total:,.2f} spent",
+        message=f"Spent {cur} {req.claim_total:,.2f} against {a.ref} ({cur} {a.amount:,.2f}): {outcome}.")
+
+
+def _on_fully_approved(org_id: str, req: Requisition, actor: str) -> None:
+    """A claim that settles an advance retires it the moment the claim is
+    fully approved — the spend is now approved evidence. If the advance
+    covered everything, there is nothing to pay and the claim closes."""
+    if req.kind != "expense_claim" or not req.advance_id:
+        return
+    try:
+        import advances as _adv
+        a = _adv.retire(org_id, req.advance_id, spent=req.claim_total, actor=actor or "system",
+                        receipt_ids=[att.id for att in req.attachments],
+                        note=f"Retired by expense claim {req.ref}.")
+    except Exception as exc:
+        raise RequisitionError(f"{req.ref} could not settle its advance: {exc}") from exc
+    owed = (f"{a.currency} {a.balance:,.2f} is to be returned by the claimant"
+            if a.direction == "recover" else
+            f"{a.currency} {-a.balance:,.2f} is to be reimbursed" if a.direction == "reimburse"
+            else "nothing is owed either way")
+    _audit(req, "advance_retired", actor=actor or "system", department=req.department,
+           detail=f"{a.ref} retired: spent {a.currency} {req.claim_total:,.2f}; {owed}.")
+    if _money(req.amount) <= 0:
+        req.status = ReqStatus.SETTLED
+        req.current_step = None
+        _audit(req, "settled", actor="system",
+               detail="Nothing to pay: the advance covered the claim.")
+
+
 def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     """
     Every check here is pure arithmetic or set membership. No LLM, no guessing.
@@ -924,8 +1043,11 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
             ),
         ))
 
-    # 2. Amount is positive
-    if _money(req.amount) <= 0:
+    # 2. Amount is positive. A claim fully covered by its advance is the one
+    # request that legitimately pays nothing — it is checked by CLAIM_ADVANCE.
+    if req.kind == "expense_claim":
+        checks.extend(_claim_checks(org, req))
+    if _money(req.amount) <= 0 and not (req.kind == "expense_claim" and req.advance_id):
         checks.append(PolicyCheck(
             code="AMOUNT_VALID", name="Amount is greater than zero",
             result=CheckResult.FAIL, actual_value=str(_money(req.amount)),
@@ -1550,6 +1672,8 @@ def create_requisition(
     currency: str = "NGN",
     submit: bool = True,
     activity_end: str = "",
+    kind: str = "payment",
+    advance_id: str = "",
 ) -> Requisition:
     """
     Raise a requisition. Runs policy checks immediately so the submitter sees
@@ -1594,6 +1718,21 @@ def create_requisition(
         raise RequisitionError(
             f"payment_type must be 'full', 'advance', or 'balance', not '{payment_type}'."
         )
+    kind = (kind or "payment").strip().lower()
+    if kind not in ("payment", "expense_claim"):
+        raise RequisitionError(f"Unknown request kind '{kind}'.")
+    if kind == "expense_claim":
+        try:
+            import org_config
+            claims_on = org_config.feature_enabled(org, "expense_claims")
+        except ImportError:  # pragma: no cover
+            claims_on = False
+        if not claims_on:
+            raise RequisitionError("Expense claims are not switched on for this organisation.")
+        if payees:
+            raise RequisitionError("An expense claim pays the person claiming; it has no payee list.")
+        if payment_type != "full":
+            raise RequisitionError("An expense claim is paid in full, not as an advance or balance.")
 
     req = Requisition(
         id=uuid.uuid4().hex,
@@ -1619,9 +1758,13 @@ def create_requisition(
         documents=list(documents or []),
         payees=payees,
         activity_end=(activity_end or "").strip()[:10],
+        kind=kind,
+        advance_id=(advance_id or "").strip() if kind == "expense_claim" else "",
         created_at=now,
         updated_at=now,
     )
+    if kind == "expense_claim":
+        _claim_amounts(org, req)
 
     _audit(req, "created", actor=submitted_by, department=department,
            detail=f"{req.ref}: {req.vendor_name} {_money(req.amount)} {req.currency}")
@@ -1648,6 +1791,7 @@ def _submit(org_id: str, req: Requisition) -> Requisition:
         req.current_step = None
         _audit(req, "approved", actor="system",
                detail="No approval step configured for this amount.")
+        _on_fully_approved(org_id, req, "system")
         return req
     req.status = ReqStatus.IN_REVIEW
     first = 0
@@ -1695,7 +1839,7 @@ _DRAFT_EDITABLE = (
     "vendor_name", "vendor_account", "vendor_bank_name", "vendor_tin",
     "vendor_phone_or_email", "payment_type", "budget_lines", "amount",
     "currency", "category", "project_code", "grant_code", "description",
-    "receipt_ids", "documents", "payees", "activity_end",
+    "receipt_ids", "documents", "payees", "activity_end", "advance_id",
 )
 
 
@@ -1836,6 +1980,13 @@ def update_draft(org_id: str, req_id: str, *, actor: str, **fields) -> Requisiti
             if "amount" not in changed:
                 changed.append("amount")
 
+    if req.kind == "expense_claim":     # the amount is computed, whatever was sent
+        before_amount = req.amount
+        _claim_amounts(org, req)
+        if req.amount != before_amount and "amount" not in changed:
+            before["amount"] = before_amount
+            changed.append("amount")
+
     if changed:
         _audit(req, "draft_edited", actor=actor, department=req.department,
                detail=(("Corrected after being returned: "
@@ -1868,7 +2019,11 @@ def submit_draft(org_id: str, req_id: str, *, actor: str) -> Requisition:
         raise RequisitionError(f"{req.ref} has already been submitted.")
     if not req.vendor_name.strip():
         raise RequisitionError("A draft needs a vendor before it can be submitted.")
-    if _money(req.amount) <= 0:
+    if req.kind == "expense_claim":
+        _claim_amounts(org, req)
+        if not req.budget_lines:
+            raise RequisitionError("Add at least one item before sending the claim.")
+    if _money(req.amount) <= 0 and not (req.kind == "expense_claim" and req.advance_id):
         raise RequisitionError("A draft needs an amount above zero before it can be submitted.")
 
     req.checks = run_policy_checks(org, req)
@@ -2073,6 +2228,7 @@ def decide(
             req.status = ReqStatus.APPROVED
             _audit(req, "approved", actor="system",
                    detail="All approval steps cleared. Ready for payment.")
+            _on_fully_approved(org, req, actor)
 
     return _save(org, req)
 

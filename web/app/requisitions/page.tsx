@@ -358,6 +358,11 @@ function RequisitionTable({
                 </td>
                 <td className="px-4 py-3">
                   <span className="font-medium text-gray-900">{r.vendor_name || "—"}</span>
+                  {r.kind === "expense_claim" && (
+                    <span className="ml-2 rounded bg-teal-50 px-1.5 py-0.5 text-[11px] font-medium text-teal-700 ring-1 ring-inset ring-teal-200">
+                      Claim
+                    </span>
+                  )}
                   {r.category || r.project_code ? (
                     <span className="mt-0.5 block text-xs text-gray-500">
                       {[humanise(r.category), r.project_code].filter(Boolean).join(" · ")}

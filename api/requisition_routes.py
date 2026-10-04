@@ -73,8 +73,7 @@ _PAYEE_FIELDS = (
 # from quantity * frequency * unit_cost (DETERMINISTIC-FIRST), so a client
 # value there is silently ignored rather than trusted.
 _BUDGET_LINE_FIELDS = (
-    "description", "unit", "budget_line", "quantity", "frequency", "unit_cost",
-)
+    "description", "unit", "budget_line", "quantity", "frequency", "unit_cost", "date")
 
 
 def _parse_payees(raw: str) -> list[rq.Payee]:
@@ -283,6 +282,7 @@ def _budget_line_out(bl: rq.BudgetLine) -> dict:
         "frequency": bl.frequency,
         "unit_cost": bl.unit_cost,
         "line_total": bl.line_total,
+        "date": bl.date,
     }
 
 
@@ -369,6 +369,9 @@ def _summary_out(r: rq.Requisition, names: Optional[dict[str, str]] = None,
         "submitted_by": r.submitted_by,
         "submitted_at": r.submitted_at,
         "status": r.status.value,
+        "kind": r.kind,
+        "advance_id": r.advance_id,
+        "claim_total": r.claim_total,
         "current_step": r.current_step,
         "blocking_count": len(rq.blocking_checks(r)),
         "warning_count": len([c for c in r.checks if c.result == rq.CheckResult.WARNING]),
@@ -574,6 +577,10 @@ async def create_requisition_endpoint(
     currency: Annotated[str, Form()] = "NGN",
     submit: Annotated[bool, Form(
         description="False saves a draft instead of submitting for approval")] = True,
+    kind: Annotated[str, Form(
+        description="'payment' (default) or 'expense_claim': staff claiming back what they spent")] = "payment",
+    advance_id: Annotated[str, Form(
+        description="Expense claims only: the advance this claim settles")] = "",
     idempotency_key: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
     ctx: Ctx = Depends(request_context),
 ):
@@ -592,6 +599,12 @@ async def create_requisition_endpoint(
     """
     payee_rows = _parse_payees(payees)
     budget_line_rows = _parse_budget_lines(budget_lines)
+    if (kind or "").strip().lower() == "expense_claim":
+        # The payee of a claim is the person claiming, by their account name,
+        # and the amount is computed from the items: neither is up to the form.
+        vendor_name = ctx.user.name or ctx.user_id
+        amount = 0.0
+        category = category or "expense claim"
     try:
         with idempotency.guard(ctx.org_id, "requisition.create", idempotency_key) as slot:
             if slot.replayed:
@@ -620,6 +633,8 @@ async def create_requisition_endpoint(
                     payees=payee_rows or None,
                     currency=currency,
                     submit=submit,
+                    kind=kind,
+                    advance_id=advance_id,
                 )
             except rq.RequisitionError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

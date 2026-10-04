@@ -562,7 +562,21 @@ export default function RequisitionDetailPage() {
               <ReqStatusBadge status={req.status} />
             </div>
             <p className="mt-1 text-sm text-gray-600">
-              {money(req.amount, req.currency)} to {req.vendor_name}
+              {req.kind === "expense_claim" ? (
+                <>
+                  <span className="mr-2 rounded bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-700 ring-1 ring-inset ring-teal-200">
+                    Expense claim
+                  </span>
+                  {req.vendor_name} spent {money(req.claim_total ?? req.amount, req.currency)}
+                  {req.advance_id
+                    ? req.amount > 0
+                      ? ` · settles an advance · ${money(req.amount, req.currency)} to pay`
+                      : " · settles an advance · nothing to pay"
+                    : ""}
+                </>
+              ) : (
+                <>{money(req.amount, req.currency)} to {req.vendor_name}</>
+              )}
               {currentStep && isOpen ? ` — with ${deptName(currentOwner)}` : ""}
             </p>
           </div>
@@ -865,7 +879,49 @@ export default function RequisitionDetailPage() {
               ) : null}
             </Card>
 
-            {req.budget_lines.length ? (
+            {req.kind === "expense_claim" && req.budget_lines.length ? (
+              <Card title="What was spent" subtitle="Each item needs its own receipt">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-xs uppercase tracking-wide text-gray-500">
+                      <tr>
+                        <th className="py-1.5 pr-3 font-medium">#</th>
+                        <th className="py-1.5 pr-3 font-medium">Date</th>
+                        <th className="py-1.5 pr-3 font-medium">Item</th>
+                        <th className="py-1.5 pr-3 font-medium">Budget line</th>
+                        <th className="py-1.5 pr-3 font-medium">Receipt</th>
+                        <th className="py-1.5 text-right font-medium">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {req.budget_lines.map((bl, i) => {
+                        const receipt = req.attachments.find((a) => a.document_type === `item-${i + 1}`);
+                        return (
+                          <tr key={i}>
+                            <td className="py-1.5 pr-3 text-gray-500">{i + 1}</td>
+                            <td className="py-1.5 pr-3 text-gray-600">{bl.date || "—"}</td>
+                            <td className="py-1.5 pr-3 text-gray-900">{bl.description || "—"}</td>
+                            <td className="py-1.5 pr-3 text-gray-600">{bl.budget_line || "—"}</td>
+                            <td className="py-1.5 pr-3">
+                              {receipt ? (
+                                <span className="text-emerald-700">{receipt.filename}</span>
+                              ) : (
+                                <span className="text-red-600">Missing</span>
+                              )}
+                            </td>
+                            <td className="py-1.5 text-right font-medium text-gray-900">{money(bl.line_total, req.currency)}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr>
+                        <td colSpan={5} className="py-1.5 pr-3 text-right text-gray-600">Total spent</td>
+                        <td className="py-1.5 text-right font-semibold text-gray-900">{money(req.claim_total ?? req.amount, req.currency)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ) : req.budget_lines.length ? (
               <Card title="Budget breakdown" subtitle="Totals are computed by the server, never typed">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">

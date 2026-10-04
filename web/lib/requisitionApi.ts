@@ -80,6 +80,11 @@ export interface NewRequisition {
   /** YYYY-MM-DD the trip or activity ends — starts a DSA-type advance's
    * retirement clock. */
   activity_end?: string;
+  /** "expense_claim": staff claiming back what they spent. The payee and
+   * amount are then set by the server from the claimant and the items. */
+  kind?: "payment" | "expense_claim";
+  /** Expense claims: the advance this claim settles. */
+  advance_id?: string;
 }
 
 export async function createRequisition(
@@ -107,6 +112,8 @@ export async function createRequisition(
       payees: JSON.stringify(body.payees ?? []),
       currency: body.currency ?? "NGN",
       activity_end: body.activity_end ?? "",
+      kind: body.kind ?? undefined,
+      advance_id: body.advance_id ?? undefined,
       // Omitted means "submit now" on the server. The form sends false when
       // it has files to attach first, so the checks run with them in place.
       submit: body.submit === undefined ? undefined : String(body.submit),

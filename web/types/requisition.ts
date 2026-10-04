@@ -15,7 +15,9 @@ export type ReqStatus =
   | "approved"
   | "paid"
   | "declined"
-  | "returned";
+  | "returned"
+  /** Approved with nothing to pay: an expense claim its advance covered. */
+  | "settled";
 
 export type CheckResult = "pass" | "warning" | "fail";
 
@@ -194,12 +196,20 @@ export interface BudgetLine {
   frequency: number;
   unit_cost: number;
   line_total: number;
+  /** When it was spent (expense claims). */
+  date?: string;
 }
 
 /** List-row shape — enough to triage a queue without opening anything. */
 export interface RequisitionSummary {
   id: string;
   ref: string;
+  /** "expense_claim" when a member of staff is claiming back what they spent. */
+  kind?: "payment" | "expense_claim";
+  /** The advance an expense claim settles, if any. */
+  advance_id?: string;
+  /** An expense claim's items added up, before any advance is taken off. */
+  claim_total?: number;
   vendor_name: string;
   amount: number;
   currency: string;

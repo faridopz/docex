@@ -63,6 +63,7 @@ NEW_ORG_FEATURES = {
     "requisition_attachments": True, "requisition_hold": True, "requisition_export": True,
     "voucher_export": True, "payee_schedule_export": True, "multi_payee_requisitions": True,
     "documents_require_files": True, "vendor_register": True,
+    "projects": True, "expense_claims": True,
 }
 
 

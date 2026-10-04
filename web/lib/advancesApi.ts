@@ -70,3 +70,27 @@ export async function recoverAdvance(id: string, reason: string): Promise<void> 
 export async function writeOffAdvance(id: string, reason: string): Promise<void> {
   await apiFetch(`/advances/${id}/write-off`, { method: "POST", body: form({ reason }) });
 }
+
+export interface AdvanceRecord {
+  id: string;
+  ref: string;
+  staff_id: string;
+  staff_name: string;
+  amount: number;
+  currency: string;
+  purpose: string;
+  project_code: string;
+  status: string;
+  due_at: string;
+}
+
+/** The signed-in person's own open advances — what an expense claim can settle.
+ * Null when advances aren't switched on for this organisation. */
+export async function myOpenAdvances(email: string): Promise<AdvanceRecord[] | null> {
+  try {
+    const r = await apiFetch<{ advances: AdvanceRecord[] }>("/advances?open_only=true");
+    return r.advances.filter((a) => a.staff_id.toLowerCase() === email.toLowerCase());
+  } catch {
+    return null;
+  }
+}
