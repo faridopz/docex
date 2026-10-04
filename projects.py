@@ -179,10 +179,7 @@ def figures(org_id: str, ag: grants.Agreement, *, exclude_request_id: str = "",
 
     salary = 0.0
     for run in runs:
-        share = 0.0
-        for code, amt in (run.by_project or {}).items():
-            if (code or "").strip().lower() == me:
-                share += amt
+        share = _run_share(run, me)
         if not share:
             continue
         if run.status == "paid":
@@ -209,6 +206,21 @@ def figures(org_id: str, ag: grants.Agreement, *, exclude_request_id: str = "",
         lines=out_lines, payments_count=n_paid, open_requests_count=n_open,
         other_currency=sorted(other_ccy),
     )
+
+
+def _line_share(line, me: str) -> float:
+    pct = sum(a.percent for a in line.allocations if (a.project_code or "").strip().lower() == me)
+    return line.employer_cost * pct / 100.0 if pct > 0 else 0.0
+
+
+def _run_share(run, me: str) -> float:
+    """A payroll run's cost to one project — from its lines, the same source
+    the report's per-person table uses, so the two can never disagree. A run
+    saved without lines falls back to its by-project total."""
+    if run.lines:
+        return _money(sum(_line_share(line, me) for line in run.lines))
+    return _money(sum(amt for code, amt in (run.by_project or {}).items()
+                      if (code or "").strip().lower() == me))
 
 
 def all_figures(org_id: str) -> list[ProjectFigures]:
@@ -320,7 +332,7 @@ def salary_charged(org_id: str, ag: grants.Agreement, *, period_from: str = "", 
             if pct <= 0:
                 continue
             out.append({"period": run.period, "staff_id": line.staff_id, "name": line.name,
-                        "percent": round(pct, 2), "cost": _money(line.employer_cost * pct / 100.0),
+                        "percent": round(pct, 2), "cost": _money(_line_share(line, me)),
                         "basis": line.allocation_source})
     return sorted(out, key=lambda r: (r["period"], r["name"].lower()))
 

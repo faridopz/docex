@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 
 import grants
 import org_config
@@ -136,3 +136,23 @@ async def update_project(code: str, body: dict = Body(...), ctx: Ctx = Depends(r
     except (grants.AgreementError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {"agreement": ag.model_dump(), "figures": projects.figures(ctx.org_id, ag).model_dump()}
+
+
+@router.get("/{code}/report.pdf")
+async def donor_report(code: str, date_from: str = Query(""), date_to: str = Query(""),
+                       ctx: Ctx = Depends(request_context)):
+    """The one-click donor report: budget against actual, approved staff
+    time, salaries, payments with vouchers, exceptions with reasons."""
+    _may_read(ctx)
+    ag = _find(ctx, code)
+    for d in (date_from, date_to):
+        if d and len(d) != 10:
+            raise HTTPException(status_code=422, detail="Dates are YYYY-MM-DD.")
+    if date_from and date_to and date_to < date_from:
+        raise HTTPException(status_code=422, detail="The end date is before the start date.")
+    import donor_report as dr
+    pdf = dr.build(ctx.org_id, ag, date_from=date_from, date_to=date_to, generated_by=ctx.user_id)
+    import attachments
+    name = f"{ag.project_code}-donor-report-{date_from or 'start'}-to-{date_to or 'date'}.pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": attachments.content_disposition(name)})
