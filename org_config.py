@@ -41,7 +41,8 @@ PROFILE SHAPE  (see profiles/_template.json for a commented example)
       "forbidden_vendors": [...], "approved_vendors": [...],
       "duplicate_window_days": 30
   },
-  "grants": [ {project_code, donor, title?, value?, start_date, end_date} ],
+  "grants": [ {project_code, donor, title?, value?, start_date, end_date,
+                budget_lines?: [{code, label, amount}], staff?: [{name, role, percent}]} ],
   "admin": { "email": "...", "name": "...", "password": "...", "department": "finance" },
   "modules": ["compliance", "screening", "knowledge"],
   "features": { "kobo_sync": false, "tin_verification": false, ... }
@@ -358,6 +359,8 @@ def apply_profile(profile: dict, *, dry_run: bool = False) -> ApplyResult:
                 currency=g.get("currency") or profile.get("currency") or "NGN",
                 start_date=g.get("start_date"), end_date=g.get("end_date"),
                 status=g.get("status", "active"),
+                budget_lines=[grants.BudgetLine(**bl) for bl in g.get("budget_lines") or []],
+                staff=[grants.PlannedStaff(**st) for st in g.get("staff") or []],
             )
             res.grants_added += 1
 

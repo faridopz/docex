@@ -22,6 +22,7 @@ import {
 import { getClientConfig, hasFeature } from "@/lib/orgConfig";
 import { checkAccount, listBanks, type AccountCheck, type BankOption } from "@/lib/payeeCheckApi";
 import { getAdvancePolicy } from "@/lib/advancesApi";
+import { lookupProject, type ProjectLookup } from "@/lib/projectsApi";
 import { humanise, money, requiredDocumentsFor, withArticle } from "@/lib/requisitionFormat";
 import { useDepartmentNames } from "@/lib/orgNames";
 import type {
@@ -134,6 +135,32 @@ export default function NewRequisitionPage() {
   const [activityEnd, setActivityEnd] = useState("");
   const [projectCode, setProjectCode] = useState("");
   const [grantCode, setGrantCode] = useState("");
+  // The project the request is charged to, looked up by its code (names
+  // only, no money) so the person sees they typed the right one and can pick
+  // a budget line from the donor's own list.
+  const [project, setProject] = useState<ProjectLookup | null>(null);
+  useEffect(() => {
+    const code = (grantCode || projectCode).trim();
+    if (!code) {
+      setProject(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const found = await lookupProject(code);
+      if (!cancelled) setProject(found);
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [grantCode, projectCode]);
+  const projectHint =
+    project && project.found
+      ? `${project.donor}${project.title ? ` · ${project.title}` : ""}${project.status !== "active" ? ` (${project.status})` : ""}`
+      : project && !project.found
+        ? "No project with this code"
+        : undefined;
   const [vendorAccount, setVendorAccount] = useState("");
   const [vendorBankName, setVendorBankName] = useState("");
   // WO-48: the bank list (empty when the org has no account checking) and
@@ -703,6 +730,13 @@ export default function NewRequisitionPage() {
   return (
     <AppShell>
       {/* One bank list for the vendor field and every payee row (WO-48). */}
+      <datalist id="docex-budget-lines">
+        {project && project.found
+          ? project.budget_lines.map((bl) => (
+              <option key={bl.code} value={bl.code}>{bl.label}</option>
+            ))
+          : null}
+      </datalist>
       <datalist id="docex-banks">
         {banks.map((b) => (
           <option key={b.code} value={b.name} />
@@ -829,7 +863,7 @@ export default function NewRequisitionPage() {
               />
             </Field>
 
-            <Field label="Grant code" hint="Which grant this is charged to">
+            <Field label="Grant code" hint={projectHint ?? "Which grant this is charged to"}>
               <input
                 value={grantCode}
                 onChange={(e) => setGrantCode(e.target.value)}
@@ -1669,6 +1703,7 @@ function BudgetLineEditor({
                       <input
                         value={row.budget_line}
                         onChange={(e) => onPatchRow(i, { budget_line: e.target.value })}
+                        list="docex-budget-lines"
                         className={payeeInputClass}
                       />
                     </td>

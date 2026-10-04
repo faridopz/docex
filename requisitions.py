@@ -1035,7 +1035,16 @@ def run_policy_checks(org_id: str, req: Requisition) -> list[PolicyCheck]:
     if period is not None:
         checks.append(period)
 
-    # 12. Each payee's account is in their own name (payee_account_check)
+    # 12. Enough left on the grant, and on any budget line named (projects)
+    try:
+        import org_config as _oc
+        if _oc.feature_enabled(org, "projects"):
+            import projects as _projects
+            checks.extend(_projects.funds_checks(org, req))
+    except ImportError:  # pragma: no cover
+        pass
+
+    # 13. Each payee's account is in their own name (payee_account_check)
     try:
         import payee_verification
         payee = payee_verification.check_requisition(org, req)

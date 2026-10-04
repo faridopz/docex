@@ -236,6 +236,7 @@ from .treasury_routes import router as treasury_router  # noqa: E402
 from .advance_routes import router as advance_router  # noqa: E402
 from .payee_check_routes import router as payee_check_router  # noqa: E402
 from .onboarding_routes import router as onboarding_router  # noqa: E402
+from .project_routes import router as project_router  # noqa: E402
 from .per_diem_routes import router as per_diem_router  # noqa: E402
 from .rate_card_routes import router as rate_card_router  # noqa: E402
 from .auth_routes import router as auth_router  # noqa: E402
@@ -581,6 +582,10 @@ app.include_router(payee_check_router)
 # not the unpersisted default_* fallback), so this correctly stays quiet for
 # an org that already configured itself. See api/onboarding_routes.py.
 app.include_router(onboarding_router)
+
+# Projects & grants: budget, used, committed and left per grant, from the
+# records themselves. See projects.py.
+app.include_router(project_router)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

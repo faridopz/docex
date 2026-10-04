@@ -13,6 +13,8 @@ import {
   Layers,
   Scale,
   Timer,
+  FolderKanban,
+  Receipt,
   LayoutGrid,
   Loader2,
   LogOut,
@@ -57,6 +59,8 @@ export type NavSection =
   | "audit"
   | "reconciliation"
   | "timesheets"
+  | "projects"
+  | "claims"
   | "vouchers"
   | "extract"
   | "templates"
@@ -120,6 +124,10 @@ const NAV_GROUPS: NavGroup[] = [
       // Effort reporting. Sits in this group rather than an HR one because
       // its output is financial: approved hours decide what each grant is
       // charged for a salary.
+      // Each grant's budget, what has gone out and what is left. Approvers
+      // and Finance: the API refuses anyone else.
+      { section: "projects", label: "Projects & grants", href: "/projects", icon: FolderKanban, match: ["/projects"], flag: "projects", audience: "approvers" },
+      { section: "claims", label: "Expense claims", href: "/claims", icon: Receipt, match: ["/claims"], flag: "expense_claims", audience: "everyone" },
       { section: "timesheets", label: "Timesheets", href: "/timesheets", icon: Timer, match: ["/timesheets"], flag: "timesheets" },
       // Participant payment vouchers — the per-diem / event-payment workflow.
       // Flagged with attendance_payments because it is the SAME workflow as the

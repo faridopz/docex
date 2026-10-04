@@ -43,6 +43,24 @@ _INFLOWS = "cash_inflows"
 # ─── models ─────────────────────────────────────────────────────────────────
 
 
+class BudgetLine(BaseModel):
+    """One line of the donor-approved budget: "Personnel", "Travel", "2.1
+    Community outreach". `code` is what staff pick on a request; `label` is
+    what the donor's budget calls it."""
+    code: str
+    label: str = ""
+    amount: float = 0.0
+
+
+class PlannedStaff(BaseModel):
+    """Who the budget says works on this, and how much of their time. A plan,
+    not evidence: what was actually worked comes from approved timesheets."""
+    name: str
+    staff_id: str = ""                     # email, when they have an account
+    role: str = ""
+    percent: float = 0.0                   # level of effort, 0-100
+
+
 class Agreement(BaseModel):
     """A signed funding agreement with a donor."""
     id: str
@@ -57,7 +75,10 @@ class Agreement(BaseModel):
     end_date: Optional[str] = None
     document_ref: Optional[str] = None     # link/filename of the signed PDF
     status: str = "active"                 # active | closed | suspended
+    budget_lines: list[BudgetLine] = Field(default_factory=list)
+    staff: list[PlannedStaff] = Field(default_factory=list)
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class Tranche(BaseModel):
@@ -209,6 +230,82 @@ def record_inflow(org_id: str, agreement_id: str, received_date: str, amount: fl
 def list_agreements(org_id: str) -> list[Agreement]:
     org = store.require_org(org_id)
     return [Agreement.model_validate(r) for r in store.get_store().list(org, _AGREEMENTS)]
+
+
+def find_agreement(org_id: str, code: str) -> Optional[Agreement]:
+    """The agreement whose project code is `code` (case-insensitive)."""
+    want = (code or "").strip().lower()
+    if not want:
+        return None
+    return next((a for a in list_agreements(org_id)
+                 if (a.project_code or "").strip().lower() == want), None)
+
+
+class AgreementError(ValueError):
+    pass
+
+
+_EDITABLE = {"donor", "title", "value", "currency", "signed_date", "start_date", "end_date",
+             "document_ref", "status", "budget_lines", "staff"}
+
+
+def update_agreement(org_id: str, agreement_id: str, **changes) -> Agreement:
+    """Change an agreement's details. The project code is its identity on
+    every payment already charged to it, so it can't be changed here."""
+    org = store.require_org(org_id)
+    raw = store.get_store().get(org, _AGREEMENTS, agreement_id)
+    if raw is None:
+        raise AgreementError(f"No agreement {agreement_id}.")
+    unknown = set(changes) - _EDITABLE
+    if unknown:
+        raise AgreementError(f"Can't change {', '.join(sorted(unknown))} here.")
+    merged = {**raw, **changes, "updated_at": _now_iso()}
+    ag = Agreement.model_validate(merged)
+    validate_agreement(ag)
+    store.get_store().put(org, _AGREEMENTS, ag.id, ag.model_dump())
+    return ag
+
+
+def validate_agreement(ag: Agreement) -> None:
+    """The mistakes that would make every figure on the project page wrong."""
+    problems: list[str] = []
+    if not (ag.project_code or "").strip():
+        problems.append("A project needs a code (the one staff put on requests).")
+    if not (ag.donor or "").strip():
+        problems.append("Name the donor.")
+    if ag.value < 0:
+        problems.append("The budget can't be negative.")
+    if ag.start_date and ag.end_date and ag.end_date < ag.start_date:
+        problems.append("The end date is before the start date.")
+    codes = [(bl.code or "").strip().lower() for bl in ag.budget_lines]
+    if any(not c for c in codes):
+        problems.append("Every budget line needs a code.")
+    if len(set(codes)) != len(codes):
+        problems.append("Two budget lines have the same code.")
+    if any(bl.amount < 0 for bl in ag.budget_lines):
+        problems.append("A budget line can't be negative.")
+    lines_total = _money(sum(bl.amount for bl in ag.budget_lines))
+    if ag.budget_lines and ag.value and lines_total - ag.value > 0.01:
+        problems.append(f"The budget lines add up to {lines_total:,.2f}, more than the "
+                        f"total budget of {ag.value:,.2f}.")
+    for st in ag.staff:
+        if not (st.name or "").strip():
+            problems.append("Every planned staff member needs a name.")
+        if not 0 <= st.percent <= 100:
+            problems.append(f"{st.name}: level of effort must be between 0 and 100%.")
+    if problems:
+        raise AgreementError(" ".join(problems))
+
+
+def create_agreement(org_id: str, **fields) -> Agreement:
+    """add_agreement with the checks a person-facing form needs: valid, and
+    not a second project with the same code."""
+    code = (fields.get("project_code") or "").strip()
+    if code and find_agreement(org_id, code):
+        raise AgreementError(f"There is already a project with the code {code}.")
+    ag = Agreement(id="tmp", org_id=org_id, **fields)
+    validate_agreement(ag)
+    return add_agreement(org_id, **fields)
 
 
 def _load_all(org: str) -> tuple[list[Agreement], list[Tranche], list[FundingRequest], list[CashInflow]]:
