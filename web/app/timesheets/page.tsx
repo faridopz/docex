@@ -201,6 +201,13 @@ export default function TimesheetsPage() {
                       {t.total_hours} hours across {t.projects.length} project
                       {t.projects.length === 1 ? "" : "s"}
                     </span>
+                    {t.projects.length > 0 && (
+                      <p className="mt-0.5 truncate text-xs text-gray-500">
+                        {t.projects.map((p) => (p === "NON_PROJECT" ? "Leave / admin" : p)).join(" · ")}
+                        {t.span === "week" ? " · by week" : t.span === "month" ? " · monthly total" : ""}
+                        {t.approved_by ? ` · signed by ${t.approved_by}${t.approved_at ? ` on ${new Date(t.approved_at).toLocaleDateString()}` : ""}` : ""}
+                      </p>
+                    )}
                     {t.status === "returned" && t.returned_reason && (
                       <p className="mt-0.5 text-xs text-orange-700">
                         {t.returned_reason}

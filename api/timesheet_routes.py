@@ -105,7 +105,7 @@ def _entry_out(e: ts.TimeEntry) -> dict:
     # carries a real project code. Leave, admin and training are recorded
     # against NON_PROJECT so the total still covers 100% of paid time.
     return {"date": e.date, "hours": e.hours, "project_code": e.project_code,
-            "activity": e.activity,
+            "activity": e.activity, "span": e.span,
             "chargeable": e.project_code != ts.NON_PROJECT}
 
 
@@ -120,6 +120,7 @@ def _summary_out(t: ts.Timesheet) -> dict:
         "total_hours": t.total_hours,
         "days": len({e.date for e in t.entries}),
         "projects": sorted(t.hours_by_project().keys()),
+        "span": t.span,
         "submitted_by": t.submitted_by,
         "submitted_at": t.submitted_at,
         "approved_by": t.approved_by,

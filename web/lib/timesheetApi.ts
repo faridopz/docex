@@ -18,6 +18,7 @@ export interface EntryInput {
   hours: number;
   project_code: string;
   activity?: string;
+  span?: "day" | "week" | "month";
 }
 
 function form(fields: Record<string, string | number | undefined>): FormData {

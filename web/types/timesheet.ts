@@ -17,6 +17,8 @@ export interface TimeEntry {
   hours: number;
   project_code: string;
   activity: string;
+  /** How much time the line covers: a day, a week (from its Monday or the 1st), or the month. */
+  span: "day" | "week" | "month";
   /** Derived: an hour with a real project code is chargeable. */
   chargeable: boolean;
 }
@@ -38,6 +40,8 @@ export interface TimesheetSummary {
   total_hours: number;
   days: number;
   projects: string[];
+  /** How this sheet records time; "mixed" only for a sheet that needs fixing. */
+  span: "day" | "week" | "month" | "mixed";
   submitted_by: string;
   submitted_at: string;
   approved_by: string;
@@ -60,6 +64,7 @@ export interface TimesheetPolicy {
   standard_hours_per_period: number;
   tolerance_hours: number;
   require_activity_description: boolean;
+  allowed_spans: ("day" | "week" | "month")[];
   updated_at: string | null;
 }
 

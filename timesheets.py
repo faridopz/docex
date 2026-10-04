@@ -44,7 +44,7 @@ import calendar
 import datetime as dt
 import os
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -117,10 +117,15 @@ class TimeEntry(BaseModel):
     Those hours still have to be recorded: the total must cover 100% of
     compensated time, or the percentages are computed off the wrong base.
     """
-    date: str                                # YYYY-MM-DD
+    date: str                                # YYYY-MM-DD; for a week or month, its first day
     hours: float
     project_code: str                        # or NON_PROJECT
     activity: str = ""                       # what was actually done
+    # How much time this line covers. "day" is the default and the most
+    # precise. "week" and "month" let someone who thinks "I spent this week
+    # on TB" say so honestly, rather than inventing daily figures to fill a
+    # grid. A week starts on a Monday (or the 1st, for the first part-week).
+    span: Literal["day", "week", "month"] = "day"
 
 
 NON_PROJECT = "NON_PROJECT"
@@ -165,10 +170,20 @@ class Timesheet(BaseModel):
         return out
 
     def hours_by_day(self) -> dict[str, float]:
+        """Hours per calendar day, from day entries only: a week or month
+        line is not a day's work and must not trip the 24-hour check."""
         out: dict[str, float] = {}
         for e in self.entries:
+            if e.span != "day":
+                continue
             out[e.date] = _hours(out.get(e.date, 0.0) + e.hours)
         return out
+
+    @property
+    def span(self) -> str:
+        """How this sheet is recorded: day, week or month (or mixed)."""
+        spans = {e.span for e in self.entries}
+        return next(iter(spans)) if len(spans) == 1 else ("day" if not spans else "mixed")
 
 
 class TimesheetPolicy(BaseModel):
@@ -181,6 +196,9 @@ class TimesheetPolicy(BaseModel):
     # it hits a target.
     tolerance_hours: float = 24.0
     require_activity_description: bool = False
+    # How staff may record time. Default: any of the three. An organisation
+    # whose donor wants daily records sets this to ["day"].
+    allowed_spans: list[str] = Field(default_factory=lambda: ["day", "week", "month"])
     updated_at: Optional[str] = None
 
 
@@ -252,6 +270,43 @@ def validate(org_id: str, ts: Timesheet, *, at: Optional[dt.date] = None) -> lis
             issues.append(EffortIssue(
                 code="MISSING_ACTIVITY", blocking=False,
                 message=f"{e.date}: no description of the activity."))
+
+    spans = {e.span for e in ts.entries}
+    if len(spans) > 1:
+        issues.append(EffortIssue(
+            code="MIXED_SPANS", blocking=True,
+            message=("Record this month one way — by day, by week, or as a monthly total — "
+                     "not a mix. Mixing them lets the same hours be counted twice.")))
+    for sp in sorted(spans - set(policy.allowed_spans or ["day"])):
+        issues.append(EffortIssue(
+            code="SPAN_NOT_ALLOWED", blocking=True,
+            message=f"Your organisation records time {' or '.join('by ' + x for x in policy.allowed_spans)}, "
+                    f"not by {sp}."))
+    for e in ts.entries:
+        if e.span == "day":
+            continue
+        try:
+            d = _parse_date(e.date)
+        except TimesheetError:
+            continue
+        if e.span == "week":
+            if not (d.weekday() == 0 or d == start):
+                issues.append(EffortIssue(
+                    code="WEEK_START", blocking=True,
+                    message=f"{e.date}: a week is recorded from its Monday (or the 1st)."))
+            last = min(end, d + dt.timedelta(days=6 - d.weekday()))
+            limit = ((last - d).days + 1) * MAX_HOURS_PER_DAY
+        else:
+            if d != start:
+                issues.append(EffortIssue(
+                    code="MONTH_START", blocking=True,
+                    message=f"{e.date}: a monthly total is recorded on the 1st."))
+            limit = ((end - start).days + 1) * MAX_HOURS_PER_DAY
+        total_here = _hours(sum(x.hours for x in ts.entries if x.date == e.date and x.span == e.span))
+        if total_here > limit:
+            issues.append(EffortIssue(
+                code="IMPOSSIBLE_SPAN", blocking=True,
+                message=f"{e.date}: {total_here:g} hours in a {e.span} that has {limit:g}."))
 
     for day, hours in ts.hours_by_day().items():
         if hours > MAX_HOURS_PER_DAY:

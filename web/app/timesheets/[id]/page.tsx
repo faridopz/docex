@@ -24,6 +24,9 @@ import {
   submitTimesheet,
 } from "@/lib/timesheetApi";
 import {
+  clearHours,
+  type Column,
+  columnsFor,
   cycleHalfDay,
   DayInfo,
   daysInPeriod,
@@ -41,6 +44,8 @@ import {
   projectTotal,
   removeProject,
   setCell,
+  type Span,
+  spanOf,
 } from "@/lib/timesheetGrid";
 import type { EntryMode } from "@/lib/timesheetGrid";
 import type { Timesheet } from "@/types/timesheet";
@@ -63,6 +68,8 @@ export default function TimesheetDetailPage() {
   const [sheet, setSheet] = useState<Timesheet | null>(null);
   const [grid, setGrid] = useState<Grid>({});
   const [mode, setMode] = useState<EntryMode>("halfday");
+  const [span, setSpan] = useState<Span>("day");
+  const [allowedSpans, setAllowedSpans] = useState<Span[]>(["day", "week", "month"]);
   const [standardHours, setStandardHours] = useState(160);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -81,10 +88,14 @@ export default function TimesheetDetailPage() {
       ]);
       setSheet(t);
       const g = entriesToGrid(t.entries);
+      setSpan(spanOf(t.entries));
       setGrid(g);
       savedGrid.current = JSON.stringify(g);
       setDirty(false);
-      if (policy) setStandardHours(policy.standard_hours_per_period);
+      if (policy) {
+        setStandardHours(policy.standard_hours_per_period);
+        if (policy.allowed_spans?.length) setAllowedSpans(policy.allowed_spans);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load this timesheet.");
     } finally {
@@ -104,9 +115,16 @@ export default function TimesheetDetailPage() {
     () => hoursPerDay(standardHours, days),
     [standardHours, days],
   );
+  const columns: Column[] = useMemo(
+    () => (sheet ? columnsFor(sheet.period, span) : []),
+    [sheet, span],
+  );
   const projects = useMemo(() => Object.keys(grid).sort(), [grid]);
   const allocation = useMemo(() => previewAllocation(grid), [grid]);
-  const missing = useMemo(() => missingWorkingDays(grid, days), [grid, days]);
+  const missing = useMemo(
+    () => (span === "day" ? missingWorkingDays(grid, days) : []),
+    [grid, days, span],
+  );
   const total = gridTotal(grid);
 
   const editable = sheet?.status === "draft" || sheet?.status === "returned";
@@ -121,7 +139,7 @@ export default function TimesheetDetailPage() {
     setBusy("save");
     setError(null);
     try {
-      const updated = await saveEntries(sheet.id, gridToEntries(grid));
+      const updated = await saveEntries(sheet.id, gridToEntries(grid, {}, span));
       setSheet(updated);
       savedGrid.current = JSON.stringify(grid);
       setDirty(false);
@@ -162,6 +180,16 @@ export default function TimesheetDetailPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function switchSpan(next: Span) {
+    if (next === span) return;
+    if (gridTotal(grid) > 0 && !window.confirm(
+      "Switching clears the hours entered so far (the project rows stay). A month is recorded one way, so nothing is counted twice. Switch?",
+    )) return;
+    setSpan(next);
+    update(clearHours(grid));
+    setDirty(true);
   }
 
   function addProject() {
@@ -252,6 +280,28 @@ export default function TimesheetDetailPage() {
 
         {editable && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+            {allowedSpans.length > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-500">Record by</span>
+                <div className="inline-flex rounded-lg border border-gray-300 p-0.5">
+                  {(["day", "week", "month"] as Span[])
+                    .filter((sp) => allowedSpans.includes(sp))
+                    .map((sp) => (
+                      <button
+                        className={`rounded-md px-3 py-1 text-sm font-medium ${
+                          span === sp ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-50"
+                        }`}
+                        key={sp}
+                        onClick={() => switchSpan(sp)}
+                        type="button"
+                      >
+                        {sp === "day" ? "Day" : sp === "week" ? "Week" : "Month"}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+            {span === "day" && (
             <div className="inline-flex rounded-lg border border-gray-300 p-0.5">
               {(["halfday", "hours"] as EntryMode[]).map((m) => (
                 <button
@@ -268,10 +318,15 @@ export default function TimesheetDetailPage() {
                 </button>
               ))}
             </div>
+            )}
             <p className="text-xs text-gray-500">
-              {mode === "halfday"
-                ? `Click a cell: empty → ½ day → full day. A full day is ${perDay}h.`
-                : "Type hours into any cell."}
+              {span === "week"
+                ? "Type the hours you worked on each project in each week."
+                : span === "month"
+                  ? "Type the hours you worked on each project this month."
+                  : mode === "halfday"
+                    ? `Click a cell: empty → ½ day → full day. A full day is ${perDay}h.`
+                    : "Type hours into any cell."}
             </p>
             {missing.length > 0 && (
               <span className="ml-auto text-xs font-medium text-amber-700">
@@ -289,15 +344,15 @@ export default function TimesheetDetailPage() {
                 <th className="sticky left-0 z-10 min-w-[10rem] bg-gray-50 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                   Project
                 </th>
-                {days.map((d) => (
+                {columns.map((d) => (
                   <th
-                    className={`w-9 px-0 py-1 text-center text-[11px] font-medium ${
+                    className={`${span === "day" ? "w-9" : "min-w-[5.5rem]"} px-0 py-1 text-center text-[11px] font-medium ${
                       d.isWeekend ? "bg-gray-100 text-gray-400" : "text-gray-500"
                     }`}
-                    key={d.date}
+                    key={d.key}
                   >
-                    <div>{d.weekday[0]}</div>
-                    <div className="font-semibold text-gray-700">{d.day}</div>
+                    <div>{d.top}</div>
+                    <div className="font-semibold text-gray-700">{d.bottom}</div>
                   </th>
                 ))}
                 <th className="w-16 px-2 py-2 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">
@@ -327,7 +382,7 @@ export default function TimesheetDetailPage() {
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
-                          <button
+                          {span === "day" && <button
                             className="ml-auto shrink-0 text-[11px] text-blue-600 hover:underline"
                             onClick={() =>
                               update(fillWorkingDays(grid, project, days, perDay))
@@ -336,19 +391,19 @@ export default function TimesheetDetailPage() {
                             type="button"
                           >
                             fill
-                          </button>
+                          </button>}
                         </>
                       )}
                     </div>
                   </td>
-                  {days.map((d) => {
-                    const hours = grid[project]?.[d.date] ?? 0;
+                  {columns.map((d) => {
+                    const hours = grid[project]?.[d.key] ?? 0;
                     return (
                       <td
                         className={`p-0 text-center ${d.isWeekend ? "bg-gray-50" : ""}`}
-                        key={d.date}
+                        key={d.key}
                       >
-                        {mode === "halfday" ? (
+                        {span === "day" && mode === "halfday" ? (
                           <button
                             className={`h-8 w-full text-xs font-semibold ${
                               hours
@@ -358,7 +413,7 @@ export default function TimesheetDetailPage() {
                             disabled={!editable}
                             onClick={() =>
                               update(
-                                setCell(grid, project, d.date,
+                                setCell(grid, project, d.key,
                                   cycleHalfDay(hours, perDay)),
                               )
                             }
@@ -373,7 +428,7 @@ export default function TimesheetDetailPage() {
                             inputMode="decimal"
                             onChange={(e) =>
                               update(
-                                setCell(grid, project, d.date,
+                                setCell(grid, project, d.key,
                                   Number(e.target.value) || 0),
                               )
                             }
@@ -391,21 +446,21 @@ export default function TimesheetDetailPage() {
 
               <tr className="bg-gray-50 text-xs">
                 <td className="sticky left-0 z-10 bg-gray-50 px-3 py-1.5 font-semibold uppercase tracking-wide text-gray-500">
-                  Day total
+                  {span === "day" ? "Day total" : "Total"}
                 </td>
-                {days.map((d) => {
-                  const t = dayTotal(grid, d.date);
-                  const empty = !t && !d.isWeekend;
+                {columns.map((d) => {
+                  const t = dayTotal(grid, d.key);
+                  const empty = span === "day" && !t && !d.isWeekend;
                   return (
                     <td
                       className={`py-1.5 text-center font-medium ${
                         empty
                           ? "bg-amber-50 text-amber-600"
-                          : t > 24
+                          : t > d.days * 24
                             ? "bg-red-50 text-red-700"
                             : "text-gray-600"
                       }`}
-                      key={d.date}
+                      key={d.key}
                       title={empty ? "No hours recorded on a working day" : undefined}
                     >
                       {t || (empty ? "—" : "")}

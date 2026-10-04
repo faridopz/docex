@@ -79,8 +79,8 @@ export function entriesToGrid(entries: TimeEntry[]): Grid {
 
 /** Grid → entries, dropping empties. Zero-hour cells are not "worked nothing",
  *  they are "nothing recorded", and the engine rejects non-positive hours. */
-export function gridToEntries(grid: Grid, activity: Record<string, string> = {}) {
-  const out: { date: string; hours: number; project_code: string; activity?: string }[] = [];
+export function gridToEntries(grid: Grid, activity: Record<string, string> = {}, span: Span = "day") {
+  const out: { date: string; hours: number; project_code: string; activity?: string; span: Span }[] = [];
   for (const [project, days] of Object.entries(grid)) {
     for (const [date, hours] of Object.entries(days)) {
       if (!hours || hours <= 0) continue;
@@ -89,6 +89,7 @@ export function gridToEntries(grid: Grid, activity: Record<string, string> = {})
         hours: round2(hours),
         project_code: project,
         activity: activity[`${project}|${date}`] || undefined,
+        span,
       });
     }
   }
@@ -224,4 +225,57 @@ export function setCell(grid: Grid, project: string, date: string, hours: number
   if (hours > 0) row[date] = round2(hours);
   else delete row[date];
   return { ...grid, [project]: row };
+}
+
+// ─── recording by week or month ─────────────────────────────────────────────
+//
+// Some people honestly know "this week was the TB project", not how each day
+// split. Making them fill a daily grid produces invented daily figures. So a
+// sheet can be recorded by day (the default), by week, or as one monthly
+// total — one way per month, which the server enforces so nothing is counted
+// twice. The columns below are what the grid shows for each.
+
+export type Span = "day" | "week" | "month";
+
+export interface Column {
+  /** The entry date this column writes: the day, the week's first day, or the 1st. */
+  key: string;
+  top: string;
+  bottom: string;
+  isWeekend: boolean;
+  /** Calendar days the column covers — its hours can't exceed days × 24. */
+  days: number;
+}
+
+export function columnsFor(period: string, span: Span): Column[] {
+  const days = daysInPeriod(period);
+  if (span === "day") {
+    return days.map((d) => ({ key: d.date, top: d.weekday[0], bottom: String(d.day), isWeekend: d.isWeekend, days: 1 }));
+  }
+  if (span === "month" || days.length === 0) {
+    return days.length ? [{ key: days[0].date, top: "Whole", bottom: "month", isWeekend: false, days: days.length }] : [];
+  }
+  // Weeks run Monday to Sunday; the first one starts on the 1st.
+  const cols: Column[] = [];
+  let start = days[0];
+  for (let i = 0; i < days.length; i++) {
+    const d = days[i];
+    const last = i === days.length - 1 || d.weekday === "Sun";
+    if (last) {
+      cols.push({ key: start.date, top: "Week", bottom: `${start.day}–${d.day}`, isWeekend: false, days: d.day - start.day + 1 });
+      if (i + 1 < days.length) start = days[i + 1];
+    }
+  }
+  return cols;
+}
+
+/** How a saved sheet was recorded. A sheet with no entries is by day. */
+export function spanOf(entries: { span?: Span }[]): Span {
+  const spans = new Set(entries.map((e) => e.span ?? "day"));
+  return spans.size === 1 ? (Array.from(spans)[0] as Span) : "day";
+}
+
+/** Keep the project rows, drop the hours: used when switching how the month is recorded. */
+export function clearHours(grid: Grid): Grid {
+  return Object.fromEntries(Object.keys(grid).map((p) => [p, {}]));
 }
