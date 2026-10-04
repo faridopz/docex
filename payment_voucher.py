@@ -42,6 +42,8 @@ account, which is exactly the class of error CLAUDE.md puts in code's hands.
 """
 from __future__ import annotations
 
+from sheet_safety import harden_workbook
+
 import datetime as dt
 import threading
 from dataclasses import dataclass, field
@@ -813,5 +815,6 @@ def payee_schedule_xlsx(req, org_id: str, *, generated_by: str,
     ws.auto_filter.ref = f"A4:F{trow - 1}"
 
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     return buf.getvalue()

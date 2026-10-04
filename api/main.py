@@ -444,8 +444,12 @@ async def _safe_error(request, exc):  # noqa: ANN001
 # anything becomes reachable without credentials.
 app.add_middleware(
     AuthMiddleware,
-    allowed_origins=_default_dev_origins + _extra_origins,
+    allowed_origins=(_extra_origins if _is_production else _default_dev_origins + _extra_origins),
 )
+
+# Outermost: refuse an oversized request before anything reads it (M5).
+from .security import BodySizeLimitMiddleware  # noqa: E402
+app.add_middleware(BodySizeLimitMiddleware)
 
 # Compliance Check routes — policy interpretation, rulebook CRUD, payment
 # checks (single + batch). See api/compliance_routes.py.

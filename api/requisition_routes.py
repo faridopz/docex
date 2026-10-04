@@ -475,6 +475,20 @@ def _detail_out(r: rq.Requisition, ctx: Optional[Ctx] = None) -> dict:
     return out
 
 
+def _for_export(r: rq.Requisition, ctx: Ctx) -> rq.Requisition:
+    """The copy an export may print: the same masking the screen applies.
+    Found in the 30 Sep audit (M1): the screen showed ••••••2233 to a
+    same-department viewer, and the xlsx of the same request showed all ten
+    digits."""
+    if _handles_money(ctx) or (r.submitted_by or "").strip().lower() == (ctx.user_id or "").strip().lower():
+        return r
+    c = r.model_copy(deep=True)
+    c.vendor_account = _mask_account(c.vendor_account or "")
+    for p in c.payees:
+        p.account_number = _mask_account(p.account_number or "")
+    return c
+
+
 def _detail_out_full(r: rq.Requisition) -> dict:
     return {
         **_summary_out(r),
@@ -1114,7 +1128,7 @@ async def export_requisition_pdf_endpoint(req_id: str, ctx: Ctx = Depends(reques
     the requisition itself: exporting what you can already see grants no
     new access."""
     _export_gate(ctx)
-    req = _visible_or_404(ctx, req_id)
+    req = _for_export(_visible_or_404(ctx, req_id), ctx)
     content = requisition_export.requisition_pdf(req)
     return Response(
         content=content, media_type="application/pdf",
@@ -1221,7 +1235,7 @@ async def export_requisition_xlsx_endpoint(req_id: str, ctx: Ctx = Depends(reque
     """The same content as the PDF, one sheet per section — for pasting
     into a working file rather than filing as-is."""
     _export_gate(ctx)
-    req = _visible_or_404(ctx, req_id)
+    req = _for_export(_visible_or_404(ctx, req_id), ctx)
     content = requisition_export.requisition_xlsx(req)
     return StreamingResponse(
         io.BytesIO(content),
@@ -1557,6 +1571,11 @@ async def download_attachment_endpoint(
     except attachments.AttachmentError as exc:
         raise HTTPException(status_code=502, detail=f"Could not fetch the file: {exc}") from exc
     if url:
+        if attachments.safe_content_type(att.content_type) == "application/octet-stream":
+            # Force a download for anything that isn't a PDF or picture,
+            # including files stored before the type was cleaned on upload.
+            from urllib.parse import quote
+            url += ("&" if "?" in url else "?") + "download=" + quote(att.filename or "file", safe="")
         return RedirectResponse(url)
 
     if isinstance(backend, attachments.LocalDiskAttachmentBackend):
@@ -1565,8 +1584,9 @@ async def download_attachment_endpoint(
         except attachments.AttachmentError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return Response(
-            content=content, media_type=att.content_type or "application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{att.filename}"'},
+            content=content, media_type=attachments.safe_content_type(att.content_type),
+            headers={"Content-Disposition": attachments.content_disposition(att.filename),
+                     "X-Content-Type-Options": "nosniff"},
         )
 
     raise HTTPException(status_code=502, detail="Storage backend returned no way to fetch this file.")

@@ -21,6 +21,8 @@ copy the pattern with minimal cognitive load.
 """
 from __future__ import annotations
 
+from sheet_safety import harden_workbook
+
 import datetime as dt
 import io
 import json
@@ -376,6 +378,7 @@ def export_batch_xlsx(batch_id: str) -> StreamingResponse:
     # Stream back as a downloadable file. BytesIO so we don't touch disk —
     # the persisted JSON is the source of truth, this is a derived view.
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     buf.seek(0)
 

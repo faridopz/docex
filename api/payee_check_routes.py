@@ -44,5 +44,15 @@ async def banks(ctx: Ctx = Depends(request_context)) -> dict:
 async def check_account(body: AccountIn, ctx: Ctx = Depends(request_context)) -> dict:
     if not org_config.feature_enabled(ctx.org_id, "payee_account_check"):
         raise HTTPException(status_code=404, detail="Not Found")
+    # Each lookup is paid for and returns a stranger's name for any account
+    # number (30 Sep audit, M7). Plenty for real use; useless to a script.
+    import os
+    import rate_limit
+    try:
+        rate_limit.hit(ctx.org_id, "payee-check", ctx.user_id,
+                       limit=int(os.environ.get("DOCEX_PAYEE_CHECKS_PER_HOUR", "40")),
+                       window_seconds=3600)
+    except rate_limit.RateLimited as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     return pv.check_account(ctx.org_id, name=body.name, account_number=body.account_number,
                             bank=body.bank)

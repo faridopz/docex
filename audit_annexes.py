@@ -44,6 +44,8 @@ records.
 """
 from __future__ import annotations
 
+from sheet_safety import harden_workbook
+
 import io
 from typing import Optional
 
@@ -262,5 +264,6 @@ def build_annexes_xlsx(
     ws.column_dimensions["B"].width = 78
 
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     return buf.getvalue()

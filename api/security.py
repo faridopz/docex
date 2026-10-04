@@ -409,3 +409,88 @@ def _module_enabled(module: str) -> bool:
         # A broken config record must not lock an organisation out; the
         # nav still hides what isn't bought.
         return True
+
+
+# ─── request size ───────────────────────────────────────────────────────────
+#
+# Found in the 30 Sep audit (M5): no request had a size limit, and several
+# upload routes read the whole body into memory before any check. One large
+# upload could take a free-plan server down for every user. This caps every
+# request in one place, including chunked uploads that never say how big
+# they are. DOCEX_MAX_UPLOAD_MB raises it for a client that genuinely needs
+# more (the default comfortably fits a batch of scanned receipts).
+
+_DEFAULT_MAX_MB = 40
+
+
+def _max_body_bytes() -> int:
+    try:
+        return max(1, int(os.environ.get("DOCEX_MAX_UPLOAD_MB", _DEFAULT_MAX_MB))) * 1024 * 1024
+    except ValueError:
+        return _DEFAULT_MAX_MB * 1024 * 1024
+
+
+class BodySizeLimitMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = _max_body_bytes()
+        too_big_msg = (f"That upload is too large (the limit is {limit // (1024 * 1024)} MB). "
+                       "Split it into smaller files, or compress scans before attaching them.")
+        for k, v in scope.get("headers") or []:
+            if k == b"content-length":
+                try:
+                    if int(v) > limit:
+                        await _send_json(send, 413, {"detail": too_big_msg})
+                        return
+                except ValueError:
+                    pass
+                break
+
+        seen = 0
+        started = False
+        refused = False
+
+        async def counted_receive():
+            nonlocal seen, refused, started
+            if refused:
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                seen += len(msg.get("body") or b"")
+                if seen > limit:
+                    # Answer now and tell the app the client went away, so it
+                    # stops reading whatever parser it is in the middle of.
+                    refused = True
+                    if not started:
+                        started = True
+                        await _send_json(send, 413, {"detail": too_big_msg})
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def tracking_send(msg):
+            nonlocal started
+            if refused:
+                return          # we have already answered
+            if msg.get("type") == "http.response.start":
+                started = True
+            await send(msg)
+
+        try:
+            await self.app(scope, counted_receive, tracking_send)
+        except Exception:
+            if not refused:
+                raise
+
+
+async def _send_json(send, status: int, body: dict) -> None:
+    import json as _json
+    raw = _json.dumps(body).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(raw)).encode())]})
+    await send({"type": "http.response.body", "body": raw})

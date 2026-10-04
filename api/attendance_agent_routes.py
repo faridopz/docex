@@ -473,6 +473,11 @@ def export_schedule(run_id: str) -> StreamingResponse:
         for col in range(1, 8):
             ws.cell(row=row_offset, column=col).alignment = Alignment(vertical="center")
 
+    # Attendee names are typed by the public on a check-in link: harden them
+    # BEFORE adding the one formula we mean (the total). (30 Sep audit, M2.)
+    from sheet_safety import harden_workbook
+    harden_workbook(wb)
+
     # Total row
     total_row = 5 + len(paid)
     ws.cell(row=total_row, column=5, value="Total").font = Font(bold=True)

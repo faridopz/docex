@@ -494,6 +494,11 @@ def apply(org_id: str, answers: dict, *, actor: str = "") -> dict:
         # screening tools stay off until someone asks for them.
         org_config.set_features(org, **NEW_ORG_FEATURES)
         org_config.set_modules(org, ["compliance"])
+        # People who release money sign in with a second factor from day one
+        # (30 Sep audit, M3), with a week's grace to set it up. Existing
+        # organisations keep whatever their administrator chose.
+        import mfa
+        mfa.set_policy(org, enabled=True, grace_days=7)
 
     store.get_store().put(org, "config", "setup_wizard", {
         "org_id": org, "saved_by": actor, "saved_at": rq._now_iso(), "answers": answers})

@@ -545,11 +545,13 @@ def authenticate(email: str, password: str, org_id: Optional[str] = None) -> Use
                             _PBKDF2_ITERS)
         _record_failed_login(email, org)
         raise AuthError("Invalid email or password.")
-    if not user.active:
-        raise AuthError("This account is disabled.")
     if not verify_password(password, user.password_hash, user.password_salt):
         _record_failed_login(email, org)
         raise AuthError("Invalid email or password.")
+    # Only after the password: saying "disabled" first told anyone which
+    # addresses had accounts (30 Sep audit, L6).
+    if not user.active:
+        raise AuthError("This account is disabled.")
 
     _clear_failed_logins(email, org)
     return user
@@ -602,6 +604,47 @@ def _record_failed_login(email: str, org_id: str) -> None:
 def _clear_failed_logins(email: str, org_id: str) -> None:
     try:
         store.get_store().delete(org_id, _ATTEMPTS, _attempt_key(email))
+    except Exception:
+        pass
+
+
+# ─── second-factor attempts ─────────────────────────────────────────────────
+#
+# Found in the 30 Sep audit (M3): a correct password cleared the login
+# counter, after which the 6-digit code could be guessed without limit. A
+# million codes is not many for a script. The code has its own counter, which
+# only a correct code clears.
+
+_MAX_FAILED_CODES = 5
+
+
+def guard_mfa_rate(email: str, org_id: Optional[str] = None) -> None:
+    org = _org(org_id)
+    raw = store.get_store().get(org, _ATTEMPTS, "mfa-" + _attempt_key(email)) or {}
+    if int(raw.get("count", 0)) < _MAX_FAILED_CODES:
+        return
+    elapsed = dt.datetime.now(dt.timezone.utc).timestamp() - float(raw.get("last", 0))
+    if elapsed < _LOCKOUT_SECONDS:
+        wait = int((_LOCKOUT_SECONDS - elapsed) / 60) + 1
+        raise RateLimited(
+            f"Too many wrong codes. Try again in {wait} minute{'s' if wait != 1 else ''}, "
+            "or use one of your recovery codes.")
+    clear_mfa_failures(email, org)
+
+
+def record_mfa_failure(email: str, org_id: Optional[str] = None) -> None:
+    org = _org(org_id)
+    key = "mfa-" + _attempt_key(email)
+    raw = store.get_store().get(org, _ATTEMPTS, key) or {}
+    store.get_store().put(org, _ATTEMPTS, key, {
+        "count": int(raw.get("count", 0)) + 1,
+        "last": dt.datetime.now(dt.timezone.utc).timestamp(),
+    })
+
+
+def clear_mfa_failures(email: str, org_id: Optional[str] = None) -> None:
+    try:
+        store.get_store().delete(_org(org_id), _ATTEMPTS, "mfa-" + _attempt_key(email))
     except Exception:
         pass
 

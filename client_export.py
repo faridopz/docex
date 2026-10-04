@@ -29,6 +29,8 @@ thinks about them, meant to be read rather than restored.
 """
 from __future__ import annotations
 
+from sheet_safety import csv_text
+
 import argparse
 import csv
 import datetime as dt
@@ -142,7 +144,7 @@ def export(org_id: str, out_dir: Path) -> dict:
             w = csv.writer(fh)
             w.writerow(columns)
             for r in rows:
-                w.writerow([_flat(r.get(c)) for c in columns])
+                w.writerow([csv_text(_flat(r.get(c))) for c in columns])  # M2
 
     _write_readme(org_id, out_dir, summary)
     return summary

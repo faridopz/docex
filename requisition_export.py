@@ -27,6 +27,8 @@ repo root.
 """
 from __future__ import annotations
 
+from sheet_safety import harden_workbook
+
 import io
 from typing import Optional
 
@@ -455,6 +457,7 @@ def requisition_xlsx(req: rq.Requisition) -> bytes:
         ws7.column_dimensions[col].width = w
 
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     return buf.getvalue()
 
@@ -541,5 +544,6 @@ def requisition_log_xlsx(
         ws.column_dimensions[col].width = w
 
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     return buf.getvalue()

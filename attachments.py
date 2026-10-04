@@ -95,6 +95,27 @@ class AttachmentBackend(Protocol):
         ...
 
 
+# Types a browser may show inline without running anything. Everything else
+# (HTML, SVG, XML, scripts, unknown) is served as a plain download, whatever
+# the uploader claimed it was (30 Sep audit, L8: a signed storage URL would
+# have rendered an uploaded HTML file inline, on our storage domain).
+_INLINE_SAFE = frozenset({"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+def safe_content_type(content_type: Optional[str]) -> str:
+    ct = (content_type or "").split(";")[0].strip().lower()
+    return ct if ct in _INLINE_SAFE else "application/octet-stream"
+
+
+def content_disposition(filename: str) -> str:
+    """attachment; with an ASCII fallback and the real name RFC 5987-encoded,
+    so a quote or newline in a filename can't break or inject the header."""
+    from urllib.parse import quote
+    name = (filename or "file").replace("\r", " ").replace("\n", " ")
+    ascii_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in name) or "file"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
 def _safe_key_part(name: str) -> str:
     """A filename safe to use as (part of) a storage path — this is a path
     fragment, not a filesystem display name, so keep it boring: letters,
@@ -165,7 +186,7 @@ class SupabaseStorageBackend:
         try:
             resp = httpx.post(
                 f"{self.base_url}/storage/v1/object/{self.bucket}/{key}",
-                headers=self._headers(content_type or "application/octet-stream"),
+                headers=self._headers(safe_content_type(content_type)),
                 content=content,
                 timeout=60,
             )

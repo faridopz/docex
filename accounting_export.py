@@ -56,6 +56,8 @@ thing for a finance lead to say yes to.
 """
 from __future__ import annotations
 
+from sheet_safety import harden_workbook
+
 import csv
 import datetime as dt
 import io
@@ -151,7 +153,10 @@ def _clean_text(s: str) -> str:
     """One line, no control characters, trimmed. QuickBooks truncates long
     descriptions silently, so keep them short enough to survive."""
     out = re.sub(r"\s+", " ", str(s or "")).strip()
-    return out[:200]
+    # Text only: a payee or description starting with = + - @ would run as
+    # a formula when the CSV is opened in Excel (30 Sep audit, M2).
+    from sheet_safety import csv_text
+    return csv_text(out[:200])
 
 
 def _period_bounds(period: str) -> tuple[str, str]:
@@ -549,5 +554,6 @@ def reconciliation_report_xlsx(org_id: str, run, amap: Optional["AccountMap"] = 
         for c in sheet[1]:
             c.font = bold
     buf = io.BytesIO()
+    harden_workbook(wb)  # staff-typed text must never run as a formula (M2)
     wb.save(buf)
     return buf.getvalue()

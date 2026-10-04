@@ -221,13 +221,22 @@ def login(body: LoginRequest) -> LoginResponse:
                 headers={"X-DOCex-MFA": "required"},
             )
         try:
-            if not mfa_mod.verify(user.id, body.mfa_code):
-                raise HTTPException(
-                    status_code=401,
-                    detail="That code is not right, or has already been used.",
-                    headers={"X-DOCex-MFA": "required"})
+            auth_mod.guard_mfa_rate(user.email)
+        except auth_mod.RateLimited as exc:
+            raise HTTPException(status_code=429, detail=str(exc),
+                                headers={"X-DOCex-MFA": "required"}) from exc
+        try:
+            ok = mfa_mod.verify(user.id, body.mfa_code)
         except mfa_mod.MfaError as exc:
+            auth_mod.record_mfa_failure(user.email)
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if not ok:
+            auth_mod.record_mfa_failure(user.email)
+            raise HTTPException(
+                status_code=401,
+                detail="That code is not right, or has already been used.",
+                headers={"X-DOCex-MFA": "required"})
+        auth_mod.clear_mfa_failures(user.email)
 
     token = auth_mod.issue_token(user)
     auth_mod.record_login(user)
@@ -409,9 +418,14 @@ def mfa_confirm(body: MfaConfirmRequest,
 
 
 @router.post("/auth/mfa/recovery-codes", response_model=dict)
-def mfa_new_recovery_codes(user: User = Depends(current_user)) -> dict:
+def mfa_new_recovery_codes(body: MfaConfirmRequest, user: User = Depends(current_user)) -> dict:
+    """New recovery codes need a current code, like turning MFA off: fresh
+    codes from an unlocked laptop would hand someone a permanent way in
+    (30 Sep audit, L9)."""
     import mfa as mfa_mod
     try:
+        if not mfa_mod.verify(user.id, body.code):
+            raise HTTPException(status_code=400, detail="That code is not right.")
         return {"recovery_codes": mfa_mod.regenerate_recovery_codes(user.id)}
     except mfa_mod.MfaError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

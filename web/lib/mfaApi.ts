@@ -43,8 +43,11 @@ export async function confirmMfa(
   });
 }
 
-export async function regenerateRecoveryCodes(): Promise<{ recovery_codes: string[] }> {
-  return apiFetch("/auth/mfa/recovery-codes", { method: "POST" });
+export async function regenerateRecoveryCodes(code: string): Promise<{ recovery_codes: string[] }> {
+  return apiFetch("/auth/mfa/recovery-codes", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
 }
 
 export async function disableMfa(code: string): Promise<{ ok: boolean }> {

@@ -146,9 +146,12 @@ function SecuritySettings() {
 
   async function newCodes() {
     if (!confirm2("Issue ten new recovery codes? Every existing code stops working.")) return;
+    const current = window.prompt("Enter the 6-digit code from your authenticator app to confirm.");
+    if (!current) return;
     setBusy(true);
+    setError(null);
     try {
-      setCodes((await regenerateRecoveryCodes()).recovery_codes);
+      setCodes((await regenerateRecoveryCodes(current.trim())).recovery_codes);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not regenerate.");
