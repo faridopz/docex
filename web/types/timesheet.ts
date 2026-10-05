@@ -12,7 +12,16 @@ export type TimesheetStatus =
   | "returned"
   | "processed";
 
+export type EntryStatus = "pending" | "approved" | "rejected";
+
+export interface EntryCounts {
+  pending: number;
+  approved: number;
+  rejected: number;
+}
+
 export interface TimeEntry {
+  id: string;
   date: string;
   hours: number;
   project_code: string;
@@ -21,6 +30,12 @@ export interface TimeEntry {
   span: "day" | "week" | "month";
   /** Derived: an hour with a real project code is chargeable. */
   chargeable: boolean;
+  /** Each entry is reviewed on its own; an approved one can't be changed. */
+  status: EntryStatus;
+  reject_reason: string;
+  reviewed_by: string;
+  /** A flag for the supervisor; it does not change pay. */
+  overtime: boolean;
 }
 
 export interface EffortIssue {
@@ -40,6 +55,7 @@ export interface TimesheetSummary {
   total_hours: number;
   days: number;
   projects: string[];
+  hours_by_project: Record<string, number>;
   /** How this sheet records time; "mixed" only for a sheet that needs fixing. */
   span: "day" | "week" | "month" | "mixed";
   submitted_by: string;
@@ -47,11 +63,14 @@ export interface TimesheetSummary {
   approved_by: string;
   approved_at: string;
   returned_reason: string;
+  entry_counts: EntryCounts;
   updated_at: string;
 }
 
 export interface Timesheet extends TimesheetSummary {
   entries: TimeEntry[];
+  /** Code → project title and donor, for showing names rather than codes. */
+  project_names: Record<string, { title: string; donor: string }>;
   hours_by_project: Record<string, number>;
   /** The number that reaches payroll: % of chargeable effort per project. */
   effort_allocation: Record<string, number>;
@@ -112,4 +131,21 @@ export interface PeriodSummary {
   not_submitted?: OutstandingPerson[];
   awaiting_approval?: OutstandingPerson[];
   expected?: number;
+}
+
+export interface TeamRow {
+  staff_id: string;
+  name: string;
+  department: string;
+  timesheet_id: string | null;
+  status: TimesheetStatus | "not_started";
+  stage: "" | "supervisor" | "second";
+  total_hours: number;
+  entry_counts: EntryCounts;
+}
+
+export interface TeamView {
+  period: string;
+  rows: TeamRow[];
+  counters: { needs_review: number; approved: number; has_rejections: number; not_started: number };
 }

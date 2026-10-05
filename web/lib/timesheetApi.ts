@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/session";
 import type {
   MyProject,
   PeriodSummary,
+  TeamView,
   Timesheet,
   TimesheetPolicy,
   TimesheetStatus,
@@ -155,4 +156,56 @@ export function remindOutstanding(period: string): Promise<{ reminded: number; e
 
 export function savePolicy(policy: Partial<TimesheetPolicy>): Promise<TimesheetPolicy> {
   return apiFetch<TimesheetPolicy>("/timesheets/policy", { method: "PUT", body: JSON.stringify(policy) });
+}
+
+// ─── one entry at a time ────────────────────────────────────────────────────
+
+export interface ItemInput {
+  date: string;
+  projectCode: string;
+  hours: number;
+  activity?: string;
+  overtime?: boolean;
+}
+
+function itemForm(i: ItemInput): FormData {
+  return form({
+    date: i.date,
+    project_code: i.projectCode,
+    hours: i.hours,
+    activity: i.activity ?? "",
+    overtime: i.overtime ? "true" : "false",
+  });
+}
+
+const sheetPath = (id: string) => `/timesheets/${encodeURIComponent(id)}`;
+
+export function addItem(id: string, item: ItemInput): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`${sheetPath(id)}/items`, { method: "POST", body: itemForm(item) });
+}
+
+export function updateItem(id: string, entryId: string, item: ItemInput): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`${sheetPath(id)}/items/${encodeURIComponent(entryId)}`, {
+    method: "PUT",
+    body: itemForm(item),
+  });
+}
+
+export function removeItem(id: string, entryId: string): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`${sheetPath(id)}/items/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+}
+
+export function rejectItem(id: string, entryId: string, reason: string): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`${sheetPath(id)}/items/${encodeURIComponent(entryId)}/reject`, {
+    method: "POST",
+    body: form({ reason }),
+  });
+}
+
+export function clearItem(id: string, entryId: string): Promise<Timesheet> {
+  return apiFetch<Timesheet>(`${sheetPath(id)}/items/${encodeURIComponent(entryId)}/clear`, { method: "POST" });
+}
+
+export function teamView(period: string): Promise<TeamView> {
+  return apiFetch<TeamView>(`/timesheets/team?period=${encodeURIComponent(period)}`);
 }

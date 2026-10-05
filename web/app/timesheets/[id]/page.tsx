@@ -6,7 +6,9 @@ import { useParams } from "next/navigation";
 import {
   AlertTriangle,
   ArrowLeft,
+  CalendarDays,
   CheckCircle2,
+  LayoutList,
   Loader2,
   Lock,
   Plus,
@@ -15,6 +17,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { TimesheetEntries } from "@/components/erp/TimesheetEntries";
 import { useAuth } from "@/lib/auth";
 import { getDocumentPermissions } from "@/lib/requisitionApi";
 import type { MyProject } from "@/types/timesheet";
@@ -57,10 +60,13 @@ import type { EntryMode } from "@/lib/timesheetGrid";
 import type { Timesheet } from "@/types/timesheet";
 
 /**
- * The timesheet grid.
+ * One month's timesheet.
  *
- * Projects down, days across, one screen for the month. See lib/timesheetGrid
- * for why this shape rather than a list of entries.
+ * Two ways to look at the same entries. "Entries" (the default since WO-77)
+ * is a list: add a line, see each line's review status. "Month view" is the
+ * original grid — projects down, days across — for people who prefer it; it
+ * goes read-only once a supervisor has approved any entry, because the grid
+ * saves the whole month at once and approved lines are evidence.
  *
  * The design rule throughout: the person filling this in should never have to
  * ask "have I finished?". Missing working days are counted at the top, the
@@ -72,6 +78,7 @@ export default function TimesheetDetailPage() {
   const id = params?.id as string;
 
   const [sheet, setSheet] = useState<Timesheet | null>(null);
+  const [view, setView] = useState<"entries" | "month">("entries");
   const [grid, setGrid] = useState<Grid>({});
   const [mode, setMode] = useState<EntryMode>("halfday");
   const [span, setSpan] = useState<Span>("day");
@@ -100,6 +107,8 @@ export default function TimesheetDetailPage() {
         getPolicy().catch(() => null),
       ]);
       setSheet(t);
+      // A month recorded by week or month total only makes sense on the grid.
+      if (t.span === "week" || t.span === "month") setView("month");
       const g = entriesToGrid(t.entries);
       setSpan(spanOf(t.entries));
       setGrid(g);
@@ -141,6 +150,24 @@ export default function TimesheetDetailPage() {
   const total = gridTotal(grid);
 
   const editable = sheet?.status === "draft" || sheet?.status === "returned";
+  const isOwner = (sheet?.staff_id ?? "").toLowerCase() === (user?.email ?? "").toLowerCase();
+  const rejectedCount = sheet?.entry_counts?.rejected ?? 0;
+
+  /** The server's copy after an entry changes: the grid follows it. */
+  function applySheet(t: Timesheet) {
+    setSheet(t);
+    const g = entriesToGrid(t.entries);
+    setGrid(g);
+    savedGrid.current = JSON.stringify(g);
+    setDirty(false);
+  }
+
+  async function switchView(next: "entries" | "month") {
+    if (next === view) return;
+    // Leaving the grid with unsaved edits: save them rather than lose them.
+    if (view === "month" && dirty && !(await save())) return;
+    setView(next);
+  }
 
   function update(next: Grid) {
     setGrid(next);
@@ -252,6 +279,7 @@ export default function TimesheetDetailPage() {
     );
   }
 
+  const gridEditable = editable && !(sheet.entry_counts?.approved ?? 0);
   const blocking = sheet.issues.filter((i) => i.blocking);
   const warnings = sheet.issues.filter((i) => !i.blocking);
 
@@ -285,6 +313,17 @@ export default function TimesheetDetailPage() {
               <p className="text-xs text-gray-500">hours recorded</p>
             </div>
           </div>
+        </div>
+
+        <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
+          {([["entries", "Entries", LayoutList], ["month", "Month view", CalendarDays]] as const).map(([key, label, Icon]) => (
+            <button key={key} type="button" onClick={() => switchView(key)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium ${
+                      view === key ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-50"}`}>
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
         </div>
 
         {error && (
@@ -327,7 +366,15 @@ export default function TimesheetDetailPage() {
           </div>
         )}
 
-        {editable && (
+        {view === "month" && gridEditable === false && editable && (
+          <p className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600">
+            Some entries are already approved, so the month view is read-only. Change the other entries in the Entries view.
+          </p>
+        )}
+
+        {view === "month" && (
+        <>
+        {gridEditable && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
             {allowedSpans.length > 1 && (
               <div className="flex items-center gap-2">
@@ -429,7 +476,7 @@ export default function TimesheetDetailPage() {
                       >
                         {project === NON_PROJECT ? "Leave / admin" : project}
                       </span>
-                      {editable && (
+                      {gridEditable && (
                         <>
                           <button
                             className="text-gray-300 hover:text-red-600"
@@ -466,8 +513,8 @@ export default function TimesheetDetailPage() {
                               hours
                                 ? "bg-blue-50 text-blue-800 hover:bg-blue-100"
                                 : "text-gray-300 hover:bg-gray-50"
-                            } ${editable ? "" : "cursor-default"}`}
-                            disabled={!editable}
+                            } ${gridEditable ? "" : "cursor-default"}`}
+                            disabled={!gridEditable}
                             onClick={() =>
                               update(
                                 setCell(grid, project, d.key,
@@ -481,7 +528,7 @@ export default function TimesheetDetailPage() {
                         ) : (
                           <input
                             className="h-8 w-full border-0 bg-transparent p-0 text-center text-xs focus:bg-blue-50 focus:outline-none disabled:text-gray-600"
-                            disabled={!editable}
+                            disabled={!gridEditable}
                             inputMode="decimal"
                             onChange={(e) =>
                               update(
@@ -532,7 +579,7 @@ export default function TimesheetDetailPage() {
           </table>
         </div>
 
-        {editable && (
+        {gridEditable && (
           <div className="flex flex-wrap items-center gap-2">
             {mine.filter((p) => !grid[p.project_code]).map((p) => (
               <button key={p.project_code} type="button"
@@ -568,6 +615,14 @@ export default function TimesheetDetailPage() {
               </button>
             )}
           </div>
+        )}
+
+        </>
+        )}
+
+        {view === "entries" && (
+          <TimesheetEntries sheet={sheet} mine={mine} isOwner={isOwner} editable={editable && !sheet.locked}
+                            onChange={applySheet} />
         )}
 
         {/* ── the split, and what is wrong ─────────────────────────────── */}
@@ -637,16 +692,16 @@ export default function TimesheetDetailPage() {
 
         {/* ── actions ──────────────────────────────────────────────────── */}
         <div className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-gray-200 bg-white/95 py-3 backdrop-blur">
-          {editable && (
+          {editable && isOwner && (
             <>
-              <button
+              {view === "month" && gridEditable && <button
                 className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                 disabled={!dirty || busy !== null}
                 onClick={save}
                 type="button"
               >
                 {busy === "save" ? "Saving…" : dirty ? "Save" : "Saved"}
-              </button>
+              </button>}
               <button
                 className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 disabled={busy !== null || total === 0}
@@ -669,7 +724,7 @@ export default function TimesheetDetailPage() {
             </>
           )}
 
-          {sheet.status === "submitted" && (
+          {sheet.status === "submitted" && !isOwner && (
             <>
               <button
                 className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
@@ -682,7 +737,9 @@ export default function TimesheetDetailPage() {
                 ) : (
                   <CheckCircle2 className="h-4 w-4" />
                 )}
-                Approve
+                {rejectedCount > 0
+                  ? `Approve the rest · send back ${rejectedCount} rejected`
+                  : "Approve"}
               </button>
               <button
                 className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
@@ -692,10 +749,6 @@ export default function TimesheetDetailPage() {
                 <Undo2 className="h-4 w-4" />
                 Send back
               </button>
-              <p className="w-full text-xs text-gray-500">
-                You cannot approve your own timesheet — self-approval of effort
-                records is a finding auditors look for specifically.
-              </p>
             </>
           )}
         </div>

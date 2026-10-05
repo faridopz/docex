@@ -46,7 +46,7 @@ import os
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import store
 
@@ -126,9 +126,24 @@ class TimeEntry(BaseModel):
     # on TB" say so honestly, rather than inventing daily figures to fill a
     # grid. A week starts on a Monday (or the 1st, for the first part-week).
     span: Literal["day", "week", "month"] = "day"
+    # Each entry is reviewed on its own, so one wrong day doesn't send a
+    # whole month back. Pending until a supervisor decides; an approved entry
+    # is evidence and can no longer be changed.
+    id: str = ""
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    reject_reason: str = ""
+    reviewed_by: str = ""
+    # Shown to the supervisor; it does not change pay.
+    overtime: bool = False
 
 
 NON_PROJECT = "NON_PROJECT"
+ENTRY_STATUSES = ("pending", "approved", "rejected")
+
+
+def _new_id() -> str:
+    import uuid
+    return uuid.uuid4().hex[:12]
 
 
 class Timesheet(BaseModel):
@@ -158,6 +173,31 @@ class Timesheet(BaseModel):
 
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _entry_ids(self) -> "Timesheet":
+        # Records saved before entries were reviewed one by one: give each
+        # entry an id, and on a signed sheet treat them as approved (the
+        # whole sheet was). get_timesheet saves the ids so they stay put.
+        signed = self.status in (TimesheetStatus.APPROVED, TimesheetStatus.PROCESSED)
+        for e in self.entries:
+            if not e.id:
+                e.id = _new_id()
+            if signed:
+                e.status = "approved"
+        return self
+
+    def entry(self, entry_id: str) -> "TimeEntry":
+        for e in self.entries:
+            if e.id == entry_id:
+                return e
+        raise TimesheetError("That entry isn't on this timesheet.")
+
+    def entry_counts(self) -> dict[str, int]:
+        out = {s: 0 for s in ENTRY_STATUSES}
+        for e in self.entries:
+            out[e.status] = out.get(e.status, 0) + 1
+        return out
 
     @property
     def total_hours(self) -> float:
@@ -285,6 +325,14 @@ def validate(org_id: str, ts: Timesheet, *, at: Optional[dt.date] = None) -> lis
             issues.append(EffortIssue(
                 code="MISSING_ACTIVITY", blocking=False,
                 message=f"{e.date}: no description of the activity."))
+
+    rejected = [e for e in ts.entries if e.status == "rejected"]
+    if rejected:
+        issues.append(EffortIssue(
+            code="REJECTED_ENTRIES", blocking=True,
+            message=(f"{len(rejected)} rejected entr{'y' if len(rejected) == 1 else 'ies'} "
+                     f"({', '.join(sorted({e.date for e in rejected}))}): correct or remove "
+                     "before sending it again.")))
 
     spans = {e.span for e in ts.entries}
     if len(spans) > 1:
@@ -514,9 +562,12 @@ def quick_log(org_id: str, *, staff_id: str, staff_name: str = "", date: str,
         raise TimesheetError(
             f"Your {period} timesheet is recorded by {ts.span}; add this on the timesheet itself.")
     _require_unlocked(org, ts)
-    ts.entries = [e for e in ts.entries if not (e.date == d.isoformat() and e.project_code == code)]
+    same = [e for e in ts.entries if e.date == d.isoformat() and e.project_code == code]
+    if any(e.status == "approved" for e in same):
+        raise TimesheetError(f"{d.isoformat()} on {code} is already approved and can't be changed.")
+    ts.entries = [e for e in ts.entries if e not in same]
     ts.entries.append(TimeEntry(date=d.isoformat(), hours=hours, project_code=code,
-                                activity=(activity or "").strip()))
+                                activity=(activity or "").strip(), id=_new_id()))
     ts.entries.sort(key=lambda e: (e.date, e.project_code))
     ts.updated_at = _now_iso()
     return _save(org, ts)
@@ -552,7 +603,8 @@ def fill_from_split(org_id: str, ts_id: str, split: dict[str, float]) -> Timeshe
             for code, pct in split.items():
                 h = _hours(per_day * pct / 100.0)
                 if h > 0:
-                    ts.entries.append(TimeEntry(date=d.isoformat(), hours=h, project_code=code))
+                    ts.entries.append(TimeEntry(date=d.isoformat(), hours=h, project_code=code,
+                                                id=_new_id()))
             added += 1
         d += dt.timedelta(days=1)
     if not added:
@@ -573,9 +625,142 @@ def set_entries(org_id: str, ts_id: str, entries: list[dict], *, actor: str) -> 
         raise TimesheetError(
             f"This timesheet is {ts.status.value} and cannot be edited. "
             "A supervisor must return it first — an approved record is evidence.")
-    ts.entries = [TimeEntry(**e) for e in entries]
+    if any(e.status == "approved" for e in ts.entries):
+        raise TimesheetError(
+            "Some entries on this timesheet are already approved, so the month view can't "
+            "replace them. Change the other entries one at a time instead.")
+    # The grid sends a fresh list: every line is new and waits for review.
+    ts.entries = [TimeEntry(**{k: v for k, v in e.items()
+                               if k not in ("id", "status", "reject_reason", "reviewed_by")},
+                            id=_new_id()) for e in entries]
     ts.updated_at = _now_iso()
     return _save(org, ts)
+
+
+# ─── one entry at a time ────────────────────────────────────────────────────
+
+
+def _editable(org: str, ts_id: str) -> Timesheet:
+    ts = get_timesheet(org, ts_id)
+    if ts is None:
+        raise TimesheetError(f"No timesheet {ts_id}.")
+    if ts.status not in (TimesheetStatus.DRAFT, TimesheetStatus.RETURNED):
+        raise TimesheetError(
+            f"This timesheet is {ts.status.value}, so entries can't be changed now. "
+            "Your supervisor can send it back if something needs correcting.")
+    if ts.entries and ts.span != "day":
+        raise TimesheetError(f"This month is recorded by {ts.span}; change it in the month view.")
+    _require_unlocked(org, ts)
+    return ts
+
+
+def _checked_entry(ts: Timesheet, *, date: str, project_code: str, hours: float,
+                   activity: str, overtime: bool) -> TimeEntry:
+    d = _parse_date(date)
+    start, end = period_bounds(ts.period)
+    if not (start <= d <= end):
+        raise TimesheetError(f"{d.isoformat()} isn't in {ts.period}. Each month has its own timesheet.")
+    if d > dt.date.today():
+        raise TimesheetError("Time is recorded after it is worked, not before.")
+    code = (project_code or "").strip()
+    if not code:
+        raise TimesheetError("Pick the project you worked on.")
+    h = _hours(hours)
+    if h <= 0 or h > MAX_HOURS_PER_DAY:
+        raise TimesheetError("Hours must be more than 0 and no more than 24.")
+    return TimeEntry(date=d.isoformat(), hours=h, project_code=code,
+                     activity=(activity or "").strip(), overtime=bool(overtime))
+
+
+def _day_total_ok(ts: Timesheet, entry: TimeEntry, *, skip: str = "") -> None:
+    total = _hours(sum(e.hours for e in ts.entries
+                       if e.date == entry.date and e.span == "day" and e.id != skip) + entry.hours)
+    if total > MAX_HOURS_PER_DAY:
+        raise TimesheetError(f"{entry.date} would have {total:g} hours. A day has 24.")
+
+
+def add_entry(org_id: str, ts_id: str, *, date: str, project_code: str, hours: float,
+              activity: str = "", overtime: bool = False) -> Timesheet:
+    """Add one line: a day, a project, the hours, what was done."""
+    org = _org(org_id)
+    ts = _editable(org, ts_id)
+    entry = _checked_entry(ts, date=date, project_code=project_code, hours=hours,
+                           activity=activity, overtime=overtime)
+    _day_total_ok(ts, entry)
+    entry.id = _new_id()
+    ts.entries.append(entry)
+    ts.entries.sort(key=lambda e: (e.date, e.project_code))
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+def update_entry(org_id: str, ts_id: str, entry_id: str, *, date: str, project_code: str,
+                 hours: float, activity: str = "", overtime: bool = False) -> Timesheet:
+    """Correct one line. A corrected line goes back to pending: whatever the
+    supervisor said about it was about the old figures."""
+    org = _org(org_id)
+    ts = _editable(org, ts_id)
+    old = ts.entry(entry_id)
+    if old.status == "approved":
+        raise TimesheetError("This entry is approved, so it can't be changed: it's part of the record.")
+    entry = _checked_entry(ts, date=date, project_code=project_code, hours=hours,
+                           activity=activity, overtime=overtime)
+    _day_total_ok(ts, entry, skip=entry_id)
+    old.date, old.hours, old.project_code = entry.date, entry.hours, entry.project_code
+    old.activity, old.overtime = entry.activity, entry.overtime
+    old.status, old.reject_reason, old.reviewed_by = "pending", "", ""
+    ts.entries.sort(key=lambda e: (e.date, e.project_code))
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+def remove_entry(org_id: str, ts_id: str, entry_id: str) -> Timesheet:
+    org = _org(org_id)
+    ts = _editable(org, ts_id)
+    if ts.entry(entry_id).status == "approved":
+        raise TimesheetError("This entry is approved, so it can't be removed: it's part of the record.")
+    ts.entries = [e for e in ts.entries if e.id != entry_id]
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+def _reviewable(org: str, ts_id: str, reviewer: str) -> Timesheet:
+    ts = get_timesheet(org, ts_id)
+    if ts is None:
+        raise TimesheetError(f"No timesheet {ts_id}.")
+    if ts.status != TimesheetStatus.SUBMITTED:
+        raise TimesheetError(f"Entries are reviewed on a submitted timesheet (this is {ts.status.value}).")
+    who = (reviewer or "").strip().lower()
+    if not who or who in (ts.staff_id.strip().lower(), (ts.submitted_by or "").strip().lower()):
+        raise TimesheetError("Nobody reviews their own time.")
+    return ts
+
+
+def reject_entry(org_id: str, ts_id: str, entry_id: str, *, reviewer: str, reason: str) -> Timesheet:
+    """Mark one line wrong, with a reason the employee will read. Nothing
+    changes for them until the supervisor finishes with "approve the rest"."""
+    org = _org(org_id)
+    ts = _reviewable(org, ts_id, reviewer)
+    if not (reason or "").strip():
+        raise TimesheetError("Say what's wrong with the entry, so it can be put right.")
+    e = ts.entry(entry_id)
+    if e.status == "approved":
+        raise TimesheetError("This entry was approved earlier and is part of the record.")
+    e.status, e.reject_reason, e.reviewed_by = "rejected", reason.strip(), reviewer.strip()
+    ts.updated_at = _now_iso()
+    return _save(org, ts)
+
+
+def clear_entry_review(org_id: str, ts_id: str, entry_id: str, *, reviewer: str) -> Timesheet:
+    """Undo a rejection before finishing the review."""
+    org = _org(org_id)
+    ts = _reviewable(org, ts_id, reviewer)
+    e = ts.entry(entry_id)
+    if e.status == "rejected":
+        e.status, e.reject_reason, e.reviewed_by = "pending", "", ""
+        ts.updated_at = _now_iso()
+        _save(org, ts)
+    return ts
 
 
 def submit(org_id: str, ts_id: str, *, actor: str) -> Timesheet:
@@ -627,6 +812,23 @@ def approve(org_id: str, ts_id: str, *, supervisor: str) -> Timesheet:
             "Self-approved effort records are a standard audit finding.")
 
     policy = get_policy(org)
+    rejected = [e for e in ts.entries if e.status == "rejected"]
+    if rejected:
+        # "Approve the rest": everything not rejected is approved, and the
+        # sheet goes back with the rejected entries to fix. The employee
+        # only has those to correct; the supervisor only those to re-check.
+        for e in ts.entries:
+            if e.status == "pending":
+                e.status, e.reviewed_by = "approved", supervisor.strip()
+        listing = "; ".join(f"{e.date} {e.project_code}: {e.reject_reason}" for e in rejected)
+        ts.status = TimesheetStatus.RETURNED
+        ts.returned_reason = (f"{len(rejected)} entr{'y' if len(rejected) == 1 else 'ies'} rejected — "
+                              f"{listing}")
+        ts.supervisor_approved_by = ""
+        ts.supervisor_approved_at = ""
+        ts.updated_at = _now_iso()
+        return _save(org, ts)
+
     if (policy.second_approval or "").strip() and not ts.supervisor_approved_by:
         # First of two signatures: the supervisor's. The sheet stays
         # submitted, now waiting on the second approver.
@@ -640,6 +842,9 @@ def approve(org_id: str, ts_id: str, *, supervisor: str) -> Timesheet:
     ts.status = TimesheetStatus.APPROVED
     ts.approved_by = supervisor.strip()
     ts.approved_at = _now_iso()
+    for e in ts.entries:
+        if e.status != "approved":
+            e.status, e.reviewed_by = "approved", supervisor.strip()
     ts.updated_at = ts.approved_at
     return _save(org, ts)
 
@@ -699,9 +904,18 @@ def _save(org_id: str, ts: Timesheet) -> Timesheet:
     return ts
 
 
+def _from_raw(org_id: str, raw: dict) -> Timesheet:
+    ts = Timesheet.model_validate(raw)
+    # An old record's entries were just given ids: keep them, or the next
+    # read would hand out different ones and an edit would miss.
+    if any(not (e or {}).get("id") for e in raw.get("entries") or []):
+        _save(org_id, ts)
+    return ts
+
+
 def get_timesheet(org_id: str, ts_id: str) -> Optional[Timesheet]:
     raw = store.get_store().get(_org(org_id), _TIMESHEETS, ts_id)
-    return Timesheet.model_validate(raw) if raw else None
+    return _from_raw(org_id, raw) if raw else None
 
 
 def list_timesheets(org_id: str, *, period: Optional[str] = None,
@@ -710,7 +924,7 @@ def list_timesheets(org_id: str, *, period: Optional[str] = None,
     out: list[Timesheet] = []
     for raw in store.get_store().list(_org(org_id), _TIMESHEETS):
         try:
-            ts = Timesheet.model_validate(raw)
+            ts = _from_raw(org_id, raw)
         except Exception:
             continue
         if period and ts.period != period:

@@ -14,6 +14,12 @@ Endpoints:
   POST /timesheets/{id}/submit           — employee signs and sends it
   POST /timesheets/{id}/approve          — supervisor signs it off
   POST /timesheets/{id}/return           — supervisor sends it back with a reason
+  POST /timesheets/{id}/items            — add one entry (the employee)
+  PUT  /timesheets/{id}/items/{entry}    — correct one entry
+  DELETE /timesheets/{id}/items/{entry}  — remove one entry
+  POST /timesheets/{id}/items/{entry}/reject — supervisor rejects one entry, with a reason
+  POST /timesheets/{id}/items/{entry}/clear  — …or takes the rejection back
+  GET  /timesheets/team                  — supervisors and Finance: everyone's month at a glance
 
 WHO the actor is always comes from the bearer token, never the request body.
 That matters more here than almost anywhere else: the engine refuses
@@ -131,9 +137,16 @@ def _entry_out(e: ts.TimeEntry) -> dict:
     # Chargeability is derived, not stored: an hour is chargeable when it
     # carries a real project code. Leave, admin and training are recorded
     # against NON_PROJECT so the total still covers 100% of paid time.
-    return {"date": e.date, "hours": e.hours, "project_code": e.project_code,
-            "activity": e.activity, "span": e.span,
+    return {"id": e.id, "date": e.date, "hours": e.hours, "project_code": e.project_code,
+            "activity": e.activity, "span": e.span, "overtime": e.overtime,
+            "status": e.status, "reject_reason": e.reject_reason, "reviewed_by": e.reviewed_by,
             "chargeable": e.project_code != ts.NON_PROJECT}
+
+
+def _project_names(org_id: str, codes) -> dict:
+    """Code → title and donor, so screens show names people recognise."""
+    ags = {a.project_code: a for a in grants.list_agreements(org_id)}
+    return {c: {"title": ags[c].title, "donor": ags[c].donor} for c in codes if c in ags}
 
 
 def _summary_out(t: ts.Timesheet) -> dict:
@@ -147,12 +160,14 @@ def _summary_out(t: ts.Timesheet) -> dict:
         "total_hours": t.total_hours,
         "days": len({e.date for e in t.entries}),
         "projects": sorted(t.hours_by_project().keys()),
+        "hours_by_project": t.hours_by_project(),
         "span": t.span,
         "submitted_by": t.submitted_by,
         "submitted_at": t.submitted_at,
         "approved_by": t.approved_by,
         "approved_at": t.approved_at,
         "returned_reason": t.returned_reason,
+        "entry_counts": t.entry_counts(),
         "updated_at": t.updated_at,
     }
 
@@ -162,6 +177,7 @@ def _detail_out(org_id: str, t: ts.Timesheet) -> dict:
     out = _summary_out(t)
     out.update({
         "entries": [_entry_out(e) for e in sorted(t.entries, key=lambda x: x.date)],
+        "project_names": _project_names(org_id, t.hours_by_project().keys()),
         "hours_by_project": t.hours_by_project(),
         "effort_allocation": ts.effort_allocation(t),
         # `blocking` is the distinction that matters to the person filling it
@@ -237,6 +253,50 @@ async def period_summary(period: str = Query(...),
         raise _fail(exc)
     out.update(_outstanding(ctx, period))
     return out
+
+
+@router.get("/team")
+async def team(period: str = Query(...), ctx: Ctx = Depends(request_context)):
+    """Everyone's month on one screen. A department's approver sees their
+    own people; Finance and administrators see the whole organisation."""
+    _gate(ctx)
+    everyone = _is_finance(ctx) or ctx.role == "admin"
+    if not (everyone or ctx.role == "approver"):
+        raise HTTPException(status_code=403, detail="The team view is for supervisors and Finance.")
+    try:
+        ts.period_bounds(period)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    import auth
+    mine = (ctx.department or "").lower()
+    people = {u.email.lower(): u for u in auth.list_public(ctx.org_id)
+              if getattr(u, "active", True) and u.role != "admin"}
+    sheets = {t.staff_id.lower(): t for t in ts.list_timesheets(ctx.org_id, period=period)}
+    expected = _expected_staff(ctx)
+    rows = []
+    for email in sorted(set(sheets) | set(expected)):
+        u = people.get(email)
+        dept = (u.department or "").lower() if u else _staff_department(ctx, email)
+        if not everyone and dept != mine:
+            continue
+        t = sheets.get(email)
+        rows.append({
+            "staff_id": email,
+            "name": (t.staff_name if t and t.staff_name else None) or (u.name if u else "") or email,
+            "department": dept,
+            "timesheet_id": t.id if t else None,
+            "status": t.status.value if t else "not_started",
+            "stage": ts.awaiting_stage(t, ctx.org_id) if t else "",
+            "total_hours": t.total_hours if t else 0,
+            "entry_counts": t.entry_counts() if t else {"pending": 0, "approved": 0, "rejected": 0},
+        })
+    counters = {
+        "needs_review": sum(1 for r in rows if r["status"] == "submitted"),
+        "approved": sum(1 for r in rows if r["status"] in ("approved", "processed")),
+        "has_rejections": sum(1 for r in rows if r["entry_counts"]["rejected"] > 0),
+        "not_started": sum(1 for r in rows if r["status"] == "not_started"),
+    }
+    return {"period": period, "rows": rows, "counters": counters}
 
 
 @router.get("/policy")
@@ -521,6 +581,84 @@ async def send_back(ts_id: str, reason: str = Form(...),
         raise HTTPException(status_code=403, detail=_who_signs(ctx, sheet))
     try:
         sheet = ts.send_back(ctx.org_id, ts_id, supervisor=ctx.user_id, reason=reason)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+# ─── one entry at a time ────────────────────────────────────────────────────
+
+
+def _owner_or_403(ctx: Ctx, sheet: ts.Timesheet) -> None:
+    if not (_is_own(ctx, sheet) or ctx.role == "admin"):
+        raise HTTPException(status_code=403, detail="Only the person whose timesheet this is can change it.")
+
+
+def _truthy(v: str) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+@router.post("/{ts_id}/items")
+async def add_item(ts_id: str, date: str = Form(...), project_code: str = Form(""),
+                   hours: float = Form(...), activity: str = Form(""), overtime: str = Form("false"),
+                   ctx: Ctx = Depends(request_context)):
+    _gate(ctx)
+    _owner_or_403(ctx, _visible_or_404(ctx, ts_id))
+    try:
+        sheet = ts.add_entry(ctx.org_id, ts_id, date=date, project_code=project_code, hours=hours,
+                             activity=activity, overtime=_truthy(overtime))
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.put("/{ts_id}/items/{entry_id}")
+async def update_item(ts_id: str, entry_id: str, date: str = Form(...), project_code: str = Form(""),
+                      hours: float = Form(...), activity: str = Form(""), overtime: str = Form("false"),
+                      ctx: Ctx = Depends(request_context)):
+    _gate(ctx)
+    _owner_or_403(ctx, _visible_or_404(ctx, ts_id))
+    try:
+        sheet = ts.update_entry(ctx.org_id, ts_id, entry_id, date=date, project_code=project_code,
+                                hours=hours, activity=activity, overtime=_truthy(overtime))
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.delete("/{ts_id}/items/{entry_id}")
+async def remove_item(ts_id: str, entry_id: str, ctx: Ctx = Depends(request_context)):
+    _gate(ctx)
+    _owner_or_403(ctx, _visible_or_404(ctx, ts_id))
+    try:
+        sheet = ts.remove_entry(ctx.org_id, ts_id, entry_id)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.post("/{ts_id}/items/{entry_id}/reject")
+async def reject_item(ts_id: str, entry_id: str, reason: str = Form(""),
+                      ctx: Ctx = Depends(request_context)):
+    _gate(ctx)
+    sheet = _visible_or_404(ctx, ts_id)
+    if _is_own(ctx, sheet) or not _may_sign(ctx, sheet):
+        raise HTTPException(status_code=403, detail=_who_signs(ctx, sheet))
+    try:
+        sheet = ts.reject_entry(ctx.org_id, ts_id, entry_id, reviewer=ctx.user_id, reason=reason)
+    except ts.TimesheetError as exc:
+        raise _fail(exc)
+    return _detail_out(ctx.org_id, sheet)
+
+
+@router.post("/{ts_id}/items/{entry_id}/clear")
+async def clear_item(ts_id: str, entry_id: str, ctx: Ctx = Depends(request_context)):
+    _gate(ctx)
+    sheet = _visible_or_404(ctx, ts_id)
+    if _is_own(ctx, sheet) or not _may_sign(ctx, sheet):
+        raise HTTPException(status_code=403, detail=_who_signs(ctx, sheet))
+    try:
+        sheet = ts.clear_entry_review(ctx.org_id, ts_id, entry_id, reviewer=ctx.user_id)
     except ts.TimesheetError as exc:
         raise _fail(exc)
     return _detail_out(ctx.org_id, sheet)

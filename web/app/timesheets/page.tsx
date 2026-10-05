@@ -12,6 +12,8 @@ import {
   Plus,
   UserCheck,
   BellRing,
+  PieChart,
+  Users,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { getDocumentPermissions } from "@/lib/requisitionApi";
@@ -145,6 +147,12 @@ export default function TimesheetsPage() {
   }
 
   const filled = new Set(mine.map((t) => t.period));
+  const splitMap: Record<string, number> = {};
+  for (const t of mine)
+    for (const [code, h] of Object.entries(t.hours_by_project ?? {})) splitMap[code] = (splitMap[code] ?? 0) + h;
+  const split = Object.entries(splitMap).sort((a, b) => b[1] - a[1]);
+  const splitTotal = split.reduce((a, [, h]) => a + h, 0);
+  const seesTeam = Boolean(summary) || user?.role === "approver" || user?.role === "admin";
   const unfilled = periods.filter((p) => !filled.has(p));
 
   if (loading) {
@@ -161,7 +169,13 @@ export default function TimesheetsPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl space-y-6 pb-16 py-6 sm:px-6 lg:px-8">
-        <header>
+        <header className="relative">
+          {seesTeam && (
+            <Link href="/timesheets/team"
+                  className="absolute right-0 top-0 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">
+              <Users className="h-4 w-4" /> Team
+            </Link>
+          )}
           <h1 className="text-xl font-semibold text-gray-900">Timesheets</h1>
           <p className="mt-1 text-sm text-gray-600">
             Record what you actually worked on. Approved hours decide what each
@@ -212,44 +226,70 @@ export default function TimesheetsPage() {
               Nothing yet. Start with the month above.
             </p>
           ) : (
-            <div className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white shadow-sm">
-              {mine.map((t) => (
-                <Link
-                  className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-gray-50"
-                  href={`/timesheets/${t.id}`}
-                  key={t.id}
-                >
-                  <div className="min-w-0">
-                    <span className="font-medium text-gray-900">
-                      {periodLabel(t.period)}
-                    </span>
-                    <span className="ml-2 text-gray-500">
-                      {t.total_hours} hours across {t.projects.length} project
-                      {t.projects.length === 1 ? "" : "s"}
-                    </span>
-                    {t.projects.length > 0 && (
-                      <p className="mt-0.5 truncate text-xs text-gray-500">
-                        {t.projects.map((p) => (p === "NON_PROJECT" ? "Leave / admin" : p)).join(" · ")}
-                        {t.span === "week" ? " · by week" : t.span === "month" ? " · monthly total" : ""}
-                        {t.approved_by ? ` · signed by ${t.approved_by}${t.approved_at ? ` on ${new Date(t.approved_at).toLocaleDateString()}` : ""}` : ""}
-                      </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {mine.map((t) => {
+                const c = t.entry_counts ?? { pending: 0, approved: 0, rejected: 0 };
+                const n = c.pending + c.approved + c.rejected;
+                return (
+                  <div key={t.id} className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium text-gray-900">{periodLabel(t.period)}</p>
+                        <p className="text-sm text-gray-500">
+                          {t.total_hours} hours · {n} entr{n === 1 ? "y" : "ies"}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLE[t.status]}`}>
+                        {STATUS_LABEL[t.status]}
+                      </span>
+                    </div>
+                    {n > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-medium">
+                        {c.approved > 0 && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">{c.approved} approved</span>}
+                        {c.pending > 0 && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700">{c.pending} waiting for review</span>}
+                        {c.rejected > 0 && <span className="rounded-full bg-red-50 px-2 py-0.5 text-red-700">{c.rejected} rejected</span>}
+                      </div>
                     )}
                     {t.status === "returned" && t.returned_reason && (
-                      <p className="mt-0.5 text-xs text-orange-700">
-                        {t.returned_reason}
-                      </p>
+                      <p className="mt-2 text-xs text-orange-700">{t.returned_reason}</p>
                     )}
+                    <Link href={`/timesheets/${t.id}`}
+                          className="mt-3 self-start text-sm font-medium text-blue-600 hover:underline">
+                      {t.status === "draft" || t.status === "returned" ? "Open and add entries →" : "View entries →"}
+                    </Link>
                   </div>
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLE[t.status]}`}
-                  >
-                    {STATUS_LABEL[t.status]}
-                  </span>
-                </Link>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
+
+        {split.length > 0 && (
+          <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+            <h2 className="flex items-center gap-2 font-medium text-gray-900">
+              <PieChart className="h-4 w-4 text-gray-500" />
+              Where my time went
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-500">Across the timesheets above.</p>
+            <ul className="mt-4 space-y-3">
+              {split.map(([code, hours]) => {
+                const pct = splitTotal ? Math.round((hours / splitTotal) * 1000) / 10 : 0;
+                return (
+                  <li key={code}>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-700">{code === "NON_PROJECT" ? "Leave / admin" : code}</span>
+                      <span className="text-gray-500"><span className="font-medium text-gray-900">{pct}%</span> · {Math.round(hours * 100) / 100}h</span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                      <div className={`h-full rounded-full ${code === "NON_PROJECT" ? "bg-gray-400" : "bg-blue-600"}`}
+                           style={{ width: `${Math.min(pct, 100)}%` }} />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
 
         {pending.length > 0 && (
           <section>
